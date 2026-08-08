@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+class Group;
 class Player;
 
 // A stable of real, saved characters that gear up over time, as opposed to the throwaway
@@ -89,6 +90,19 @@ class RaidGuildMgr
         // point: a roster of forty should not have to be summoned to be guilded.
         bool FormGuild(std::string const& guildName, Player* pMaster, uint32& added,
             uint32& failed, std::string& error);
+
+        // Drops a member's personal instance binds. A roster member is a body following the
+        // leader and not a raider with a lockout of its own, so the group's bind should be
+        // the only thing deciding which copy of a map it walks into. An offline member
+        // loses all of them, which is safe precisely because the group bind still routes
+        // it; one already in the world keeps the bind for the map it is standing on and any
+        // that the group agrees with, since unbinding those would be churn at best. Returns
+        // how many were dropped.
+        uint32 ClearMemberBinds(RaidGuildMember const& member, Group* pGroup);
+
+        // How many personal binds a summoned member is holding, which should be nothing it
+        // did not earn by walking through a door with the group.
+        uint32 CountMemberBinds(RaidGuildMember const& member) const;
 
         void Update(uint32 diff);
 

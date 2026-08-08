@@ -13,7 +13,9 @@ Run on the server host, with VMANGOS_SOAP_USER and VMANGOS_SOAP_PASSWORD set to 
 account: python3 test_raid_guild_summon.py
 """
 
+import os
 import re
+import subprocess
 import sys
 import time
 
@@ -36,6 +38,46 @@ MEMBERS = [
 
 LEADER = MEMBERS[0][0]
 GUILD = "Rgsumguild"
+
+# Zul'Gurub: a raid map, so entry requires the raid group this test has already formed, and
+# the only one of them that asks for no attunement. Coordinates are just inside the entrance.
+INSTANCE_MAP = 309
+INSTANCE_POS = (-11916.7, -1207.9, 92.3)
+
+# Open ground in the Barrens, well away from any instance door.
+STAGING = (-600.0, -2515.0, 92.0, 1)
+
+
+def query(sql):
+    """The characters database directly, for the one thing SOAP cannot say.
+
+    Only used to plant a stale instance bind and then to confirm it is gone. Entering an
+    instance behind a group that is not permanently saved leaves no personal bind at all,
+    so a test that merely observed binds staying at zero would pass whether or not the
+    summon path clears anything.
+    """
+    command = os.environ.get("VMANGOS_MYSQL", "sudo mysql characters3")
+    result = subprocess.run(command.split() + ["-N", "-B", "-e", sql],
+                            capture_output=True, text=True, check=True)
+    return [line.split("\t") for line in result.stdout.splitlines() if line]
+
+
+def plant_stale_bind(name):
+    """Give an offline member a personal bind to some instance. Returns its id, or None.
+
+    Any instance will do, because the point is not which map it names but that a personal
+    bind exists at all: it beats the group's bind when the server decides which copy of a
+    map to send someone to, and the door answers a disagreement with an assertion.
+    """
+    rows = query("SELECT id FROM instance ORDER BY id LIMIT 1")
+    if not rows:
+        return None
+
+    instance = rows[0][0]
+    guid = query(f"SELECT guid FROM characters WHERE name = '{name}'")[0][0]
+    query(f"REPLACE INTO character_instance (guid, instance, permanent) "
+          f"VALUES ({guid}, {instance}, 0)")
+    return instance
 
 
 def parse_status(harness):
@@ -81,6 +123,8 @@ def cleanup(harness):
     # Disbanded first, and before the characters go. A guild outliving the roster would
     # make the next run's "added" count meaningless, since the members would already be in.
     harness.run(f'guild delete "{GUILD}"', allow_failure=True)
+
+    harness.run("raidguild resetbinds", allow_failure=True)
 
     for name, *_ in MEMBERS:
         harness.run(f"raidguild remove {name}", allow_failure=True)
@@ -172,8 +216,49 @@ def main():
         if placed != str(subgroup):
             failures.append(f"{name} is in subgroup {placed}, not the rostered {subgroup}")
 
+    # A roster member should hold no instance bind of its own. Personal binds beat group
+    # binds when the server picks which copy of a map to send someone to, and a member
+    # carrying one for the map the raid is entering meets an assertion at the door rather
+    # than an error, so "none" is the only safe number here.
+    for name, *_ in MEMBERS:
+        binds = summoned.get(name, {}).get("binds")
+        if binds != "0":
+            failures.append(f"{name} was summoned holding {binds} instance binds")
+
     for name, fields in sorted(summoned.items()):
         print(f"summoned name={name} raid={fields.get('raid')} subgroup={fields.get('subgroup')}")
+
+    # And the raid enters as one. The failure this guards against is not a refusal at the
+    # door, it is a raid that silently splits across two copies of the same map, which looks
+    # like bots that will not follow.
+    harness.run("harness exec %s go xyz %f %f %f %d" % ((LEADER,) + INSTANCE_POS + (INSTANCE_MAP,)),
+                allow_failure=True)
+
+    def inside(summoned, _summary):
+        return all(fields.get("map") == str(INSTANCE_MAP) for fields in summoned.values())
+
+    summoned, summary = wait_for(harness, inside, timeout=120.0)
+
+    instances = {}
+    for name, *_ in MEMBERS:
+        fields = summoned.get(name, {})
+        if fields.get("map") != str(INSTANCE_MAP):
+            failures.append(f"{name} never got into the instance, it is on map {fields.get('map')}")
+            continue
+
+        instances.setdefault(fields.get("instance"), []).append(name)
+
+    if len(instances) > 1:
+        split = "; ".join(f"{i}: {', '.join(sorted(names))}" for i, names in instances.items())
+        failures.append(f"the raid split across {len(instances)} copies of the map ({split})")
+
+    print(f"instance map={INSTANCE_MAP} copies={len(instances)} ids={sorted(instances)}")
+
+    # Back to open ground, so that dismissal and cleanup do not happen inside an instance
+    # and the next run starts from the same place this one did.
+    harness.run("harness exec %s go xyz %f %f %f %d" % ((LEADER,) + STAGING), allow_failure=True)
+    wait_for(harness, lambda s, _: all(f.get("map") == str(STAGING[3]) for f in s.values()),
+             timeout=120.0)
 
     # The claim the whole design rests on, made falsifiable. Player::Create sets
     # m_saveDisabled and nothing clears it, so a generated bot changed in the world is
@@ -194,6 +279,12 @@ def main():
     if summary.get("online") != "0":
         failures.append(f"{summary.get('online')} members were still in the world after dismissal")
 
+    # With everyone offline, give one member a bind it has no business holding, so that the
+    # next summon has something real to clear.
+    stale = plant_stale_bind(witness)
+    if stale is None:
+        print("note: no instance rows exist, so the stale bind clearing is untested this run")
+
     # And the characters survive it. A member that dismissal deleted, or that came back as
     # a fresh character, would pass everything above and still be useless for a roster
     # whose entire point is gearing up across sessions.
@@ -208,6 +299,18 @@ def main():
     level = (harness.info(witness) or {}).get("level")
     if level != "20":
         failures.append(f"{witness} came back at level {level}, so the session was not saved")
+
+    # The check that matters more than the first one, because this time there was
+    # demonstrably something to clear.
+    for name, *_ in MEMBERS:
+        binds = summoned.get(name, {}).get("binds")
+        if binds != "0":
+            failures.append(f"{name} was resummoned still holding {binds} instance binds")
+
+    if stale is not None and query(
+            f"SELECT instance FROM character_instance WHERE instance = {stale} "
+            f"AND guid = (SELECT guid FROM characters WHERE name = '{witness}')"):
+        failures.append(f"{witness} kept its planted bind to instance {stale} through a summon")
 
     print("status " + " ".join(f"{k}={v}" for k, v in sorted(summary.items())) + f" witnesslevel={level}")
 

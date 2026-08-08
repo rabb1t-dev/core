@@ -385,10 +385,12 @@ bool ChatHandler::HandleRaidGuildStatusCommand(char* /*args*/)
         // The guild is reported from the character rather than from the guild tables,
         // because the question it answers is whether an offline bulk add actually reaches
         // a member when it next logs in, which is a different claim from the row existing.
-        PSendSysMessage("summoned name=%s guid=%u inworld=%u group=%u raid=%u subgroup=%u wanted=%u guild=%u",
+        PSendSysMessage("summoned name=%s guid=%u inworld=%u map=%u instance=%u group=%u raid=%u subgroup=%u wanted=%u guild=%u binds=%u",
             member.name.c_str(), member.guid, pPlayer->IsInWorld() ? 1 : 0,
+            pPlayer->GetMapId(), pPlayer->GetInstanceId(),
             pGroup ? 1 : 0, (pGroup && pGroup->isRaidGroup()) ? 1 : 0,
-            subGroup, uint32(member.subGroup), pPlayer->GetGuildId());
+            subGroup, uint32(member.subGroup), pPlayer->GetGuildId(),
+            sRaidGuildMgr.CountMemberBinds(member));
     }
 
     PSendSysMessage("status online=%u grouped=%u", online, grouped);
@@ -447,6 +449,47 @@ bool ChatHandler::HandleRaidGuildGuildCommand(char* args)
     PSendSysMessage("guild name=%s id=%u added=%u failed=%u members=%u", guildName.c_str(),
         pGuild ? pGuild->GetId() : 0, added, failed,
         pGuild ? uint32(pGuild->GetMemberSize()) : 0);
+    return true;
+}
+
+// .raidguild resetbinds [name]
+// Drops the roster's personal instance binds. Weekly resets and experimentation leave stale
+// ones behind, and a stale bind is not a cosmetic problem: a member carrying one for the map
+// the raid is entering meets MANGOS_ASSERT at the door rather than an error message.
+bool ChatHandler::HandleRaidGuildResetBindsCommand(char* args)
+{
+    std::string only;
+    if (char* nameStr = ExtractArg(&args))
+    {
+        only = nameStr;
+        normalizePlayerName(only);
+
+        if (!sRaidGuildMgr.FindMember(only))
+        {
+            PSendSysMessage("RaidGuild: '%s' is not on the roster.", only.c_str());
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    uint32 cleared = 0;
+    uint32 touched = 0;
+    for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+    {
+        if (!only.empty() && member.name != only)
+            continue;
+
+        Player* pPlayer = sRaidGuildMgr.FindSummonedMember(member);
+        uint32 const dropped = sRaidGuildMgr.ClearMemberBinds(
+            member, pPlayer ? pPlayer->GetGroup() : nullptr);
+
+        if (dropped)
+            touched++;
+
+        cleared += dropped;
+    }
+
+    PSendSysMessage("resetbinds members=%u cleared=%u", touched, cleared);
     return true;
 }
 

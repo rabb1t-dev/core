@@ -373,6 +373,13 @@ bool RaidGuildMgr::SummonMember(std::string const& name, Player* pLeader, std::s
         return false;
     }
 
+    // Before the session loads, so the bot comes up carrying nothing that can disagree
+    // with the group. A personal bind beats a group bind in
+    // GetBoundInstanceSaveForSelfOrGroup, and DungeonMap::BindPlayerOrGroupOnEnter answers
+    // a disagreement with MANGOS_ASSERT rather than an error, so this is a crash the roster
+    // would otherwise walk into at the door of a raid the leader is saved to.
+    ClearMemberBinds(*pMember, pLeader->GetGroup());
+
     float x, y, z;
     pLeader->GetNearPoint(pLeader, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
 
@@ -493,6 +500,79 @@ bool RaidGuildMgr::FormGuild(std::string const& guildName, Player* pMaster, uint
     }
 
     return true;
+}
+
+uint32 RaidGuildMgr::CountMemberBinds(RaidGuildMember const& member) const
+{
+    if (!member.IsProvisioned())
+        return 0;
+
+    if (Player* pPlayer = FindSummonedMember(member))
+        return uint32(pPlayer->GetBoundInstances().size());
+
+    std::unique_ptr<QueryResult> result(CharacterDatabase.PQuery(
+        "SELECT COUNT(*) FROM `character_instance` WHERE `guid` = '%u'", member.guid));
+    return result ? result->Fetch()[0].GetUInt32() : 0;
+}
+
+uint32 RaidGuildMgr::ClearMemberBinds(RaidGuildMember const& member, Group* pGroup)
+{
+    if (!member.IsProvisioned())
+        return 0;
+
+    uint32 cleared = 0;
+    Player* pPlayer = FindSummonedMember(member);
+
+    if (!pPlayer)
+    {
+        // Deleting the rows of an offline character is how the rest of the server does
+        // this too, in Group::ChangeLeader and in ConvertInstancesToGroup. Doing it before
+        // the session loads is also the only race-free moment: after login the bot is
+        // teleported to the leader within a couple of seconds, and if that lands it at an
+        // instance door with a stale bind the answer is an assert rather than an error.
+        std::unique_ptr<QueryResult> result(CharacterDatabase.PQuery(
+            "SELECT COUNT(*) FROM `character_instance` WHERE `guid` = '%u'", member.guid));
+        if (result)
+            cleared = result->Fetch()[0].GetUInt32();
+
+        if (cleared)
+            CharacterDatabase.PExecute("DELETE FROM `character_instance` WHERE `guid` = '%u'", member.guid);
+
+        return cleared;
+    }
+
+    Player::BoundInstancesMap& binds = pPlayer->GetBoundInstances();
+    for (Player::BoundInstancesMap::iterator itr = binds.begin(); itr != binds.end();)
+    {
+        uint32 const mapId = itr->first;
+
+        // Never the map it is standing on. Unbinding that is how a character ends up
+        // inside an instance it has no claim to, which is a worse state than the stale
+        // bind this is here to remove.
+        if (pPlayer->IsInWorld() && pPlayer->GetMapId() == mapId)
+        {
+            ++itr;
+            continue;
+        }
+
+        if (pGroup)
+        {
+            if (InstanceGroupBind* pGroupBind = pGroup->GetBoundInstance(mapId))
+            {
+                if (pGroupBind->state == itr->second.state)
+                {
+                    ++itr;
+                    continue;
+                }
+            }
+        }
+
+        // Increments the iterator itself, since it erases through it.
+        pPlayer->UnbindInstance(itr, false);
+        cleared++;
+    }
+
+    return cleared;
 }
 
 void RaidGuildMgr::Update(uint32 diff)
