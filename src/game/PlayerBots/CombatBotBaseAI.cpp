@@ -3276,24 +3276,34 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
         result == SPELL_FAILED_ITEM_NOT_READY) &&
         pSpellEntry->Reagent[0])
     {
-        if (Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START))
-            me->DestroyItem(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START, true);
-
+        // Whatever was in the first backpack slot used to be destroyed here to make room,
+        // unread and unconditionally. It fires on a cast failure, which is to say during
+        // exactly the moments when nobody is looking at inventories, and a bot that keeps
+        // what it earns cannot afford it. A reagent that will not fit is now simply a
+        // reagent that will not fit.
         AddItemToInventory(pSpellEntry->Reagent[0]);
     }
 
     return result;
 }
 
-void CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
+// Answers whether the item is actually in the bags now. It used to return nothing, and full
+// bags were a silent no-op that every caller treated as success. AddHunterAmmo was the worst
+// of them: it emptied a backpack slot, failed to store the ammo, set the ammo field anyway,
+// and then failed every shot, which brought it straight back here to empty the next slot.
+bool CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
 {
     ItemPosCountVec dest;
     uint8 msg = me->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
-    if (msg == EQUIP_ERR_OK)
-    {
-        if (Item* pItem = me->StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId)))
-            pItem->SetCount(count);
-    }
+    if (msg != EQUIP_ERR_OK)
+        return false;
+
+    Item* pItem = me->StoreNewItem(dest, itemId, true, Item::GenerateItemRandomPropertyId(itemId));
+    if (!pItem)
+        return false;
+
+    pItem->SetCount(count);
+    return true;
 }
 
 void CombatBotBaseAI::AddHunterAmmo()
@@ -3351,8 +3361,11 @@ void CombatBotBaseAI::AddHunterAmmo()
                     if (pFirstSlot && pFirstSlot->GetProto()->Class == ITEM_CLASS_PROJECTILE)
                         me->DestroyItem(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START, true);
 
-                    AddItemToInventory(pAmmoProto->ItemId, pAmmoProto->GetMaxStackSize());
-                    me->SetAmmo(pAmmoProto->ItemId);
+                    // Only claim the ammo once it is really there. Setting the field over
+                    // ammo that failed to store leaves a hunter whose every shot fails for
+                    // want of ammo it is convinced it has.
+                    if (AddItemToInventory(pAmmoProto->ItemId, pAmmoProto->GetMaxStackSize()))
+                        me->SetAmmo(pAmmoProto->ItemId);
                 }
             }
         }
@@ -3378,20 +3391,41 @@ void CombatBotBaseAI::EquipOrUseNewItem()
                 case ITEM_CLASS_WEAPON:
                 case ITEM_CLASS_ARMOR:
                 {
-                    uint32 slot = me->FindEquipSlot(pItem->GetProto(), NULL_SLOT, true);
-                    if (slot != NULL_SLOT)
+                    // Before asking whether it can be equipped, since the answer is no
+                    // while the proficiency is missing.
+                    if (uint32 proficiencySpellId = pItem->GetProto()->GetProficiencySpell())
+                        if (!me->HasSpell(proficiencySpellId))
+                            me->LearnSpell(proficiencySpellId, false, false);
+
+                    // Asked of CanEquipItem rather than FindEquipSlot, which only answers
+                    // where a thing of that shape goes. Unique-equipped, class and level
+                    // restrictions were all being walked past on the way to EquipItem.
+                    uint16 dest = 0;
+                    if (me->CanEquipItem(NULL_SLOT, dest, pItem, true) != EQUIP_ERR_OK)
+                        break;
+
+                    uint8 const slot = dest & 255;
+
+                    // Whatever is in the way goes to the bags, or to the mail if the bags
+                    // are full. It used to be destroyed, and the trigger is what made that
+                    // severe: this runs on trade completion and bots accept every trade, so
+                    // the natural way to hand a bot an upgrade was also the way to delete
+                    // the item it replaced.
+                    if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                     {
-                        if (Item* pItem2 = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                            me->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+                        me->AutoUnequipItemFromSlot(slot);
 
-                        // Learn required proficiency
-                        if (uint32 proficiencySpellId = pItem->GetProto()->GetProficiencySpell())
-                            if (!me->HasSpell(proficiencySpellId))
-                                me->LearnSpell(proficiencySpellId, false, false);
-
-                        me->RemoveItem(INVENTORY_SLOT_BAG_0, i, false);
-                        me->EquipItem(slot, pItem, true);
+                        // It can decline, and the new item staying in the bags is a better
+                        // answer than forcing the old one out of the world.
+                        if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                            break;
                     }
+
+                    me->RemoveItem(INVENTORY_SLOT_BAG_0, i, false);
+                    me->EquipItem(slot, pItem, true);
+
+                    // Or a two-hander ends up worn alongside a shield.
+                    me->AutoUnequipOffhandIfNeed();
                     break;
                 }
             }

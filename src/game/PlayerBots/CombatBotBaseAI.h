@@ -141,7 +141,7 @@ public:
     CombatBotRoles GetRole() const;
 
     void EquipOrUseNewItem();
-    void AddItemToInventory(uint32 itemId, uint32 count = 1);
+    bool AddItemToInventory(uint32 itemId, uint32 count = 1);
     void AddHunterAmmo();
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
