@@ -77,6 +77,40 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   scored a pass. It had in fact stalled, been revived at the graveyard by the spirit healer,
   and follow-teleported to its leader. Any recovery test needs to fail on the deadlock
   breakers firing, not just on the final position.
+- **Measuring a corpse run by distance remaining calls a stall on every route that goes the long
+  way around.** Progress was scored as closing on the destination, so a ghost spiralling through
+  Blackrock Mountain or working down into the Maraudon canyon was walking perfectly well while its
+  straight line got no shorter, and the sixty-second deadline collected it. This is what made the
+  suite flaky rather than broken: which instances failed changed run to run with server load, and
+  every failure looked identical to a genuinely unreachable corpse. Progress is now ground covered,
+  which is the thing a stuck ghost actually stops doing, with an overall cap so that covering
+  ground in a circle still ends.
+- **A silenced setup step reappears as a route bug.** Attunements were applied with failures
+  ignored, so a bot that never got Blackhand's Command ran the full eighteen hundred yards and was
+  turned away at the door, which reads exactly like a broken entrance. Worse, it only happened
+  under leaders whose bots had not been attuned by some earlier test, so it moved around.
+- **Recruiting where the group happens to be standing means recruiting inside the last dungeon.**
+  A leader that has just finished a five-man is still in it, and that instance's player cap turns
+  away the fifth bot of the raid group being formed for the next one. The harness reported "only
+  4 of 5 bots joined", which is the room being full and not the group. Groups now form on open
+  ground in the Barrens before going anywhere.
+- **An audit finding is a hypothesis until the game data agrees with it.** Four of the five
+  spell-population defects recorded in this document were wrong or wrongly explained once `spell_template`
+  and `skill_line_ability` were actually queried: mages have no decurse problem at all, the Disease
+  Cleansing Totem slot was empty rather than holding the wrong totem, the resurrection slot was decided by
+  hash order rather than by spell ID, and the rogue poison defect was the exact inverse of the one
+  described. Two of them would have produced a *worse* bot if implemented as written. The world database is
+  not in the checkout, which is why the claims went unchecked for so long; it is reachable on the dev
+  server and costs one query.
+- **Randomness hides magnitude.** The rogue poison bug was in plain sight for as long as the file has
+  existed, and it survived a nine-class rotation audit, because the poison is picked at random from a pool
+  and therefore looked different every spawn. What nobody checked was the one thing that never varied,
+  which was that the rank was always 1. Anywhere `SelectRandomContainerElement` appears, the varying part
+  is camouflage for whatever is constant underneath it.
+- **A slot that population never fills is invisible from outside the process.** Every one of these bugs
+  presents as "the bot never casts X", which is what a deliberate rotation decision also looks like, so
+  they survived a nine-class audit of the rotations themselves. `.harness spells` exists to end that class
+  of confusion: it names every slot and reports what is in it.
 - **Attunement cannot be granted by `.quest complete`.** It stops at `QUEST_STATUS_COMPLETE`,
   and only quests flagged `AUTO_REWARDED` go further, whereas the gates are checked with
   `GetQuestRewardStatus`. Blackhand's Command is flagged `RAID`, not auto-rewarded. Hence
@@ -163,6 +197,19 @@ Working on the WSL host, since SOAP binds to loopback. Source at `~/vmangos`, bu
   translation unit that includes it.
 - **Restarting mangosd** needs an explicit wait for port 7878 to be released and rebound,
   otherwise the next SOAP call races the restart.
+- **There is a second world, `~/bin/server2`, for when two people are working at once.** A
+  restart takes the whole dev server down for a minute or so, which is fatal to a suite like
+  `test_corpse_runs_live.py` that runs for five, so two strands of work on one world serialize
+  hard. server2 is realm 2 on world port 8086 and SOAP 7879, with its own `characters2`
+  database and its own logs, sharing the world database and the map data — those are read-only
+  in practice and the world database is 165 MB, so copying it would be waste. Drive it by
+  setting `VMANGOS_SOAP_URL=http://127.0.0.1:7879/`; the harness already reads that.
+  `~/bin/server2 restart` reinstalls the binary from the build directory and waits for the
+  port, and its config is regenerated from server1's by `~/bin/make-server2-conf` on every
+  start, so a rate tuned on one is not silently different on the other. Two gotchas found
+  setting it up: `account_access` is keyed by realm, so a GM account on realm 1 is an ordinary
+  account on realm 2 until its rows are mirrored, and the `mangos` database user cannot create
+  databases, so `characters2` has to be created as root and granted.
 - The harness reads credentials from `VMANGOS_SOAP_USER` and `VMANGOS_SOAP_PASSWORD`.
 - `src/game/Chat/Chat.cpp` is CRLF while its neighbours are LF, with no `.gitattributes`.
   Editors that normalize it turn a ten-line diff into eight thousand.
@@ -582,9 +629,13 @@ Supporting work:
 - Budget for durability. Bots take the standard 10 percent loss per death with no exemption
   ([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) lines 1169-1181), so wipe-heavy testing
   will destroy roster gear without the repair work from the companion document.
-- Minor engine bug worth knowing: the ghost run-speed configs are applied when the death state is
-  `CORPSE` rather than `DEAD` ([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) lines
-  7264-7269), so released ghosts move at normal speed and corpse runs take proportionally longer.
+- The ghost run-speed configs were applied when the death state is `CORPSE` rather than `DEAD`
+  ([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) lines 7267-7274), so the rate only ever
+  reached the body on the floor and never the ghost, which is the only one of the two that walks
+  anywhere. Now fixed, along with the speed recalculation that `BuildPlayerRepop` was missing:
+  ghost form is applied before the state changes, so nothing had recomputed speed since. The dev
+  server runs `Death.Ghost.RunSpeed.World = 3.0`, which is what took the full 26-instance suite
+  from 14 minutes to 5.
 - Useful behavioral detail: if the human leaves entirely, `GetPartyLeader()` fails and every bot sets
   `requestRemoval` ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
   686-690), and removal resurrects dead bots first
@@ -650,7 +701,7 @@ Four framework properties, not the if-chains, are the actual ceiling:
   cross-cutting concerns such as difficulty degradation, threat throttling, and encounter directives have
   to be re-implemented in nine places or not at all.
 
-### Fix spell population before touching any rotation
+### Fix spell population before touching any rotation [done]
 
 An audit of `CombatBotBaseAI::PopulateSpellData` found abilities that are missing from the bot's spell struct
 entirely. This matters for sequencing more than for severity: each one presents as *"the AI never uses X"*,
@@ -658,22 +709,54 @@ which is indistinguishable from a rotation bug, so debugging rotations on top of
 symptoms whose cause is one layer down.
 
 Population walks `me->GetSpellMap()` and assigns into named struct slots by matching spell **names**, which is
-the root of most of these:
+the root of most of these. Every claim below was re-checked against `spell_template` and
+`skill_line_ability` on the dev server before being fixed, and two of the original findings did not
+survive that check; they are kept, corrected, because the corrected version is the useful record.
 
-- **Shaman never dispels.** `PartyBotAI::CheckForDispelTargets` reads `m_spells.shaman.pCureDisease` and
-  `pCurePoison`, but the shaman branch of population has no matcher for either name, so both stay null
-  forever. Horde's primary dispeller does nothing.
-- **Mages never decurse.** Only `"Remove Lesser Curse"` is matched, and `Remove Curse` supersedes it at level
-  24, so from that level on `pRemoveLesserCurse` is null. Likewise paladins match only `"Cleanse"` and never
-  `Purify`, and warlocks match only `"Demon Armor"` and never `Demon Skin`.
-- **Disease Cleansing Totem is wired to the wrong spell**, matching the string
-  `"Disease Resistance Totem"`, so the cleansing slot holds the resistance totem and the real one is
-  unreachable.
-- **Rogue poison ranks are resolved against the entire spell database** rather than the bot's known spells,
-  filtered only by level, so the pointer can name a rank the rogue never learned. Since
-  `CanTryToCastSpell` never checks `HasSpell`, the application just fails repeatedly.
-- **The resurrection spell has no rank selection at all** - it is overwritten by every resurrect effect seen
-  during iteration, so whichever spell ID sorts last wins.
+**Status.** All of it landed together (`caf3f2494`), along with `.harness spells` and
+`contrib/harness/test_spell_population.py`, and is live-verified on a bot of each of the nine
+classes. The one finding below that is *not* implemented is the mage decurse, because the game
+data contradicts it.
+
+- **Shaman never dispels.** [fixed] `PartyBotAI::CheckForDispelTargets` reads `m_spells.shaman.pCureDisease`
+  and `pCurePoison`, but the shaman branch of population had no matcher for either name, so both stayed null
+  forever. Horde's primary dispeller did nothing, in party bots and battleground bots alike. Cure Poison
+  (526, level 16) and Cure Disease (2870, level 22) are both real shaman spells that a trainer-taught bot
+  knows.
+- **Disease Cleansing Totem was matched by a name no spell has.** [fixed] The matcher looked for
+  `"Disease Resistance Totem"`. **Correction to the original audit:** that string does not name anything in
+  the game — the resistance totems are Frost, Fire and Nature — so the slot was not holding the wrong totem,
+  it was simply never assigned. The real spell is Disease Cleansing Totem (8170, level 38).
+- **Correction: mages decurse fine.** The original audit claimed `"Remove Lesser Curse"` is superseded by
+  `Remove Curse` at level 24, leaving the slot null above that level. It is not. Remove Lesser Curse (475)
+  is class-masked to mage and is the *only* vanilla mage decurse; Remove Curse (2782) is class-masked to
+  druid. There was nothing to fix here, and fixing it would have introduced a druid spell into the mage
+  slot.
+- **Paladins matched only `"Cleanse"` and warlocks only `"Demon Armor"`.** [fixed] Both are real gaps but
+  both are level-gated rather than permanent: Purify covers levels 8-41 until Cleanse arrives at 42, and
+  Demon Skin covers 1-19 until Demon Armor arrives at 20. A level 60 raider was never affected, which is
+  why this had gone unnoticed. Handled the way the file already handles Frost Armor standing in for Ice
+  Armor: the lower spell is kept aside and fills the slot only if the higher one never appeared, so
+  iteration order cannot decide the outcome.
+- **The resurrection spell had no rank selection at all.** [fixed] It was overwritten by every resurrect
+  effect seen during iteration. **Correction to the original audit:** the outcome was not "whichever spell
+  ID sorts last wins" — `PlayerSpellMap` is a `std::unordered_map`, so it was whichever the hash order
+  happened to visit last. A level 60 shaman could be left holding Ancestral Spirit Rank 1. All four
+  resurrection lines carry proper `"Rank N"` text, so ordinary rank selection resolves it exactly.
+- **Every rogue bot in the game has been applying rank 1 poisons.** [fixed] **Correction to the original
+  audit**, which had this backwards: the worry was that scanning the whole spell database could name a rank
+  the rogue never learned, and the real defect was the opposite. Poison ranks are written into the *name* —
+  Deadly Poison, then Deadly Poison II through V — and the lookup matched the base name exactly, so the only
+  spell it could ever find was rank 1. A level 60 rogue applied the level 30 Deadly Poison and the level 20
+  Instant Poison. The two `SelectRandomContainerElement` calls were noisy enough to hide it: the poison
+  changed every spawn, so nobody looked at which rank it was.
+
+  Worth understanding rather than patching, because the shape is unusual. A rogue learns the spell that
+  *crafts* a poison and never the enchant that *applies* it; those are two different spells that share a
+  name exactly. So the fix is to keep the highest-level crafting spell the rogue actually knows and look the
+  enchant up by that spell's name, which gets the rank right and cannot select a poison the rogue could not
+  make. This is also the one place a slot legitimately holds a spell `HasSpell` returns false for, and
+  `test_spell_population.py` exempts exactly those two slots and asserts on the rank instead.
 
 Rank selection generally is worth understanding before trusting it. A named slot keeps the higher rank via
 `GetRank()`, which parses the literal string `"Rank N"` from the spell entry; when that parse yields zero it
@@ -682,6 +765,12 @@ skipped before name matching entirely, so any slot mapped to a passive talent st
 
 Repopulation is wired correctly for party bots, which set `m_resetSpellData` on learn, supersede, and remove
 packets; BattleBot has no equivalent and keeps stale pointers for its whole session.
+
+One consequence of the Disease Cleansing Totem fix belongs to the next piece of work rather than this one.
+That slot feeds a pool from which the water totem is picked **at random**, alongside Fire Resistance Totem,
+so making it reachable means a raid shaman now sometimes drops it instead of Mana Spring. The pool was
+already wrong in exactly that way before the fix; see the random-totem item under
+[Behaviors that are actively harmful](#behaviors-that-are-actively-harmful-not-merely-suboptimal).
 
 ### Behaviors that are actively harmful, not merely suboptimal
 
@@ -697,7 +786,10 @@ between a weak raider and a self-sabotaging one:
   Defensive or Berserker, and Overpower requires Battle Stance.
 - **Healer priests and healer shamans never deal damage**, even with nothing to heal.
 - **Totems, paladin auras, non-tank blessings, and caster weapon imbues are chosen at random once** at
-  spell-populate time and never revisited, so Windfury Totem is one entry in a random pool.
+  spell-populate time and never revisited, so Windfury Totem is one entry in a random pool. The pools are
+  not merely unordered, they contain choices no raider would make: Fire Resistance Totem sits in the water
+  pool next to Mana Spring, and Disease Cleansing Totem joined it once the population fix made that slot
+  reachable at all. Role should pick these, not `SelectRandomContainerElement`.
 - **Trinkets fire on cooldown unconditionally** whenever the bot has a victim.
 - **Hunter is missing roughly half the class** — no Rapid Fire, Bestial Wrath, traps, or stings beyond
   Serpent — and has zero pet handling in combat, so a pet dies unnoticed.
@@ -1462,8 +1554,21 @@ content that feels earned and content that feels scripted.
 
 **Status.** The out-of-band half exists: `.harness exec`, `info`, `createchar`, and `login`
 behind `Harness.Enable`, plus a Python SOAP driver and a first test in `contrib/harness`
-(`e04904be4`). The in-game debugging commands below are not started.
+(`e04904be4`). Since then: `path`, `graveyard`, `loadmmaps` and `rewardquest` for the corpse
+run work, and `spells` for the combat work. The remaining in-game debugging commands below
+are not started.
 
+- `.harness spells <character>` reports every named spell slot for the bot's class, what
+  population put in it, that spell's rank and level, and whether the bot actually knows it.
+  Written because a null slot and a rotation that declines to cast are the same observation
+  from outside, and several slots had been null for the life of the file on that account.
+  `known=` catches a slot pointing at a spell the bot never learned; `level=` catches the
+  quieter failure where the slot is filled but holds a rank far below the bot, which is how
+  the rogue poison bug looked. `contrib/harness/test_spell_population.py` drives it across
+  all nine classes and asserts both, and its per-class filled-slot counts are the baseline
+  the rotation work should be measured against. Current counts, whose empties are almost all
+  untaken talents: hunter 16/16, druid 41/45, warrior 28/34, priest 20/25, warlock 21/25,
+  rogue 21/27, mage 19/24, shaman 16/18, paladin 16/20.
 - Debug commands to visualize the hazard list, dump current directives, and inspect encounter phase.
 - Attempt logging so wipes can be analyzed: which bot died to what, whether avoidance fired, whether
   a directive was published but ignored.
