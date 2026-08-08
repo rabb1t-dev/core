@@ -294,5 +294,15 @@ bool Corpse::IsExpired(time_t t) const
 
 uint32 Corpse::GetFactionTemplateId() const
 {
-    return m_faction->ID;
+    if (m_faction)
+        return m_faction->ID;
+
+    // Exactly one path sets the faction, and only while the owner is still on the map, so a
+    // corpse loaded from the database or left behind by a player who has since gone elsewhere
+    // arrives here with nothing to dereference. The race is carried on the corpse in every one
+    // of those cases, and it is what decided the owner's faction to begin with.
+    if (uint8 const race = GetByteValue(CORPSE_FIELD_BYTES_1, 1))
+        return Player::GetFactionForRace(race);
+
+    return 0;
 }
