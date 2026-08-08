@@ -2456,6 +2456,14 @@ Visibility.ForceActiveObjects = 1
 #        Default: 0 (off)
 #                 1 (on)
 #
+#    Harness.Enable
+#        Enables the .harness commands, which let the console and SOAP run chat commands in
+#        the session of an already logged in character. This exists so an automated test
+#        driver can play without a game client. It lets any caller who can already reach the
+#        console act as any character in the world, so leave it off outside development.
+#        Default: 0 (off)
+#                 1 (on)
+#
 #    Rate.Damage.Fall
 #        Damage after fall rate (1 - standard, 2 - double damage, 0.5 - half damage, etc)
 #
@@ -2612,6 +2620,7 @@ Rate.Rest.InGame = 1
 Rate.Rest.Offline.InTavernOrCity = 1
 Rate.Rest.Offline.InWilderness = 1
 Rest.AlwaysFull = 0
+Harness.Enable = 0
 Rate.Damage.Fall = 1
 Rate.Auction.Time = 1
 Rate.Auction.Deposit = 1

@@ -276,6 +276,13 @@ class ChatHandler
         bool HandleBotReloadCommand(char * args);
         bool HandleBotStopCommand(char * args);
         bool HandleBotStartCommand(char * args);
+        // Test harness
+        Player* GetHarnessTarget(char** args);
+        bool HandleHarnessExecCommand(char* args);
+        bool HandleHarnessInfoCommand(char* args);
+        bool HandleHarnessCreateCharCommand(char* args);
+        bool HandleHarnessLoginCommand(char* args);
+
         bool PartyBotAddRequirementCheck(Player const* pPlayer, Player const* pTarget);
         bool HandlePartyBotAddCommand(char * args);
         bool HandlePartyBotCloneCommand(char * args);

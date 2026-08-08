@@ -84,6 +84,7 @@ set (game_SRCS
     Commands/CharacterCommands.cpp
     Commands/CreatureCommands.cpp
     Commands/DebugCommands.cpp
+    Commands/HarnessCommands.cpp
     Commands/LookupCommands.cpp
     Commands/MiscCommands.cpp
     Commands/ObjectCommands.cpp
