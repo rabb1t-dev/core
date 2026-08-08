@@ -21,6 +21,7 @@ Status key: **not started** / **in progress** / **done**.
 | `e04904be4` | Test harness, which is how roster work gets verified without a client |
 | `09bae86c1` | The roster table, `RaidGuildMgr`, and `.raidguild` provisioning |
 | `547a3416c` | Talent specs are asked for by name instead of drawn at random, plus the six level 60 builds that did not exist |
+| `b2d572839` | Those six builds rebuilt on the published vanilla specs, and a template audit that applies a spec rather than counting it |
 
 `a19dc86dc` closes the "Joining the group" section of Phase 0 below in full: the group is
 promoted to a raid when it fills, `AddMember`'s return value is checked, a bot that fails to
@@ -45,6 +46,11 @@ otherwise deterministic rather than random; and six missing level 60 builds are 
 by `contrib/harness/test_premade_specs.py`. Provisioning still has to set `m_specName` from the
 roster row — the column is loaded and written but nothing applies it yet — and levels other than
 60 remain unsolved, which is written up under Phase 3.
+
+`b2d572839` replaces those six builds with the ones the surviving 1.12 guides agree on, because the
+first set was written from recall and only checked for legality, which four bad builds passed. It
+also adds `contrib/harness/audit_premade_specs.py`, which applies every level 60 template to a
+character and reads the build back; all twenty it can reach spend 51 of 51 points on legal tiers.
 
 ### Findings that changed the plan
 
@@ -91,6 +97,21 @@ roster row — the column is loaded and written but nothing applies it yet — a
 - **`TalentTabEntry::tabpage` is wrong for mage.** Tabs 41 (Fire) and 81 (Arcane) both report
   page 0, while all eight other classes are consistent. Anything naming or ordering trees must
   key off the tab id.
+- **A legal build and a good build are different things, and only one of them can be checked by
+  a machine.** The DBC validator confirms tiers, prerequisites and the point budget, and it
+  passed six builds written from memory in which four spent points on talents that do nothing to
+  a raid boss — stuns, parry, fear resistance — purely as a toll to reach the next row, and two
+  were not builds anyone runs. Vanilla is a closed patch with a settled answer per spec, so
+  builds get sourced from the surviving 1.12 guides and the validator's job is only to stop a
+  transcription error. Two of the six splits differ by one point from the number those guides
+  quote, in both cases because the quoted number is not buildable: the fire mage's published
+  17/31/3 cannot reach Arcane Meditation, which sits on row 3 and so needs 15 points above it.
+- **Counting a template's talents offline against Talent.dbc under-reports the build.** A
+  template may store a rank id that the DBC chain for that talent does not list, so the match
+  fails and the point is not counted. That produced a confident and entirely wrong conclusion
+  that eleven shipped templates under-spend and that `ds-ruin-pve` is illegal; applying each one
+  to a character shows all of them at 51 of 51 and legal. `contrib/harness/audit_premade_specs.py`
+  is the trustworthy form. Never report a talent count that has not been applied to a character.
 
 ### Next
 
@@ -1215,7 +1236,16 @@ gap. The druid had no Restoration points and therefore no Furor, which is the ta
 rotation is built on. The current six are the builds the surviving 1.12 guides agree on: fire 18/31/2,
 arms 31/20, SM/Ruin 30/0/21, Seal Fate daggers 30/16/5, holy 21/30, powershifting cat 14/32/5.
 
-PENDING_SHIPPED_AUDIT
+**The shipped level 60 templates are sound, which took a live check to establish.** Counting a
+template's points by matching its `player_premade_spell` rows against Talent.dbc says that eleven of the
+seventeen under-spend and that `ds-ruin-pve` holds Ruin one point short of legal. All of that is false. A
+template may store a rank id the DBC chain for that talent does not list, so the offline count silently
+misses talents and reports a build poorer than it is — `fury-dw-pve` looks like 33 points in Fury with no
+Bloodthirst and is really 34 with it. The only trustworthy measure is to apply a spec to a character and
+read the build back, which is what `contrib/harness/audit_premade_specs.py` does: every level 60 template
+spends all 51 points and stands on legal tiers. Do not trust a talent count that never touched a
+character. The audit cannot reach the three paladin specs, because it drives a Horde leader and paladins
+are Alliance only in vanilla; those want an Alliance leader before they can be called clean.
 
 Roster size is unconstrained in any way that matters. The guild member cap is never enforced, and bot
 accounts only need distinct nonzero `account` values on the character rows, so an eighty-member roster
