@@ -29,6 +29,7 @@
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
 #include "CombatBotBaseAI.h"
+#include "Totem.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
@@ -535,6 +536,24 @@ bool ChatHandler::HandleHarnessSpellsCommand(char* args)
         PSendSysMessage("slot %s id=%u rank=%u level=%u known=%u name=%s",
             slot.name, slot.spell->Id, slot.spell->GetRank(), slot.spell->spellLevel,
             pTarget->HasSpell(slot.spell->Id) ? 1 : 0, slot.spell->SpellName[0].c_str());
+    }
+
+    // What is actually planted right now, which for a shaman is the answer the slots above
+    // cannot give. A totem slot is re-chosen every time it comes up empty, from the group
+    // standing in range at that moment, so the resting choice recorded at spawn and the totem
+    // on the ground are allowed to differ and the difference is the whole point.
+    static char const* const totemSlotNames[MAX_TOTEM_SLOT] = { "fire", "earth", "water", "air" };
+    for (uint32 i = 0; i < MAX_TOTEM_SLOT; ++i)
+    {
+        Totem const* pTotem = pTarget->GetTotem(TotemSlot(i));
+        if (!pTotem)
+        {
+            PSendSysMessage("totem %s id=0 name=", totemSlotNames[i]);
+            continue;
+        }
+
+        PSendSysMessage("totem %s id=%u name=%s", totemSlotNames[i],
+            pTotem->GetSpell(), pTotem->GetName());
     }
 
     return true;

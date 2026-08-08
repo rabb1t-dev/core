@@ -140,15 +140,20 @@ class Harness:
         return self.execute(character, f"go xyz {x:.2f} {y:.2f} {z:.2f} {map_id}")
 
     def spells(self, character):
-        """Every named spell slot of a combat bot, as {slot: {...}} plus a summary.
+        """A combat bot's named spell slots and planted totems, plus a summary.
 
         Slots are parsed by position rather than by the usual key=value sweep, because a
         spell name contains spaces and so has to be the rest of the line.
+
+        The totems are what is on the ground now, which is not the same question as the
+        totem slots: those hold the choice the bot would make knowing nothing, and the real
+        one is made afresh each time a totem is planted.
         """
         text = self.run(f"harness spells {character}")
 
         summary = {}
         slots = {}
+        totems = {}
         for line in text.splitlines():
             line = line.strip()
             match = re.match(
@@ -161,11 +166,19 @@ class Harness:
                     "known": int(match.group(5)) == 1,
                     "name": match.group(6),
                 }
+                continue
+
+            match = re.match(r"^totem (\w+) id=(\d+) name=(.*)$", line)
+            if match:
+                totems[match.group(1)] = {
+                    "id": int(match.group(2)),
+                    "name": match.group(3),
+                }
             elif line.startswith("spells "):
                 summary = {k: int(v) if v.isdigit() else v
                            for k, v in re.findall(r"(\w+)=(\S+)", line)}
 
-        return {"summary": summary, "slots": slots}
+        return {"summary": summary, "slots": slots, "totems": totems}
 
     # -- world queries -----------------------------------------------------
 

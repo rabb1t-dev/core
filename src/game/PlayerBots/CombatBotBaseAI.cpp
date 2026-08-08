@@ -3,6 +3,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Group.h"
+#include "Totem.h"
 #include "PlayerBotMgr.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -280,6 +281,14 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.paladin.pBlessingOfProtection))
                         m_spells.paladin.pBlessingOfProtection = pSpellEntry;
+                }
+                // Matched ahead of the five below and deliberately dropped. A Greater Blessing is
+                // the reagent-consuming version that buffs everyone of the target's class at
+                // once, and its name contains the single-target name exactly, so an unguarded
+                // find() files it as an ordinary blessing. Nothing here casts one yet, and a slot
+                // meant to be cast on one member at a time is the wrong place for it.
+                else if (pSpellEntry->SpellName[0].find("Greater Blessing of") != std::string::npos)
+                {
                 }
                 else if (pSpellEntry->SpellName[0].find("Blessing of Sanctuary") != std::string::npos)
                 {
@@ -1687,42 +1696,48 @@ void CombatBotBaseAI::PopulateSpellData()
             else
                 m_spells.paladin.pSeal = pSealOfRighteousness;
 
-            if (pBlessingOfSanctuary && m_role == ROLE_TANK)
-                m_spells.paladin.pBlessingBuff = pBlessingOfSanctuary;
-            else
+            m_blessings.pMight = pBlessingOfMight;
+            m_blessings.pWisdom = pBlessingOfWisdom;
+            m_blessings.pKings = pBlessingOfKings;
+            m_blessings.pSanctuary = pBlessingOfSanctuary;
+            m_blessings.pLight = pBlessingOfLight;
+
+            // A blessing is single target, so which one to cast is a fact about the person
+            // receiving it and not about the paladin. This slot is now only the paladin's own
+            // blessing and the fallback for a target it cannot classify; SelectBlessingForTarget
+            // decides the rest at cast time.
+            m_spells.paladin.pBlessingBuff = SelectBlessingForTarget(me);
+
+            // Only one aura runs at a time, so it follows the paladin's own job. The three
+            // resistance auras are last resorts rather than choices: they are worth running on
+            // specific fights, and drawing one at random is how a raid ended up with Fire
+            // Resistance Aura where Devotion should have been.
+            SpellEntry const* pPreferredAura = nullptr;
+            switch (m_role)
             {
-                std::vector<SpellEntry const*> blessings;
-                if (pBlessingOfLight)
-                    blessings.push_back(pBlessingOfLight);
-                if (pBlessingOfMight)
-                    blessings.push_back(pBlessingOfMight);
-                if (pBlessingOfWisdom)
-                    blessings.push_back(pBlessingOfWisdom);
-                if (pBlessingOfKings)
-                    blessings.push_back(pBlessingOfKings);
-                if (pBlessingOfSanctuary)
-                    blessings.push_back(pBlessingOfSanctuary);
-                if (!blessings.empty())
-                    m_spells.paladin.pBlessingBuff = SelectRandomContainerElement(blessings);
+                case ROLE_TANK:
+                    pPreferredAura = pDevotionAura;
+                    break;
+                case ROLE_HEALER:
+                    pPreferredAura = pConcentrationAura;
+                    break;
+                case ROLE_MELEE_DPS:
+                    pPreferredAura = pSanctityAura ? pSanctityAura : pRetributionAura;
+                    break;
+                default:
+                    break;
             }
 
-            std::vector<SpellEntry const*> auras;
-            if (pDevotionAura)
-                auras.push_back(pDevotionAura);
-            if (pConcentrationAura)
-                auras.push_back(pConcentrationAura);
-            if (pRetributionAura)
-                auras.push_back(pRetributionAura);
-            if (pSanctityAura)
-                auras.push_back(pSanctityAura);
-            if (pShadowResistanceAura)
-                auras.push_back(pShadowResistanceAura);
-            if (pFrostResistanceAura)
-                auras.push_back(pFrostResistanceAura);
-            if (pFireResistanceAura)
-                auras.push_back(pFireResistanceAura);
-            if (!auras.empty())
-                m_spells.paladin.pAura = SelectRandomContainerElement(auras);
+            SpellEntry const* const auraChoices[] = { pPreferredAura, pDevotionAura, pRetributionAura,
+                pConcentrationAura, pFireResistanceAura, pFrostResistanceAura, pShadowResistanceAura };
+            for (SpellEntry const* pAuraChoice : auraChoices)
+            {
+                if (pAuraChoice)
+                {
+                    m_spells.paladin.pAura = pAuraChoice;
+                    break;
+                }
+            }
 
             if (!m_spells.paladin.pCleanse && pPurify)
                 m_spells.paladin.pCleanse = pPurify;
@@ -1731,75 +1746,47 @@ void CombatBotBaseAI::PopulateSpellData()
         }
         case CLASS_SHAMAN:
         {
-            std::vector<SpellEntry const*> airTotems;
-            if (pGraceOfAirTotem)
-                airTotems.push_back(pGraceOfAirTotem);
-            if (pNatureResistanceTotem)
-                airTotems.push_back(pNatureResistanceTotem);
-            if (pWindfuryTotem)
-                airTotems.push_back(pWindfuryTotem);
-            if (pWindwallTotem)
-                airTotems.push_back(pWindwallTotem);
-            if (pTranquilAirTotem)
-                airTotems.push_back(pTranquilAirTotem);
-            if (!airTotems.empty())
-                m_spells.shaman.pAirTotem = SelectRandomContainerElement(airTotems);
+            m_totems.pWindfury = pWindfuryTotem;
+            m_totems.pGraceOfAir = pGraceOfAirTotem;
+            m_totems.pNatureResistance = pNatureResistanceTotem;
+            m_totems.pWindwall = pWindwallTotem;
+            m_totems.pTranquilAir = pTranquilAirTotem;
+            m_totems.pStrengthOfEarth = pStrengthOfEarthTotem;
+            m_totems.pStoneskin = pStoneskinTotem;
+            m_totems.pStoneclaw = pStoneclawtotem;
+            m_totems.pTremor = pTremorTotem;
+            m_totems.pEarthbind = pEarthbindTotem;
+            m_totems.pSearing = pSearingTotem;
+            m_totems.pMagma = pMagmaTotem;
+            m_totems.pFireNova = pFireNovaTotem;
+            m_totems.pFlametongue = pFlametongueTotem;
+            m_totems.pFrostResistance = pFrostResistanceTotem;
+            m_totems.pManaSpring = pManaSpringTotem;
+            m_totems.pHealingStream = pHealingStreamTotem;
+            m_totems.pPoisonCleansing = pPoisonCleansingTotem;
+            m_totems.pDiseaseCleansing = pDiseaseCleansingTotem;
+            m_totems.pFireResistance = pFireResistanceTotem;
 
-            std::vector<SpellEntry const*> earthTotems;
-            if (pEarthbindTotem)
-                earthTotems.push_back(pEarthbindTotem);
-            if (pStoneclawtotem)
-                earthTotems.push_back(pStoneclawtotem);
-            if (pStoneskinTotem)
-                earthTotems.push_back(pStoneskinTotem);
-            if (pStrengthOfEarthTotem)
-                earthTotems.push_back(pStrengthOfEarthTotem);
-            if (pTremorTotem)
-                earthTotems.push_back(pTremorTotem);
-            if (!earthTotems.empty())
-                m_spells.shaman.pEarthTotem = SelectRandomContainerElement(earthTotems);
+            // What the bot would drop knowing nothing about the situation. SummonShamanTotems asks
+            // again per school every time a slot is empty, so this is the resting choice and the
+            // diagnostic view rather than a decision frozen for the life of the bot.
+            m_spells.shaman.pAirTotem = SelectTotemForSlot(TOTEM_SLOT_AIR);
+            m_spells.shaman.pEarthTotem = SelectTotemForSlot(TOTEM_SLOT_EARTH);
+            m_spells.shaman.pFireTotem = SelectTotemForSlot(TOTEM_SLOT_FIRE);
+            m_spells.shaman.pWaterTotem = SelectTotemForSlot(TOTEM_SLOT_WATER);
 
-            std::vector<SpellEntry const*> fireTotems;
-            if (pFireNovaTotem)
-                fireTotems.push_back(pFireNovaTotem);
-            if (pMagmaTotem)
-                fireTotems.push_back(pMagmaTotem);
-            if (pSearingTotem)
-                fireTotems.push_back(pSearingTotem);
-            if (pFlametongueTotem)
-                fireTotems.push_back(pFlametongueTotem);
-            if (pFrostResistanceTotem)
-                fireTotems.push_back(pFrostResistanceTotem);
-            if (!fireTotems.empty())
-                m_spells.shaman.pFireTotem = SelectRandomContainerElement(fireTotems);
-
-            std::vector<SpellEntry const*> waterTotems;
-            if (pFireResistanceTotem)
-                waterTotems.push_back(pFireResistanceTotem);
-            if (pDiseaseCleansingTotem)
-                waterTotems.push_back(pDiseaseCleansingTotem);
-            if (pHealingStreamTotem)
-                waterTotems.push_back(pHealingStreamTotem);
-            if (pManaSpringTotem)
-                waterTotems.push_back(pManaSpringTotem);
-            if (pPoisonCleansingTotem)
-                waterTotems.push_back(pPoisonCleansingTotem);
-            if (!waterTotems.empty())
-                m_spells.shaman.pWaterTotem = SelectRandomContainerElement(waterTotems);
-
-            if (pWindfuryWeapon && m_role == ROLE_MELEE_DPS)
-                m_spells.shaman.pWeaponBuff = pWindfuryWeapon;
-            else
+            // Windfury for anyone who swings the weapon. For a caster the imbue barely matters,
+            // so this mainly needs to stop being a coin toss.
+            SpellEntry const* const weaponBuffChoices[] = {
+                (m_role == ROLE_MELEE_DPS || m_role == ROLE_TANK) ? pWindfuryWeapon : nullptr,
+                pRockbiterWeapon, pFrostbrandWeapon, pWindfuryWeapon };
+            for (SpellEntry const* pWeaponBuffChoice : weaponBuffChoices)
             {
-                std::vector<SpellEntry const*> weaponBuffs;
-                if (pWindfuryWeapon)
-                    weaponBuffs.push_back(pWindfuryWeapon);
-                if (pRockbiterWeapon)
-                    weaponBuffs.push_back(pRockbiterWeapon);
-                if (pFrostbrandWeapon)
-                    weaponBuffs.push_back(pFrostbrandWeapon);
-                if (!weaponBuffs.empty())
-                    m_spells.shaman.pWeaponBuff = SelectRandomContainerElement(weaponBuffs);
+                if (pWeaponBuffChoice)
+                {
+                    m_spells.shaman.pWeaponBuff = pWeaponBuffChoice;
+                    break;
+                }
             }
 
             break;
@@ -2489,6 +2476,127 @@ Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
                     me->IsWithinDist(pMember, 30.0f))
                     return pMember;
             }
+        }
+    }
+
+    return nullptr;
+}
+
+CombatBotRoles CombatBotBaseAI::GetEffectiveRole(Player const* pTarget) const
+{
+    if (!pTarget)
+        return ROLE_INVALID;
+
+    if (pTarget == me)
+        return m_role;
+
+    if (WorldSession const* pSession = pTarget->GetSession())
+        if (PlayerBotEntry const* pEntry = pSession->GetBot())
+            if (CombatBotBaseAI const* pTargetAI = dynamic_cast<CombatBotBaseAI const*>(pEntry->ai.get()))
+                if (pTargetAI->m_role != ROLE_INVALID)
+                    return pTargetAI->m_role;
+
+    // A human, or anything not running a combat bot AI, has no role to read. Fall back to what the
+    // class alone can settle: whether there is a mana bar worth refilling.
+    if (pTarget->GetPowerType() != POWER_MANA)
+        return ROLE_MELEE_DPS;
+
+    if (IsHealerClass(pTarget->GetClass()))
+        return ROLE_HEALER;
+
+    return IsMeleeWeaponClass(pTarget->GetClass()) ? ROLE_MELEE_DPS : ROLE_RANGE_DPS;
+}
+
+SpellEntry const* CombatBotBaseAI::SelectBlessingForTarget(Player const* pTarget) const
+{
+    if (!pTarget)
+        return nullptr;
+
+    CombatBotRoles const targetRole = GetEffectiveRole(pTarget);
+
+    SpellEntry const* choices[5] = {};
+    uint32 choiceCount = 0;
+    auto const consider = [&](SpellEntry const* pSpellEntry)
+    {
+        if (!pSpellEntry || choiceCount >= 5)
+            return;
+
+        for (uint32 i = 0; i < choiceCount; ++i)
+            if (choices[i] == pSpellEntry)
+                return;
+
+        choices[choiceCount++] = pSpellEntry;
+    };
+
+    switch (targetRole)
+    {
+        case ROLE_TANK:
+            // Sanctuary is the tanking blessing and is close to wasted on anyone else.
+            consider(m_blessings.pSanctuary);
+            consider(m_blessings.pKings);
+            consider(m_blessings.pMight);
+            break;
+        case ROLE_HEALER:
+            consider(m_blessings.pWisdom);
+            consider(m_blessings.pKings);
+            break;
+        case ROLE_RANGE_DPS:
+            // Hunters are the ranged class whose damage comes off attack power rather than off a
+            // mana bar they are trying to make last.
+            consider(pTarget->GetClass() == CLASS_HUNTER ? m_blessings.pMight : m_blessings.pWisdom);
+            consider(m_blessings.pKings);
+            break;
+        case ROLE_MELEE_DPS:
+        default:
+            consider(m_blessings.pMight);
+            consider(m_blessings.pKings);
+            break;
+    }
+
+    consider(m_blessings.pWisdom);
+    consider(m_blessings.pMight);
+    consider(m_blessings.pLight);
+
+    return choiceCount ? choices[0] : nullptr;
+}
+
+Player* CombatBotBaseAI::SelectBlessingTarget(SpellEntry const*& pSelectedSpellEntry) const
+{
+    pSelectedSpellEntry = nullptr;
+
+    // Unlike the other group buffs there is no single spell to look for, because the blessing a
+    // member should be holding depends on that member. So the candidate is picked first and the
+    // spell second, which is the reverse of SelectBuffTarget.
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+    {
+        SpellEntry const* pBlessing = SelectBlessingForTarget(me);
+        if (pBlessing && IsValidBuffTarget(me, pBlessing))
+        {
+            pSelectedSpellEntry = pBlessing;
+            return me;
+        }
+
+        return nullptr;
+    }
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+
+        if (!me->IsValidHelpfulTarget(pMember) ||
+            pMember->IsGameMaster() ||
+            !me->IsWithinLOSInMap(pMember) ||
+            !me->IsWithinDist(pMember, 30.0f))
+            continue;
+
+        SpellEntry const* pBlessing = SelectBlessingForTarget(pMember);
+        if (pBlessing && IsValidBuffTarget(pMember, pBlessing))
+        {
+            pSelectedSpellEntry = pBlessing;
+            return pMember;
         }
     }
 
@@ -3199,37 +3307,193 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
     me->GetMotionMaster()->MoveChase(pVictim, 1.0f, m_role == ROLE_MELEE_DPS ? M_PI_F : 0.0f);
 }
 
+// A totem benefits the shaman's own party within this range of where it was planted, which is
+// what makes the choice a question about the people standing nearby rather than about the shaman.
+static float const TOTEM_AURA_RADIUS = 20.0f;
+
+// Magma Totem only reaches enemies packed in close, so it is worth the slot over Searing Totem
+// only when several of them are.
+static float const MAGMA_TOTEM_RADIUS = 8.0f;
+
+CombatBotBaseAI::TotemAudience CombatBotBaseAI::SurveyTotemAudience() const
+{
+    TotemAudience audience;
+
+    // Counted by role rather than by class, because the class alone cannot tell a shaman that
+    // stands in the front rank from one that heals from the back, and Windfury Totem is worth
+    // nothing to the second. Counting by class would also have every shaman count itself as
+    // melee and so make the answer the same for every group.
+    auto const account = [&](Player const* pMember)
+    {
+        audience.members++;
+
+        CombatBotRoles const role = GetEffectiveRole(pMember);
+        if ((role == ROLE_MELEE_DPS || role == ROLE_TANK) && IsMeleeWeaponClass(pMember->GetClass()))
+            audience.melee++;
+
+        if (pMember->GetPowerType() == POWER_MANA)
+            audience.manaUsers++;
+    };
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+    {
+        account(me);
+        return audience;
+    }
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || !me->IsWithinDist(pMember, TOTEM_AURA_RADIUS))
+            continue;
+
+        account(pMember);
+    }
+
+    return audience;
+}
+
+// The summon spell names a creature and the creature names the aura it pulses. Comparing on that
+// aura is what lets two shamans notice they are running the same totem even at different ranks,
+// which does not stack and so wastes one of them.
+static uint32 GetTotemAuraSpellId(SpellEntry const* pSummonSpell)
+{
+    if (!pSummonSpell)
+        return 0;
+
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (pSummonSpell->Effect[i] < SPELL_EFFECT_SUMMON_TOTEM_SLOT1 ||
+            pSummonSpell->Effect[i] > SPELL_EFFECT_SUMMON_TOTEM_SLOT4)
+            continue;
+
+        if (CreatureInfo const* pInfo = sObjectMgr.GetCreatureTemplate(pSummonSpell->EffectMiscValue[i]))
+            return pInfo->totem_spell_id;
+    }
+
+    return 0;
+}
+
+bool CombatBotBaseAI::IsTotemSpellCoveredByAnotherShaman(TotemSlot slot, SpellEntry const* pSpellEntry) const
+{
+    uint32 const auraSpellId = GetTotemAuraSpellId(pSpellEntry);
+    if (!auraSpellId)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || pMember->GetClass() != CLASS_SHAMAN)
+            continue;
+
+        if (!me->IsWithinDist(pMember, TOTEM_AURA_RADIUS))
+            continue;
+
+        Totem* pTotem = pMember->GetTotem(slot);
+        if (!pTotem)
+            continue;
+
+        uint32 const otherAuraSpellId = pTotem->GetSpell();
+        if (otherAuraSpellId == auraSpellId)
+            return true;
+
+        if (SpellEntry const* pAuraSpell = sSpellMgr.GetSpellEntry(auraSpellId))
+            if (sSpellMgr.IsRankSpellDueToSpell(pAuraSpell, otherAuraSpellId))
+                return true;
+    }
+
+    return false;
+}
+
+SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
+{
+    TotemAudience const audience = SurveyTotemAudience();
+
+    SpellEntry const* choices[6] = {};
+    uint32 choiceCount = 0;
+    auto const consider = [&](SpellEntry const* pSpellEntry)
+    {
+        if (!pSpellEntry || choiceCount >= 6)
+            return;
+
+        for (uint32 i = 0; i < choiceCount; ++i)
+            if (choices[i] == pSpellEntry)
+                return;
+
+        choices[choiceCount++] = pSpellEntry;
+    };
+
+    // Anything missing from these lists is a totem that only earns its slot as a deliberate call
+    // for a particular fight. Leaving them out is the point: Fire Resistance and Disease Cleansing
+    // sat in the water pool next to Mana Spring and were exactly as likely to be picked.
+    switch (slot)
+    {
+        case TOTEM_SLOT_AIR:
+            if (audience.melee)
+                consider(m_totems.pWindfury);
+            consider(m_totems.pGraceOfAir);
+            consider(m_totems.pWindfury);
+            consider(m_totems.pTranquilAir);
+            consider(m_totems.pNatureResistance);
+            consider(m_totems.pWindwall);
+            break;
+        case TOTEM_SLOT_EARTH:
+            if (audience.melee)
+                consider(m_totems.pStrengthOfEarth);
+            consider(m_totems.pStoneskin);
+            consider(m_totems.pStrengthOfEarth);
+            consider(m_totems.pTremor);
+            consider(m_totems.pStoneclaw);
+            break;
+        case TOTEM_SLOT_FIRE:
+            // Searing and Magma are the shaman's own damage, so they only earn the slot when
+            // there is something to shoot at.
+            if (me->GetVictim())
+            {
+                if (GetAttackersInRangeCount(MAGMA_TOTEM_RADIUS) >= 3)
+                    consider(m_totems.pMagma);
+                consider(m_totems.pSearing);
+                consider(m_totems.pMagma);
+            }
+            consider(m_totems.pFlametongue);
+            break;
+        case TOTEM_SLOT_WATER:
+            if (audience.manaUsers)
+                consider(m_totems.pManaSpring);
+            consider(m_totems.pHealingStream);
+            consider(m_totems.pManaSpring);
+            break;
+    }
+
+    for (uint32 i = 0; i < choiceCount; ++i)
+        if (!IsTotemSpellCoveredByAnotherShaman(slot, choices[i]))
+            return choices[i];
+
+    // Everything preferred is already covered by another shaman, so the slot is better spent on
+    // the second choice than left empty.
+    return choiceCount ? choices[0] : nullptr;
+}
+
 bool CombatBotBaseAI::SummonShamanTotems()
 {
-    if (m_spells.shaman.pAirTotem &&
-        !me->GetTotem(TOTEM_SLOT_AIR) &&
-        CanTryToCastSpell(me, m_spells.shaman.pAirTotem))
+    // Asked per school at the moment a totem is dropped rather than reused from a choice made when
+    // the bot learned its spells, because by now there is a group standing around it.
+    static TotemSlot const totemSlots[] = { TOTEM_SLOT_AIR, TOTEM_SLOT_EARTH, TOTEM_SLOT_FIRE, TOTEM_SLOT_WATER };
+    for (TotemSlot slot : totemSlots)
     {
-        if (DoCastSpell(me, m_spells.shaman.pAirTotem) == SPELL_CAST_OK)
-            return true;
-    }
+        if (me->GetTotem(slot))
+            continue;
 
-    if (m_spells.shaman.pEarthTotem &&
-        !me->GetTotem(TOTEM_SLOT_EARTH) &&
-        CanTryToCastSpell(me, m_spells.shaman.pEarthTotem))
-    {
-        if (DoCastSpell(me, m_spells.shaman.pEarthTotem) == SPELL_CAST_OK)
-            return true;
-    }
+        SpellEntry const* pTotemSpell = SelectTotemForSlot(slot);
+        if (!pTotemSpell || !CanTryToCastSpell(me, pTotemSpell))
+            continue;
 
-    if (m_spells.shaman.pFireTotem &&
-        !me->GetTotem(TOTEM_SLOT_FIRE) &&
-        CanTryToCastSpell(me, m_spells.shaman.pFireTotem))
-    {
-        if (DoCastSpell(me, m_spells.shaman.pFireTotem) == SPELL_CAST_OK)
-            return true;
-    }
-
-    if (m_spells.shaman.pWaterTotem &&
-        !me->GetTotem(TOTEM_SLOT_WATER) &&
-        CanTryToCastSpell(me, m_spells.shaman.pWaterTotem))
-    {
-        if (DoCastSpell(me, m_spells.shaman.pWaterTotem) == SPELL_CAST_OK)
+        if (DoCastSpell(me, pTotemSpell) == SPELL_CAST_OK)
             return true;
     }
 

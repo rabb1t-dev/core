@@ -143,6 +143,20 @@ public:
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
     bool SummonShamanTotems();
+
+    // Who a totem dropped right now would actually reach.
+    struct TotemAudience
+    {
+        uint32 members = 0;
+        uint32 melee = 0;
+        uint32 manaUsers = 0;
+    };
+    CombatBotRoles GetEffectiveRole(Player const* pTarget) const;
+    TotemAudience SurveyTotemAudience() const;
+    SpellEntry const* SelectTotemForSlot(TotemSlot slot) const;
+    bool IsTotemSpellCoveredByAnotherShaman(TotemSlot slot, SpellEntry const* pSpellEntry) const;
+    SpellEntry const* SelectBlessingForTarget(Player const* pTarget) const;
+    Player* SelectBlessingTarget(SpellEntry const*& pSelectedSpellEntry) const;
     SpellCastResult CastWeaponBuff(SpellEntry const* pSpellEntry, EquipmentSlots slot);
     bool UseTrinketEffects(bool onlyToBreakCC = false);
     bool UseItemEffect(Item* pItem, bool onlyToBreakCC = false);
@@ -288,6 +302,44 @@ public:
     }
 
     SpellEntry const* m_resurrectionSpell = nullptr;
+
+    // Everything the bot could put in a totem slot, and every blessing it knows. These are held
+    // outside m_spells because neither choice can be made when the spell is learned. The right
+    // totem depends on who is standing in range and which schools the other shamans already
+    // cover, and the right blessing depends on the target rather than on the paladin, so both are
+    // decided at cast time from what is recorded here.
+    struct
+    {
+        SpellEntry const* pWindfury;
+        SpellEntry const* pGraceOfAir;
+        SpellEntry const* pNatureResistance;
+        SpellEntry const* pWindwall;
+        SpellEntry const* pTranquilAir;
+        SpellEntry const* pStrengthOfEarth;
+        SpellEntry const* pStoneskin;
+        SpellEntry const* pStoneclaw;
+        SpellEntry const* pTremor;
+        SpellEntry const* pEarthbind;
+        SpellEntry const* pSearing;
+        SpellEntry const* pMagma;
+        SpellEntry const* pFireNova;
+        SpellEntry const* pFlametongue;
+        SpellEntry const* pFrostResistance;
+        SpellEntry const* pManaSpring;
+        SpellEntry const* pHealingStream;
+        SpellEntry const* pPoisonCleansing;
+        SpellEntry const* pDiseaseCleansing;
+        SpellEntry const* pFireResistance;
+    } m_totems = {};
+    struct
+    {
+        SpellEntry const* pMight;
+        SpellEntry const* pWisdom;
+        SpellEntry const* pKings;
+        SpellEntry const* pSanctuary;
+        SpellEntry const* pLight;
+    } m_blessings = {};
+
     std::vector<SpellEntry const*> m_spellListTaunt;
     std::set<SpellEntry const*, HealAuraCompare> m_spellListPeriodicHeal;
     std::set<SpellEntry const*, HealSpellCompare> m_spellListDirectHeal;

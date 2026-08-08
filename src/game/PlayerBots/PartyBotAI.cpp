@@ -1492,18 +1492,16 @@ void PartyBotAI::UpdateOutOfCombatAI_Paladin()
             return;
     }
 
-    if (m_spells.paladin.pBlessingBuff)
+    SpellEntry const* pBlessing = nullptr;
+    if (Player* pTarget = SelectBlessingTarget(pBlessing))
     {
-        if (Player* pTarget = SelectBuffTarget(m_spells.paladin.pBlessingBuff))
+        if (CanTryToCastSpell(pTarget, pBlessing))
         {
-            if (CanTryToCastSpell(pTarget, m_spells.paladin.pBlessingBuff))
+            if (DoCastSpell(pTarget, pBlessing) == SPELL_CAST_OK)
             {
-                if (DoCastSpell(pTarget, m_spells.paladin.pBlessingBuff) == SPELL_CAST_OK)
-                {
-                    m_isBuffing = true;
-                    me->ClearTarget();
-                    return;
-                }
+                m_isBuffing = true;
+                me->ClearTarget();
+                return;
             }
         }
     }
