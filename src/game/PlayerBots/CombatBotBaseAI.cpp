@@ -3327,29 +3327,6 @@ void CombatBotBaseAI::OnPacketReceived(WorldPacket const* packet)
     //printf("Bot received %s\n", LookupOpcodeName(packet->GetOpcode()));
     switch (packet->GetOpcode())
     {
-        case SMSG_NEW_WORLD:
-        {
-            if (!me)
-                return;
-
-            auto data = std::make_unique<NullClientPacket>(MSG_MOVE_WORLDPORT_ACK);
-            me->GetSession()->QueuePacket(std::move(data));
-            break;
-        }
-        case MSG_MOVE_TELEPORT_ACK:
-        {
-            if (!me)
-                return;
-
-            auto data = std::make_unique<WorldPackets::Movement::MoveTeleportAck>();
-            data->guid = me->GetObjectGuid();
-#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_9_4
-            data->movementCounter = me->GetLastCounterForMovementChangeType(TELEPORT);
-#endif
-            data->time = uint32(time(nullptr));
-            me->GetSession()->QueuePacket(std::move(data));
-            break;
-        }
         case SMSG_LOGIN_SETTIMESPEED:
         {
             if (!me)
@@ -3428,4 +3405,8 @@ void CombatBotBaseAI::OnPacketReceived(WorldPacket const* packet)
             return;
         }
     }
+
+    // Teleport acknowledgement lives there, so that every headless session can change maps
+    // rather than only the ones that also fight.
+    PlayerBotAI::OnPacketReceived(packet);
 }

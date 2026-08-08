@@ -23,12 +23,47 @@
 #include "ObjectMgr.h"
 #include "MapManager.h"
 #include "MoveSpline.h"
+#include "Opcodes.h"
+#include "WorldSession.h"
+#include "Server/Packet.h"
+#include "Server/Packets/Movement.h"
 #include "Utilities/Random.h"
 
 bool PlayerBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
     sess->LoginPlayer(entry->playerGUID);
     return true;
+}
+
+// Acknowledge the teleports that a client would normally confirm. This has to be driven by
+// the packet rather than by UpdateAI: a far teleport removes the player from its map, so the
+// AI stops being ticked for exactly as long as the transfer is pending, and a bot relying on
+// the tick would hang there permanently instead of arriving.
+void PlayerBotAI::OnPacketReceived(WorldPacket const* packet)
+{
+    if (!me)
+        return;
+
+    switch (packet->GetOpcode())
+    {
+        case SMSG_NEW_WORLD:
+        {
+            auto data = std::make_unique<NullClientPacket>(MSG_MOVE_WORLDPORT_ACK);
+            me->GetSession()->QueuePacket(std::move(data));
+            break;
+        }
+        case MSG_MOVE_TELEPORT_ACK:
+        {
+            auto data = std::make_unique<WorldPackets::Movement::MoveTeleportAck>();
+            data->guid = me->GetObjectGuid();
+#if SUPPORTED_CLIENT_BUILD > CLIENT_BUILD_1_9_4
+            data->movementCounter = me->GetLastCounterForMovementChangeType(TELEPORT);
+#endif
+            data->time = uint32(time(nullptr));
+            me->GetSession()->QueuePacket(std::move(data));
+            break;
+        }
+    }
 }
 
 void PlayerBotAI::UpdateAI(uint32 const diff)
