@@ -36,12 +36,12 @@ POINTS_AT_60 = 51
 # per-tree numbers are the real assertion: a total of 51 only says the points went somewhere,
 # while "Fire 32" says the bot is a fire mage rather than an arcane one that happens to add up.
 AUTHORED = [
-    ("mage", "fire-pve", {"Fire": 32, "Arcane": 19}),
+    ("mage", "fire-pve", {"Fire": 31, "Arcane": 18, "Frost": 2}),
     ("warrior", "arms-pve", {"Arms": 31, "Fury": 20}),
-    ("warlock", "destruction-pve", {"Destruction": 32, "Affliction": 19}),
-    ("rogue", "assassination-daggers-pve", {"Assassination": 31, "Subtlety": 20}),
+    ("warlock", "sm-ruin-pve", {"Affliction": 30, "Destruction": 21}),
+    ("rogue", "seal-fate-daggers-pve", {"Assassination": 30, "Combat": 16, "Subtlety": 5}),
     ("priest", "discipline-holy-pve", {"Discipline": 21, "Holy": 30}),
-    ("druid", "feral-cat-pve", {"Feral Combat": 33, "Balance": 18}),
+    ("druid", "feral-cat-pve", {"Feral Combat": 32, "Balance": 14, "Restoration": 5}),
 ]
 
 # Classes to check for a stable build when no spec is named. Every one of these has more than

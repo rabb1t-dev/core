@@ -31,50 +31,73 @@ FIRST_ENTRY = 101
 
 # Each spec is (name, class, role, {tree: {talent name: rank}}). The gaps these fill are the
 # level 60 builds a raid roster actually asks for and the shipped data does not have: there was
-# no fire mage, no arms warrior, no destruction warlock, no dagger rogue, no discipline priest
-# and no cat druid, which between them are most of a raid's damage.
+# no fire mage, no arms warrior, no SM/Ruin warlock, no dagger rogue, no full-budget priest
+# healer and no cat druid, which between them are most of a raid's damage.
+#
+# The builds are the ones vanilla theorycraft settled on, not invented here. Sources, all for
+# 1.12: Warcraft Tavern and vanillawowaddons for the mage; Icy Veins and Warcraft Tavern for the
+# warlock; Icy Veins, Warcraft Tavern and legacy-wow for the rogue; IGN and Odealo for the
+# priest; Icy Veins and Warcraft Tavern for the druid. Where a published point split is not
+# actually legal under the tier rules, the comment on that spec says so and says what gives.
+#
+# The rule applied to every filler point is that a raid boss cannot be stunned, feared or
+# disarmed and does not attack the caster, so talents that only matter against players are dead
+# weight. An earlier version of this file spent points on Impact, Deflection, Martyrdom,
+# Improved Nature's Grasp and Improved Thorns for no reason beyond reaching the next row.
 SPECS = [
     (
+        # Standard fire raid build. Published as 17/31/3, which cannot be built: Arcane
+        # Meditation sits on row 3 and so needs 15 points above it in the tree, and 15 + 3
+        # is 18. The extra point comes out of Frost, whose only purpose here is spell hit.
+        # Fire is exactly 31 because Combustion needs 30 beneath it, so there is no slack.
         "fire-pve", "mage", ROLE_RANGE_DPS,
         {
             "Fire": {
                 "Improved Fireball": 5,
-                "Impact": 5,
                 "Ignite": 5,
+                "Flame Throwing": 2,
+                "Pyroblast": 1,
                 "Burning Soul": 2,
+                # Improved Scorch is the reason a fire mage is in the raid at all: it is the
+                # Fire Vulnerability debuff every other fire caster benefits from.
                 "Improved Scorch": 3,
                 "Master of Elements": 3,
                 "Critical Mass": 3,
+                "Blast Wave": 1,
                 "Fire Power": 5,
                 "Combustion": 1,
             },
             "Arcane": {
                 "Arcane Subtlety": 2,
                 "Arcane Focus": 5,
-                "Wand Specialization": 1,
+                "Magic Absorption": 3,
                 "Arcane Concentration": 5,
-                "Magic Attunement": 2,
-                "Improved Arcane Explosion": 1,
                 "Arcane Meditation": 3,
+            },
+            "Frost": {
+                "Elemental Precision": 2,
             },
         },
     ),
     (
+        # Arms 31/20, the two-handed raid build. Complements the shipped fury-dw-pve rather
+        # than competing with it: this is the Mortal Strike healing debuff and Sweeping
+        # Strikes cleave, not the higher personal damage of dual wield fury.
         "arms-pve", "warrior", ROLE_MELEE_DPS,
         {
             "Arms": {
                 "Improved Heroic Strike": 3,
-                "Deflection": 2,
                 # Improved Rend and Sweeping Strikes are not chosen for their own sake: the DBC
                 # makes them prerequisites of Deep Wounds and Mortal Strike respectively.
                 "Improved Rend": 3,
                 "Tactical Mastery": 5,
+                "Improved Overpower": 2,
                 "Anger Management": 1,
                 "Deep Wounds": 3,
                 "Two-Handed Weapon Specialization": 5,
                 "Impale": 2,
-                "Sword Specialization": 5,
                 "Sweeping Strikes": 1,
+                "Axe Specialization": 5,
                 "Mortal Strike": 1,
             },
             "Fury": {
@@ -86,75 +109,92 @@ SPECS = [
         },
     ),
     (
-        "destruction-pve", "warlock", ROLE_RANGE_DPS,
+        # SM/Ruin 30/0/21. The shipped ds-ruin-pve is the other half of the pair, so this is
+        # the build that keeps a pet: the imp's Blood Pact stamina buff is why every raid runs
+        # at least one of these. Ruin needs 20 points beneath it, which fixes Destruction at
+        # 21 and leaves exactly 30 for Shadow Mastery.
+        "sm-ruin-pve", "warlock", ROLE_RANGE_DPS,
         {
-            "Destruction": {
-                "Improved Shadow Bolt": 5,
-                "Bane": 5,
-                "Devastation": 5,
-                "Shadowburn": 1,
-                "Destructive Reach": 2,
-                "Intensity": 2,
-                "Improved Immolate": 5,
-                "Ruin": 1,
-                "Emberstorm": 5,
-                "Conflagrate": 1,
-            },
             "Affliction": {
                 "Suppression": 5,
                 "Improved Corruption": 5,
-                "Improved Life Tap": 2,
                 "Improved Drain Soul": 2,
-                "Amplify Curse": 1,
+                "Improved Life Tap": 2,
                 "Improved Curse of Agony": 3,
-                "Grim Reach": 1,
+                "Fel Concentration": 1,
+                "Amplify Curse": 1,
+                "Grim Reach": 2,
+                "Nightfall": 2,
+                "Siphon Life": 1,
+                "Curse of Exhaustion": 1,
+                "Shadow Mastery": 5,
+            },
+            "Destruction": {
+                "Improved Shadow Bolt": 5,
+                "Bane": 5,
+                # Worth taking only because this build keeps the imp out.
+                "Improved Firebolt": 2,
+                "Devastation": 5,
+                "Shadowburn": 1,
+                "Destructive Reach": 2,
+                "Ruin": 1,
             },
         },
     ),
     (
-        "assassination-daggers-pve", "rogue", ROLE_MELEE_DPS,
+        # Seal Fate daggers 30/16/5. Combat stops at 16 on purpose: Dagger Specialization
+        # needs 15 points beneath it and there are not 20 to spare, so the sixteenth point
+        # goes to Dual Wield Specialization and the damage comes from Opportunity instead.
+        # Vigor is deliberately skipped -- 10 energy is worth less than Opportunity's 20% on
+        # every Backstab and Ambush.
+        "seal-fate-daggers-pve", "rogue", ROLE_MELEE_DPS,
         {
             "Assassination": {
                 "Malice": 5,
+                "Improved Eviscerate": 3,
                 "Ruthlessness": 3,
                 "Murder": 2,
                 "Relentless Strikes": 1,
                 "Lethality": 5,
                 "Improved Poisons": 5,
                 "Cold Blood": 1,
-                "Improved Kidney Shot": 3,
                 "Seal Fate": 5,
-                "Vigor": 1,
+            },
+            "Combat": {
+                "Lightning Reflexes": 5,
+                "Improved Backstab": 3,
+                "Precision": 5,
+                "Endurance": 2,
+                "Dual Wield Specialization": 1,
             },
             "Subtlety": {
                 "Opportunity": 5,
-                "Camouflage": 5,
-                "Elusiveness": 1,
-                "Initiative": 3,
-                "Improved Ambush": 3,
-                "Setup": 3,
             },
         },
     ),
     (
+        # Deep holy raid healing, 21/30/0. The shipped priest holy-pve is 20/29 and leaves two
+        # points unspent, so this is the same role built to the full budget. Unbreakable Will
+        # and Silent Resolve are the accepted filler for the first two Discipline rows: a
+        # healer has nothing else to buy there, and threat is not what kills healers.
         "discipline-holy-pve", "priest", ROLE_HEALER,
         {
             "Discipline": {
                 "Unbreakable Will": 5,
+                "Silent Resolve": 1,
+                "Improved Power Word: Fortitude": 2,
                 "Improved Power Word: Shield": 3,
-                "Martyrdom": 2,
-                "Improved Power Word: Fortitude": 1,
-                "Meditation": 3,
                 "Inner Focus": 1,
+                "Meditation": 3,
                 "Mental Agility": 5,
                 "Divine Spirit": 1,
             },
             "Holy": {
-                "Holy Specialization": 5,
                 "Improved Renew": 3,
+                "Holy Specialization": 5,
                 "Divine Fury": 5,
+                "Holy Nova": 1,
                 "Inspiration": 3,
-                "Blessed Recovery": 1,
                 "Improved Healing": 3,
                 "Spiritual Guidance": 5,
                 "Spiritual Healing": 5,
@@ -162,16 +202,25 @@ SPECS = [
         },
     ),
     (
+        # Feral cat 14/32/5, the powershifting build. The five Restoration points are the
+        # whole point: Furor returns 40 energy on every shift into cat form, and without it
+        # the rotation this spec exists for does not work. Natural Shapeshifter pays for it by
+        # cutting the mana cost of all that shifting.
+        #
+        # Primal Fury is skipped even though most published lists include it, because those
+        # lists are for a druid who also off-tanks: the tooltip grants rage on a critical
+        # strike in Bear and Dire Bear Form only, and this template is cat damage. Bear is
+        # already covered by the shipped feral-bear-pve.
         "feral-cat-pve", "druid", ROLE_MELEE_DPS,
         {
             "Feral Combat": {
                 "Ferocity": 5,
-                "Feral Instinct": 5,
+                "Feral Aggression": 5,
+                "Thick Hide": 1,
                 "Sharpened Claws": 3,
                 "Feline Swiftness": 2,
                 "Improved Shred": 2,
                 "Predatory Strikes": 3,
-                "Primal Fury": 2,
                 "Blood Frenzy": 2,
                 "Savage Fury": 2,
                 "Faerie Fire (Feral)": 1,
@@ -179,13 +228,16 @@ SPECS = [
                 "Leader of the Pack": 1,
             },
             "Balance": {
+                # Five dead points to reach row 1. Every option on the first Balance row is
+                # useless to a cat, so this is the cheapest way through rather than a choice.
                 "Nature's Grasp": 1,
                 "Improved Nature's Grasp": 4,
                 "Natural Weapons": 5,
                 "Natural Shapeshifter": 3,
                 "Omen of Clarity": 1,
-                "Improved Thorns": 3,
-                "Nature's Reach": 1,
+            },
+            "Restoration": {
+                "Furor": 5,
             },
         },
     ),
@@ -230,7 +282,17 @@ def main():
         return 1
 
     failed = False
-    lines = []
+    # Replace rather than insert. These entries have shipped once already, so a migration that
+    # only inserted would collide, and one that only updated would leave the old spell rows
+    # behind and produce a build that is the union of two specs.
+    last_entry = FIRST_ENTRY + len(SPECS) - 1
+    lines = [
+        "DELETE FROM `player_premade_spell` WHERE `entry` BETWEEN %u AND %u;"
+        % (FIRST_ENTRY, last_entry),
+        "DELETE FROM `player_premade_spell_template` WHERE `entry` BETWEEN %u AND %u;"
+        % (FIRST_ENTRY, last_entry),
+        "",
+    ]
     for offset, (spec_name, class_name, role, trees) in enumerate(SPECS):
         entry = FIRST_ENTRY + offset
         spend = resolve(class_name, trees, names_by_spell)
