@@ -256,9 +256,14 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
         return false;
     }
 
-    PSendSysMessage("name=%s guid=%u level=%u map=%u instance=%u alive=%u",
+    // deathstate distinguishes a corpse still waiting for a resurrection from a released
+    // ghost, which alive= alone cannot express and wipe recovery turns on.
+    PSendSysMessage("name=%s guid=%u level=%u map=%u instance=%u zone=%u alive=%u deathstate=%u corpse=%u x=%.2f y=%.2f z=%.2f",
         pTarget->GetName(), pTarget->GetGUIDLow(), pTarget->GetLevel(),
-        pTarget->GetMapId(), pTarget->GetInstanceId(), pTarget->IsAlive() ? 1 : 0);
+        pTarget->GetMapId(), pTarget->GetInstanceId(), pTarget->GetZoneId(),
+        pTarget->IsAlive() ? 1 : 0, uint32(pTarget->GetDeathState()),
+        pTarget->GetCorpse() ? 1 : 0,
+        pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
 
     Group* pGroup = pTarget->GetGroup();
     if (!pGroup)
@@ -273,9 +278,11 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
-            PSendSysMessage("member name=%s class=%u level=%u subgroup=%u",
+            PSendSysMessage("member name=%s class=%u level=%u subgroup=%u alive=%u deathstate=%u map=%u zone=%u",
                 pMember->GetName(), pMember->GetClass(), pMember->GetLevel(),
-                pGroup->GetMemberGroup(pMember->GetObjectGuid()));
+                pGroup->GetMemberGroup(pMember->GetObjectGuid()),
+                pMember->IsAlive() ? 1 : 0, uint32(pMember->GetDeathState()),
+                pMember->GetMapId(), pMember->GetZoneId());
     }
 
     return true;
