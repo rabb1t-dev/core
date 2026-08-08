@@ -88,6 +88,7 @@ set (game_SRCS
     Commands/LookupCommands.cpp
     Commands/MiscCommands.cpp
     Commands/ObjectCommands.cpp
+    Commands/RaidGuildCommands.cpp
     Commands/ServerCommands.cpp
     Commands/TeleportCommands.cpp
     Commands/TicketCommands.cpp
@@ -196,6 +197,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.cpp
     PlayerBots/PlayerBotAI.cpp
     PlayerBots/PlayerBotMgr.cpp
+    PlayerBots/RaidGuildMgr.cpp
     Server/Protocol/Opcodes.cpp
     Server/Packets/Battleground.cpp
     Server/Packets/AuctionHouse.cpp
@@ -447,6 +449,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.h
     PlayerBots/PlayerBotAI.h
     PlayerBots/PlayerBotMgr.h
+    PlayerBots/RaidGuildMgr.h
     Server/Protocol/Opcodes.h
     Server/Protocol/Opcodes_active.h
     Server/Packet.h

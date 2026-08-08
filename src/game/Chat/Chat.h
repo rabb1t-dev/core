@@ -288,6 +288,13 @@ class ChatHandler
         bool HandleHarnessLoginCommand(char* args);
         bool HandleHarnessSpellsCommand(char* args);
 
+        // Persistent bot raid guild
+        bool HandleRaidGuildAddCommand(char* args);
+        bool HandleRaidGuildRemoveCommand(char* args);
+        bool HandleRaidGuildListCommand(char* args);
+        bool HandleRaidGuildProvisionCommand(char* args);
+        bool HandleRaidGuildReloadCommand(char* args);
+
         bool PartyBotAddRequirementCheck(Player const* pPlayer, Player const* pTarget);
         bool HandlePartyBotAddCommand(char * args);
         bool HandlePartyBotCloneCommand(char * args);

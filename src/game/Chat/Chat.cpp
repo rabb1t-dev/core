@@ -105,6 +105,16 @@ ChatCommand * ChatHandler::getCommandTable()
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
+    static ChatCommand raidGuildCommandTable[] =
+    {
+        { "add",        SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildAddCommand,        "", nullptr },
+        { "remove",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildRemoveCommand,     "", nullptr },
+        { "list",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildListCommand,       "", nullptr },
+        { "provision",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildProvisionCommand,  "", nullptr },
+        { "reload",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildReloadCommand,     "", nullptr },
+        { nullptr,      0,                      false, nullptr,                                        "", nullptr },
+    };
+
     static ChatCommand partyBotCommandTable[] =
     {
         { "add",        SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotAddCommand,         "", nullptr },
@@ -1233,6 +1243,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "partybot",       SEC_ADMINISTRATOR,  false, nullptr,                       "Manage party bots", partyBotCommandTable },
         { "battlebot",      SEC_ADMINISTRATOR,  true, nullptr,                      "Manage battle bots", battleBotCommandTable},
         { "harness",        SEC_ADMINISTRATOR,  true, nullptr,                    "Automated test harness", harnessCommandTable  },
+        { "raidguild",      SEC_ADMINISTRATOR,  true, nullptr,                 "Persistent bot raid guild", raidGuildCommandTable},
         { "world",          SEC_ADMINISTRATOR,  false, nullptr,                                        "", worldCommandTable    },
         { "possess",        SEC_GAMEMASTER,     false, &ChatHandler::HandlePossessCommand,             "", nullptr              },
         { "cinematic",      SEC_DEVELOPER,      false, nullptr,                                        "", cinematicCommandTable},
