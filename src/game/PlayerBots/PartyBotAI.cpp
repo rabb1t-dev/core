@@ -149,8 +149,11 @@ Unit* PartyBotAI::GetDistancingTarget(Unit* pEnemy)
         if (IsValidDistancingTarget(pLeader, pEnemy))
             return pLeader;
 
-    Unit* pNonTank = nullptr;
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Unit* pNonTank = nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -239,8 +242,11 @@ bool PartyBotAI::ShouldAutoRevive() const
     if (me->GetDeathState() == DEAD)
         return true;
 
-    bool alivePlayerNearby = false;
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    bool alivePlayerNearby = false;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -349,7 +355,11 @@ bool PartyBotAI::AttackStart(Unit* pVictim)
 
 Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
 {
-    ObjectGuid targetGuid = me->GetGroup()->GetTargetWithIcon(mark);
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    ObjectGuid targetGuid = pGroup->GetTargetWithIcon(mark);
     if (targetGuid.IsUnit())
         return me->GetMap()->GetUnit(targetGuid);
 
@@ -368,13 +378,16 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
         // Stick to marked target in combat.
         if (me->IsInCombat() || pLeader->GetVictim())
         {
-            for (auto markId : m_marksToFocus)
+            if (Group* pGroup = me->GetGroup())
             {
-                ObjectGuid targetGuid = me->GetGroup()->GetTargetWithIcon(markId);
-                if (targetGuid.IsUnit())
-                    if (Unit* pVictim = me->GetMap()->GetUnit(targetGuid))
-                        if (IsValidHostileTarget(pVictim))
-                            return pVictim;
+                for (auto markId : m_marksToFocus)
+                {
+                    ObjectGuid targetGuid = pGroup->GetTargetWithIcon(markId);
+                    if (targetGuid.IsUnit())
+                        if (Unit* pVictim = me->GetMap()->GetUnit(targetGuid))
+                            if (IsValidHostileTarget(pVictim))
+                                return pVictim;
+                }
             }
         }
 
@@ -414,6 +427,9 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
 Unit* PartyBotAI::SelectPartyAttackTarget() const
 {
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -440,6 +456,9 @@ Player* PartyBotAI::SelectResurrectionTarget() const
         return nullptr;
 
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -468,6 +487,9 @@ Player* PartyBotAI::SelectShieldTarget() const
         return nullptr;
 
     Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -513,11 +535,11 @@ bool PartyBotAI::CrowdControlMarkedTargets()
     return false;
 }
 
-void PartyBotAI::AddToPlayerGroup()
+bool PartyBotAI::AddToPlayerGroup()
 {
     Player* pPlayer = ObjectAccessor::FindPlayer(m_leaderGuid);
     if (!pPlayer)
-        return;
+        return false;
 
     Group* group = pPlayer->GetGroup();
     if (!group)
@@ -527,18 +549,29 @@ void PartyBotAI::AddToPlayerGroup()
         if (!group->Create(pPlayer->GetObjectGuid(), pPlayer->GetName()))
         {
             delete group;
-            return;
+            return false;
         }
         sObjectMgr.AddGroup(group);
     }
 
-    if (me->GetGroup() != group)
-    {
-        if (me->GetGroup())
-            me->RemoveFromGroup();
+    if (me->GetGroup() == group)
+        return true;
 
-        group->AddMember(me->GetObjectGuid(), me->GetName());
+    if (me->GetGroup())
+        me->RemoveFromGroup();
+
+    // A party holds five, so everyone past that needs the group promoted to a raid first.
+    if (group->IsFull() && !group->isRaidGroup())
+        group->ConvertToRaid();
+
+    if (!group->AddMember(me->GetObjectGuid(), me->GetName()))
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[PartyBot] '%s' could not join the group of '%s'.",
+                 me->GetName(), pPlayer->GetName());
+        return false;
     }
+
+    return true;
 }
 
 void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
@@ -614,7 +647,13 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!m_initialized)
     {
-        AddToPlayerGroup();
+        // Running the AI ungrouped is not survivable, so bail out rather than
+        // initializing a bot that never made it into the group.
+        if (!AddToPlayerGroup())
+        {
+            botEntry->requestRemoval = true;
+            return;
+        }
 
         if (m_race && m_class) // temporary character
         {

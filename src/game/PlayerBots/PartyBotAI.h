@@ -47,7 +47,7 @@ public:
     void OnPacketReceived(WorldPacket const* packet) final;
 
     void CloneFromPlayer(Player const* pPlayer);
-    void AddToPlayerGroup();
+    bool AddToPlayerGroup();
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
     Player* GetPartyLeader() const;

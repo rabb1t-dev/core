@@ -787,11 +787,21 @@ bool ChatHandler::PartyBotAddRequirementCheck(Player const* pPlayer, Player cons
         return false;
     }
 
-    if (pPlayer->GetGroup() && (pPlayer->GetGroup()->IsFull() || sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_MAX_BOTS) &&
-        (pPlayer->GetGroup()->GetMembersCount() - 1 >= sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_MAX_BOTS))))
+    if (Group const* pGroup = pPlayer->GetGroup())
     {
-        SendSysMessage("Cannot add more bots. Group is full.");
-        return false;
+        // A full party is not the ceiling, since the group is promoted to a raid on join.
+        if (pGroup->GetMembersCount() >= MAX_RAID_SIZE)
+        {
+            SendSysMessage("Cannot add more bots. Group is full.");
+            return false;
+        }
+
+        uint32 const maxBots = sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_MAX_BOTS);
+        if (maxBots && (pGroup->GetMembersCount() - 1 >= maxBots))
+        {
+            SendSysMessage("Cannot add more bots. Bot limit reached.");
+            return false;
+        }
     }
 
     if (Map const* pMap = pPlayer->GetMap())
