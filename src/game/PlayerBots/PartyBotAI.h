@@ -21,6 +21,7 @@
 #include "Group.h"
 #include "ObjectAccessor.h"
 
+
 class PartyBotAI : public CombatBotBaseAI
 {
 public:
@@ -62,6 +63,8 @@ public:
     bool ShouldAutoRevive() const;
     bool IsGroupInCombat() const;
     Player* FindGroupHealer() const;
+    bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
+    bool UpdateCorpseRun();
     void UpdateDeadAI();
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
@@ -112,6 +115,9 @@ public:
     // on its own gets bailed out rather than stalling the group.
     time_t m_corpseSince = 0;
     time_t m_ghostSince = 0;
+    // Nearest the corpse run has managed to get, so a stalled run can be told apart from a
+    // slow one. Negative means the run has not started, since arriving makes this zero.
+    float m_corpseRunBestDistance = -1.0f;
 };
 
 #endif

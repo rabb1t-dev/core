@@ -3,8 +3,8 @@
 
 Two cases matter and they fail in opposite directions. A partial wipe should be
 recovered by the surviving healer, with nobody releasing. A full wipe leaves nobody
-to cast anything, so bots have to release and take the spirit healer, which is the
-case that used to leave the whole group on the floor permanently.
+to cast anything, so bots have to release and get themselves back on their feet,
+which is the case that used to leave the whole group on the floor permanently.
 
 Run on the server host, with VMANGOS_SOAP_USER and VMANGOS_SOAP_PASSWORD set to a
 GM account: python3 test_wipe_recovery.py
@@ -23,6 +23,12 @@ CORPSE = 2
 GHOST = 3
 
 CLASS_PRIEST = 5
+
+# Open ground in the Barrens, a short walk from its graveyard. Recovery now costs a corpse
+# run, so where the group dies decides how long the test takes: left to inherit whatever
+# position the leader was last driven to, this suite once attempted a seventeen hundred yard
+# run across Silithus and timed out while the bots were still walking, correctly.
+HOME = (-600, -2515, 92, 1)
 
 # Must exceed PartyBot.DeathRecoveryTimeout plus a margin for the ten second cast.
 RECOVERY_TIMEOUT = 180.0
@@ -75,6 +81,8 @@ def setup(harness, composition):
     # The leader is an ordinary headless character with no recovery of its own, so a
     # previous full wipe would otherwise leave it dead for every later run.
     harness.execute(LEADER, "revive")
+    harness.execute(LEADER, "go xyz %d %d %d %d" % HOME)
+    time.sleep(2.0)
 
     error = reset(harness)
     if error:
@@ -148,7 +156,12 @@ def test_partial_wipe(harness):
 
 
 def test_full_wipe(harness):
-    """With nobody left standing, bots must release and reach the spirit healer."""
+    """With nobody left standing, bots must release and recover unaided.
+
+    Either route counts. Walking back to the corpse is the good one and the spirit
+    healer is the deadlock breaker behind it; what matters is that nobody is left on
+    the floor.
+    """
     members, error = setup(harness, ["priest", "dps", "dps"])
     if error:
         return [f"full wipe setup: {error}"]
@@ -176,7 +189,7 @@ def test_full_wipe(harness):
         harness,
         lambda m: all(s == ALIVE for s in states(m)),
         RECOVERY_TIMEOUT,
-        "the spirit healer to revive everyone",
+        "every bot to get back on its feet",
     )
     if error:
         failures.append(f"full wipe: {error}")

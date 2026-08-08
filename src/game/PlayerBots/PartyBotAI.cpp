@@ -16,9 +16,12 @@
 
 #include "PartyBotAI.h"
 #include "Player.h"
+#include "Corpse.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
 #include "ObjectMgr.h"
+#include "Map.h"
+#include "Database/SQLStorages.h"
 #include "PlayerBotMgr.h"
 #include "Opcodes.h"
 #include "World.h"
@@ -38,6 +41,14 @@ enum PartyBotSpells
     PB_SPELL_SHOOT_WAND = 5019,
     PB_SPELL_HONORLESS_TARGET = 2479,
 };
+
+// How much nearer the destination a corpse run has to get before it counts as progressing.
+static constexpr float PB_CORPSE_RUN_PROGRESS_STEP = 5.0f;
+
+// How near a dungeon entrance the bot has to be before it is worth checking which area trigger
+// it is standing in. Comfortably wider than the largest entrance box, which runs to about
+// sixteen yards from its centre at Maraudon.
+static constexpr float PB_PORTAL_SCAN_RANGE = 60.0f;
 
 #define PB_UPDATE_INTERVAL 1000
 #define PB_MIN_FOLLOW_DIST 3.0f
@@ -305,6 +316,124 @@ Player* PartyBotAI::FindGroupHealer() const
     return nullptr;
 }
 
+// Where on this map to run to get back into the dungeon the corpse is lying in. False when
+// there is no way in from here.
+bool PartyBotAI::FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const
+{
+    // A portal that teleports straight in, which is how all but one dungeon is entered. The
+    // trigger's own position is used rather than the map's ghost entrance coordinates, which
+    // are a flat x and y saying nothing about the height of a cave mouth sunk into the ground.
+    for (auto const& itr : sObjectMgr.GetAreaTriggersMap())
+    {
+        AreaTriggerEntry const* pTrigger = &itr.second;
+        if (pTrigger->map_id != me->GetMapId())
+            continue;
+
+        AreaTriggerTeleport const* pTeleport = sObjectMgr.GetAreaTriggerTeleport(pTrigger->id);
+        if (pTeleport && pTeleport->destination.mapId == instanceMapId)
+        {
+            x = pTrigger->x;
+            y = pTrigger->y;
+            z = pTrigger->z;
+            return true;
+        }
+    }
+
+    // Blackwing Lair is entered by no such portal. Its way back in is a scripted trigger beside
+    // the Orb of Command that answers only to the dead, and it appears in no teleport table, so
+    // searching for one concludes the raid is unreachable and abandons the run before it starts.
+    // The map knows better: a ghost entrance is precisely the spot to walk to from outside.
+    MapEntry const* pMapEntry = sMapStorage.LookupEntry<MapEntry>(instanceMapId);
+    if (!pMapEntry || pMapEntry->ghostEntranceMap < 0 ||
+        uint32(pMapEntry->ghostEntranceMap) != me->GetMapId())
+        return false;
+
+    x = pMapEntry->ghostEntranceX;
+    y = pMapEntry->ghostEntranceY;
+
+    // The entrance carries no height, so take the ground under it the same way the corpse
+    // query does when it points a dead client at this spot.
+    z = me->GetMap()->GetHeight(x, y, MAX_HEIGHT);
+    return true;
+}
+
+// The run back from the graveyard. Returns whether the bot is getting anywhere, so the caller
+// can hold the spirit healer off while it is and fall back to one when it is not.
+//
+// Nothing here needs a route described to it. The destination comes from the corpse or, for a
+// death inside a dungeon, from the entrance portal, and the navigation mesh knows the terrain
+// in between.
+bool PartyBotAI::UpdateCorpseRun()
+{
+    Corpse* pCorpse = me->GetCorpse();
+    if (!pCorpse)
+        return false;
+
+    float x, y, z;
+    bool const corpseIsOnThisMap = pCorpse->GetMapId() == me->GetMapId();
+
+    if (corpseIsOnThisMap)
+        pCorpse->GetPosition(x, y, z);
+    else if (!FindInstanceEntrance(pCorpse->GetMapId(), x, y, z))
+    {
+        // A corpse left inside an instance cannot be walked to, and without a way back in
+        // there is nothing this run can achieve.
+        return false;
+    }
+
+    float const distance = me->GetDistance(x, y, z);
+
+    if (corpseIsOnThisMap && distance <= CORPSE_RECLAIM_RADIUS)
+    {
+        // Arriving is not the end of it. The reclaim delay escalates to two minutes across
+        // repeated deaths, and waiting it out is progress rather than a stall.
+        if (time(nullptr) < pCorpse->GetGhostTime() + time_t(me->GetCorpseReclaimDelay(pCorpse->GetType() == CORPSE_RESURRECTABLE_PVP)))
+            return true;
+
+        me->ResurrectPlayer(0.5f);
+        me->SpawnCorpseBones();
+
+        // Deliberately not reported as progress. If that did not take, standing on the body
+        // repeating it forever is a stall like any other, and the deadline should collect it.
+        return false;
+    }
+
+    // Whichever trigger the bot is standing in, rather than one picked in advance, because the
+    // way into Blackwing Lair is a scripted trigger that no search for a portal would have
+    // found. This is also what a client does: it reports what it walked into and lets the
+    // server decide what that means.
+    //
+    // The proximity test only decides when to look, not whether the bot has arrived, since
+    // arriving is a question of containment: half the dungeon portals are box shaped and carry
+    // a radius of zero. It is a wide margin against the largest of those boxes, and exists so
+    // that a run measured in thousands of yards does not scan every trigger in the world on
+    // every tick of it.
+    if (!corpseIsOnThisMap && distance < PB_PORTAL_SCAN_RANGE)
+        ActivateNearbyAreaTrigger();
+
+    // One pathfinding query cannot span a corpse run. Paths are capped at 256 polygons, a
+    // limit sized for a creature chasing someone rather than a cross-zone journey, and Detour
+    // answers with its best partial route instead of failing. Reissuing each time the
+    // previous leg runs out therefore walks the real path in chunks, which is what keeps the
+    // bot going around the mountain rather than into it.
+    //
+    // Steep ground is not excluded the way it is when a bot is alive. Several dungeon mouths
+    // sit at the bottom of a drop, and refusing the descent leaves the ghost pacing the rim
+    // above its own corpse. Falling costs a ghost nothing.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
+        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+
+    // Progress is measured rather than assumed, because a ghost with nowhere to path still
+    // looks busy: its movement generator finishes immediately and gets reissued forever.
+    if (m_corpseRunBestDistance < 0.0f || (distance + PB_CORPSE_RUN_PROGRESS_STEP) < m_corpseRunBestDistance)
+    {
+        m_corpseRunBestDistance = distance;
+        return true;
+    }
+
+    return false;
+}
+
 // Recovery after death. A resurrection is always preferred, but nothing here may depend on
 // one arriving: after a wipe there is nobody left to cast it, which is exactly the case that
 // used to leave the whole group on the floor permanently.
@@ -370,18 +499,22 @@ void PartyBotAI::UpdateDeadAI()
         me->BuildPlayerRepop();
         me->ScheduleRepopAtGraveyard();
         m_ghostSince = now;
+        m_corpseRunBestDistance = -1.0f;
         return;
     }
 
-    // Released, and running around as a ghost.
+    // Released, and on the way back to the body.
     if (!m_ghostSince)
         m_ghostSince = now;
 
-    if (timeout && (now - m_ghostSince) >= time_t(timeout))
+    // A run that is getting somewhere keeps the deadline at bay, however long it takes.
+    if (UpdateCorpseRun())
+        m_ghostSince = now;
+    else if (timeout && (now - m_ghostSince) >= time_t(timeout))
     {
-        // Take the spirit healer's terms. Until the corpse run lands this is the only way
-        // back, and even afterwards it is the timeout that keeps a bot whose corpse is
-        // unreachable from stalling everyone else indefinitely.
+        // Take the spirit healer's terms. Plenty of ways to die leave a corpse that cannot
+        // be reached at all, and one bot stuck on the way back would otherwise hold up
+        // everyone else indefinitely.
         me->GetSession()->SendSpiritResurrect();
     }
 }
@@ -895,6 +1028,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     // death cannot inherit stale timestamps and skip straight to the spirit healer.
     m_corpseSince = 0;
     m_ghostSince = 0;
+    m_corpseRunBestDistance = -1.0f;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {
