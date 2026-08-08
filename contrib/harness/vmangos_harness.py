@@ -17,6 +17,9 @@ from xml.sax.saxutils import escape
 
 DEFAULT_URL = os.environ.get("VMANGOS_SOAP_URL", "http://127.0.0.1:7878/")
 
+HORDE = 67
+ALLIANCE = 469
+
 ENVELOPE = (
     '<?xml version="1.0" encoding="utf-8"?>'
     '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"'
@@ -132,6 +135,35 @@ class Harness:
     def execute(self, character, command):
         """Run a command as the given in-world character."""
         return self.run(f"harness exec {character} {command}")
+
+    def teleport(self, character, x, y, z, map_id):
+        return self.execute(character, f"go xyz {x:.2f} {y:.2f} {z:.2f} {map_id}")
+
+    # -- world queries -----------------------------------------------------
+
+    def graveyard(self, map_id, x, y, z, team=HORDE):
+        """Where a ghost dying at this spot releases to, as (map, x, y, z)."""
+        text = self.run(f"harness graveyard {map_id} {x:.2f} {y:.2f} {z:.2f} {team}")
+        if "graveyard none" in text:
+            return None
+        f = dict(re.findall(r"(\w+)=(\S+)", text))
+        return (int(f["map"]), float(f["x"]), float(f["y"]), float(f["z"]))
+
+    def path(self, character, x, y, z, trigger=0):
+        """What the navigation mesh answers for a route the character would walk.
+
+        Passing an area trigger id also reports whether the route's end lands inside it,
+        which is the only meaningful test of arrival at a portal.
+        """
+        text = self.run(f"harness path {character} {x:.2f} {y:.2f} {z:.2f} {trigger}")
+        f = dict(re.findall(r"(\w+)=(\S+)", text))
+        return {
+            "type": f["type"].split("(")[0],
+            "length": float(f["length"]),
+            "shortfall": float(f["shortfall"]),
+            "reached": tuple(float(v) for v in f["reached"].split(",")),
+            "arrived": int(f["arrived"]) == 1,
+        }
 
 
 def main():

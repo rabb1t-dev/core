@@ -95,6 +95,9 @@ ChatCommand * ChatHandler::getCommandTable()
     {
         { "exec",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessExecCommand,         "", nullptr },
         { "info",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessInfoCommand,         "", nullptr },
+        { "path",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessPathCommand,         "", nullptr },
+        { "graveyard",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessGraveyardCommand,    "", nullptr },
+        { "loadmmaps",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessLoadMmapsCommand,    "", nullptr },
         { "createchar", SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessCreateCharCommand,   "", nullptr },
         { "login",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessLoginCommand,        "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },

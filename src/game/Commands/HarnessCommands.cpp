@@ -28,6 +28,9 @@
 #include "Util.h"
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
+#include "Maps/PathFinder.h"
+#include "Maps/MoveMap.h"
+#include "MotionMaster.h"
 
 namespace
 {
@@ -247,6 +250,176 @@ bool ChatHandler::HandleHarnessCreateCharCommand(char* args)
     return true;
 }
 
+// .harness path <character> <x> <y> <z>
+// Reports what the navigation mesh answers for a route the character would have to walk.
+// Detour degrades quietly, returning a partial route or a straight-line shortcut rather than
+// failing, so without this a bot that cannot reach somewhere is indistinguishable from a bot
+// that is merely slow.
+bool ChatHandler::HandleHarnessPathCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float x, y, z;
+    if (!ExtractFloat(&args, x) || !ExtractFloat(&args, y) || !ExtractFloat(&args, z))
+    {
+        SendSysMessage("Syntax: .harness path <character> <x> <y> <z> [trigger]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // Optional, and the only honest way to ask whether a route arrives. A dungeon portal is
+    // a volume, not a point, and some are tall: measuring the distance to the trigger's
+    // centre calls Ragefire Chasm a failure while the ghost is standing inside the doorway.
+    uint32 triggerId = 0;
+    ExtractUInt32(&args, triggerId);
+
+    PathInfo path(pTarget);
+    path.calculate(x, y, z);
+
+    PointsArray const& points = path.getFullPath();
+    Vector3 const actualEnd = path.getActualEndPosition();
+
+    // Decoded as flags rather than matched as a value. The interesting results are
+    // combinations: NORMAL|NOT_USING_PATH is a straight line drawn because the mesh was
+    // unavailable, and reporting that as an unhelpful "OTHER" once hid a whole sweep's
+    // worth of false passes.
+    static struct { uint32 flag; char const* name; } const pathFlags[] =
+    {
+        { PATHFIND_NORMAL,         "NORMAL" },
+        { PATHFIND_SHORTCUT,       "SHORTCUT" },
+        { PATHFIND_INCOMPLETE,     "INCOMPLETE" },
+        { PATHFIND_NOPATH,         "NOPATH" },
+        { PATHFIND_NOT_USING_PATH, "NOT_USING_PATH" },
+        { PATHFIND_DEST_FORCED,    "DEST_FORCED" },
+        { PATHFIND_FLYPATH,        "FLYPATH" },
+        { PATHFIND_UNDERWATER,     "UNDERWATER" },
+        { PATHFIND_CASTER,         "CASTER" },
+    };
+
+    uint32 const pathType = uint32(path.getPathType());
+    std::string typeNames;
+    for (auto const& entry : pathFlags)
+    {
+        if (!(pathType & entry.flag))
+            continue;
+        if (!typeNames.empty())
+            typeNames += "|";
+        typeNames += entry.name;
+    }
+    char const* typeName = typeNames.empty() ? "BLANK" : typeNames.c_str();
+
+    // The same test, with the same tolerance, that UpdateCorpseRun uses to decide whether to
+    // step through the portal, so a survey and the bot cannot disagree about arriving.
+    int32 arrived = -1;
+    if (triggerId)
+    {
+        AreaTriggerEntry const* pTrigger = sObjectMgr.GetAreaTrigger(triggerId);
+        if (!pTrigger)
+        {
+            PSendSysMessage("Area trigger %u does not exist.", triggerId);
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        arrived = IsPointInAreaTriggerZone(pTrigger, pTarget->GetMapId(),
+            actualEnd.x, actualEnd.y, actualEnd.z, 5.0f) ? 1 : 0;
+    }
+
+    PSendSysMessage("path type=%s(0x%x) points=%u length=%.1f from=%.1f,%.1f,%.1f to=%.1f,%.1f,%.1f reached=%.1f,%.1f,%.1f shortfall=%.1f arrived=%d",
+        typeName, uint32(path.getPathType()), uint32(points.size()), path.Length(),
+        pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ(),
+        x, y, z, actualEnd.x, actualEnd.y, actualEnd.z,
+        std::sqrt((actualEnd.x - x) * (actualEnd.x - x) +
+                  (actualEnd.y - y) * (actualEnd.y - y) +
+                  (actualEnd.z - z) * (actualEnd.z - z)),
+        arrived);
+
+    return true;
+}
+
+// .harness loadmmaps <map>
+// Pulls every navigation tile of a map into memory at once.
+//
+// Tiles are normally loaded alongside the grids around a player, and a path query whose
+// destination sits in an unloaded tile does not fail: it silently abandons the mesh and
+// answers with a straight line. That makes any attempt to survey routes from a distance
+// report success everywhere. Loading the map up front is what makes such a survey mean
+// anything. A continent costs well under a gigabyte, which is a fine trade for a test
+// server and no reason to do this on a live one.
+bool ChatHandler::HandleHarnessLoadMmapsCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 mapId = 0;
+    if (!ExtractUInt32(&args, mapId))
+    {
+        SendSysMessage("Syntax: .harness loadmmaps <map>");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    MMAP::MMapManager* pManager = MMAP::MMapFactory::createOrGetMMapManager();
+
+    uint32 loaded = 0;
+    for (int32 x = 0; x < 64; ++x)
+        for (int32 y = 0; y < 64; ++y)
+            if (pManager->loadMap(mapId, x, y))
+                ++loaded;
+
+    PSendSysMessage("mmaps map=%u newly_loaded=%u total_tiles=%u",
+        mapId, loaded, pManager->getLoadedTilesCount());
+    return true;
+}
+
+// .harness graveyard <map> <x> <y> <z> [team]
+// Where a ghost dying at that spot would be sent. Asking the engine beats assuming, because
+// for a death inside an instance the answer is a graveyard out on the entrance map, chosen by
+// faction, and that release point is where any corpse run actually begins.
+bool ChatHandler::HandleHarnessGraveyardCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 mapId = 0;
+    float x, y, z;
+    uint32 team = uint32(HORDE);
+
+    if (!ExtractUInt32(&args, mapId) || !ExtractFloat(&args, x) ||
+        !ExtractFloat(&args, y) || !ExtractFloat(&args, z))
+    {
+        SendSysMessage("Syntax: .harness graveyard <map> <x> <y> <z> [team]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ExtractUInt32(&args, team);
+
+    WorldSafeLocsEntry const* pGraveyard = sObjectMgr.GetClosestGraveYard(x, y, z, mapId, Team(team));
+    if (!pGraveyard)
+    {
+        PSendSysMessage("graveyard none map=%u team=%u", mapId, team);
+        return true;
+    }
+
+    PSendSysMessage("graveyard id=%u map=%u x=%.2f y=%.2f z=%.2f",
+        pGraveyard->ID, pGraveyard->map_id, pGraveyard->x, pGraveyard->y, pGraveyard->z);
+    return true;
+}
+
 bool ChatHandler::HandleHarnessInfoCommand(char* args)
 {
     Player* pTarget = GetHarnessTarget(&args);
@@ -257,12 +430,16 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
     }
 
     // deathstate distinguishes a corpse still waiting for a resurrection from a released
-    // ghost, which alive= alone cannot express and wipe recovery turns on.
-    PSendSysMessage("name=%s guid=%u level=%u map=%u instance=%u zone=%u alive=%u deathstate=%u corpse=%u x=%.2f y=%.2f z=%.2f",
+    // ghost, which alive= alone cannot express and wipe recovery turns on. teleporting and
+    // motion say whether the AI is running at all: a bot stuck mid teleport is not ticked,
+    // which looks identical from the outside to one that has decided to stand still.
+    PSendSysMessage("name=%s guid=%u level=%u map=%u instance=%u zone=%u alive=%u deathstate=%u corpse=%u teleporting=%u motion=%u x=%.2f y=%.2f z=%.2f",
         pTarget->GetName(), pTarget->GetGUIDLow(), pTarget->GetLevel(),
         pTarget->GetMapId(), pTarget->GetInstanceId(), pTarget->GetZoneId(),
         pTarget->IsAlive() ? 1 : 0, uint32(pTarget->GetDeathState()),
         pTarget->GetCorpse() ? 1 : 0,
+        pTarget->IsBeingTeleported() ? 1 : 0,
+        uint32(pTarget->GetMotionMaster()->GetCurrentMovementGeneratorType()),
         pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
 
     Group* pGroup = pTarget->GetGroup();

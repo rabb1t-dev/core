@@ -2790,6 +2790,9 @@ bool ChatHandler::HandleMmapLocCommand(char* /*args*/)
             PSendSysMessage("Dt     [??,??] (no tile loaded)");
         if (poly)
             PSendSysMessage("Poly flags x%x area 0x%x", poly->flags, poly->getArea());
+        // Authoring an offmesh.txt entry needs endpoints that sit strictly inside a polygon,
+        // which is what this point is and the caller's own position generally is not.
+        PSendSysMessage("Closest point on poly %f %f %f", closestPoint[2], closestPoint[0], closestPoint[1]);
         if (Creature* wp = unit->SummonCreature(1, closestPoint[2], closestPoint[0], closestPoint[1], 0.0f, TEMPSUMMON_TIMED_DESPAWN, 5000, true))
         {
             wp->SetFly(true);

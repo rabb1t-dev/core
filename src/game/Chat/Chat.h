@@ -280,6 +280,9 @@ class ChatHandler
         Player* GetHarnessTarget(char** args);
         bool HandleHarnessExecCommand(char* args);
         bool HandleHarnessInfoCommand(char* args);
+        bool HandleHarnessPathCommand(char* args);
+        bool HandleHarnessGraveyardCommand(char* args);
+        bool HandleHarnessLoadMmapsCommand(char* args);
         bool HandleHarnessCreateCharCommand(char* args);
         bool HandleHarnessLoginCommand(char* args);
 
