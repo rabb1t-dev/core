@@ -430,8 +430,35 @@ The corpse run has since landed too (`22989e473`), so recovery costs distance ra
 flat timeout. Every entrance in the game has been surveyed and every one is reachable from
 the graveyard its ghosts release to: 19 dungeons and all 7 raids, confirmed by
 `contrib/harness/sweep_corpse_runs.py`. Six of them needed an offmesh link first
-(`18c47ba47`). Live-confirmed end to end at Wailing Caverns and Ahn'Qiraj Temple; the rest
-rest on the survey, which proves a route exists but not that the movement executes it.
+(`18c47ba47`).
+
+The survey has since been replaced by the real thing. `contrib/harness/test_corpse_runs_live.py`
+kills a bot inside each of the 26 instances and requires it to release, cross whatever world
+lies in between and let itself back in unaided, treating a spirit-healer rescue as a failure
+however alive it leaves the bot. It runs all 26 across a pool of leaders in about five minutes
+and has come in clean repeatedly. Four bot bugs and two engine bugs were found in the gap
+between "a route exists" and "a bot walks it", all recorded under findings.
+
+Scale is covered too, by `contrib/harness/test_raid_wipe_recovery.py`: each raid filled to its
+own player cap and wiped inside, with nobody left standing including the leader, so the
+instance holds no live player at all while the whole raid walks back. **All seven recover
+completely**, in 11 minutes for the set:
+
+| Raid | Bots | Back inside |
+| --- | --- | --- |
+| Onyxia's Lair | 39 | 77s |
+| Zul'Gurub | 19 | 45s |
+| Molten Core | 39 | 57s |
+| Blackwing Lair | 39 | 67s |
+| Ruins of Ahn'Qiraj | 19 | 81s |
+| Ahn'Qiraj Temple | 39 | 92s |
+| Naxxramas | 39 | 62s |
+
+Blackwing Lair is the hardest of them, since the way back in is the scripted Orb of Command
+rather than a portal and every one of the thirty-nine needs Blackhand's Command to use it.
+Forty ghosts on one road is also the load case the single-bot suite cannot produce, and it
+holds up: releases land within two seconds of the wipe and the run back is no slower per bot
+than it is alone.
 
 Still open in this phase: the remaining free-resource defaults (out-of-combat full restore,
 hunter ammo, triggered weapon buffs); and the two engine bugs (double durability loss on
