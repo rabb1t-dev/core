@@ -804,6 +804,23 @@ All four must be fixed in the gear-preservation work ahead of any evaluator work
 than clearing an occupied one, move replaced gear to bags or mail rather than destroying it, honor
 `CanEquipItem`, and propagate storage failure to callers instead of swallowing it.
 
+**All four are now fixed [done].** The hunter ammo one landed with the spec work; the other three
+are the commit that follows this note. `AddItemToInventory` returns whether the item is really in
+the bags, and `AddHunterAmmo` only sets the ammo field when it is, which is what breaks the
+destructive loop. The reagent top-up no longer clears the first backpack slot, so a reagent that
+will not fit is now simply a reagent that will not fit. `EquipOrUseNewItem` asks `CanEquipItem`
+instead of `FindEquipSlot`, so unique-equipped, class and level restrictions are honored rather
+than walked past; sends the replaced item to the bags or the mail through
+`Player::AutoUnequipItemFromSlot` instead of destroying it, and declines the swap if that fails;
+and calls `AutoUnequipOffhandIfNeed` afterwards.
+
+Two things are deliberately left. Consumables are still used on receipt rather than saved, which
+is the remaining half of the trade problem and wants its own change. And none of this has a live
+test, unlike the rest of Phase 0: `EquipOrUseNewItem` is reachable only from trade completion and
+there is no way to drive a trade over SOAP, so a harness command that calls it directly is the
+prerequisite for testing it. The roster suites were run to confirm nothing regressed, which is not
+the same as confirming these paths behave.
+
 The safety rules proper:
 
 - **Nothing is ever destroyed on the strength of a score.** Disposal is limited to an explicit allowlist:
