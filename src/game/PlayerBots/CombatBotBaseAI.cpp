@@ -3316,8 +3316,14 @@ void CombatBotBaseAI::ActivateNearbyAreaTrigger()
         if (!IsPointInAreaTriggerZone(pTrigger, me->GetMapId(), me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), 5.0f))
             continue;
 
+        // Every one of them, not the lowest numbered. Triggers overlap, and at the Orb of
+        // Command two sit within a foot of each other: the lower is inert and the higher is the
+        // only way a ghost gets back into Blackwing Lair. Stopping at the first found means the
+        // bot reports the wrong one and walks away from a run it had already completed.
+        //
+        // Sending several is safe and is what a client does. The handler re-tests range when it
+        // processes each packet, so once one of them moves the bot the rest are ignored.
         SendAreaTriggerPacket(pTrigger->id);
-        break;
     }
 }
 
