@@ -20,6 +20,7 @@ Status key: **not started** / **in progress** / **done**.
 | `a19dc86dc` | Party bots can fill a raid group instead of silently capping at five |
 | `e04904be4` | Test harness, which is how roster work gets verified without a client |
 | `09bae86c1` | The roster table, `RaidGuildMgr`, and `.raidguild` provisioning |
+| `547a3416c` | Talent specs are asked for by name instead of drawn at random, plus the six level 60 builds that did not exist |
 
 `a19dc86dc` closes the "Joining the group" section of Phase 0 below in full: the group is
 promoted to a raid when it fills, `AddMember`'s return value is checked, a bot that fails to
@@ -37,6 +38,13 @@ with roster provisioning.
 The concurrent-creation race is also still open. It is currently avoided only by the harness
 adding bots one at a time with a gap between them; roster spawning must create the group once,
 up front.
+
+`547a3416c` makes the roster's `spec` column mean something. A bot takes a spec by name through
+`CombatBotBaseAI::m_specName`, or by hand with `.partybot add mage fire-pve`; selection is
+otherwise deterministic rather than random; and six missing level 60 builds are seeded. Verified
+by `contrib/harness/test_premade_specs.py`. Provisioning still has to set `m_specName` from the
+roster row — the column is loaded and written but nothing applies it yet — and levels other than
+60 remain unsolved, which is written up under Phase 3.
 
 ### Findings that changed the plan
 
@@ -69,6 +77,20 @@ up front.
   is that `Player::Create` sets `m_saveDisabled` and nothing clears it, which was read out of
   the source. It is now a test: a level set on a summoned member is still there after the
   member is dismissed and summoned again.
+- **A talent spec is a set, not an order, and that is the whole reason sub-60 members do not
+  work.** The plan had asked for ordered spend lists without saying what the current data
+  actually is: `player_premade_spell` is `(entry, spell)` with no sequence column at all, so a
+  template can only ever be applied whole, at the level it was authored for. Templates exist at
+  five levels and nowhere else. Written up under Phase 3.
+- **Talent trees are client data with no server-side table, so nothing in SQL can check a
+  build.** There is no `talent` table in the world database; trees live in Talent.dbc. Combined
+  with specs being applied through `LearnSpell`, which validates nothing, an authored build had
+  no checker anywhere. `contrib/harness/talent_dbc.py` reads the DBCs the server reads and is
+  now that checker. It immediately found two prerequisites that were not obvious from the game:
+  Deep Wounds requires Improved Rend at rank 3, and Mortal Strike requires Sweeping Strikes.
+- **`TalentTabEntry::tabpage` is wrong for mage.** Tabs 41 (Fire) and 81 (Arcane) both report
+  page 0, while all eight other classes are consistent. Anything naming or ordering trees must
+  key off the tab id.
 
 ### Next
 
@@ -80,6 +102,11 @@ a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers
 member roster being guilded with six of them offline, reaching the world as a raid, landing
 in its rostered subgroups, leaving on dismissal, and keeping what it earned across the round
 trip. Still to do: level matching, attunement mirroring, and bind reconciliation.
+
+Two spec items follow from `547a3416c`. Provisioning should pass the roster row's `spec` to
+`CombatBotBaseAI::m_specName`, which is a one line change and makes the column live. Ordered
+talent spending should land **before** level matching, because a member matched to any level
+other than 60 currently spends a lower level template and leaves the difference unspent.
 
 Note the sequencing dependency in Phase 4: wipe recovery lives in the companion document but
 gates raid use of this one, since without it a single wipe ends the night. It is in progress
@@ -1020,7 +1047,13 @@ bosses for other chains — is exactly what the roster exists to clear.
   to ten healers, enough warriors to cover multi-tank fights, and shaman coverage spread across
   subgroups for totems. Encode this in the roster selector rather than leaving it to the human.
 
-### Talent specs: assignable per member, with an authoring workflow that already exists
+### Talent specs: assignable per member [mostly done at level 60, open below it]
+
+Landed in `547a3416c`. Bots take a spec by name or entry through `CombatBotBaseAI::m_specName`,
+which is what a roster row's `spec` column feeds, and `.partybot add mage fire-pve` is the manual
+form. Selection no longer ends in a random draw, the loader no longer couples specs to gear, and
+six missing level 60 builds now exist. What remains open is levels other than 60, described at the
+end of this section.
 
 Specs are fully controllable, and the existing machinery is better than expected. A spec is stored as two
 SQL rows rather than a hardcoded build: `player_premade_spell_template` carries entry, class, level, role,
@@ -1029,34 +1062,22 @@ and name, and `player_premade_spell` carries the explicit list of spells for tha
 then learns each spell, resolving talent ranks through `GetFirstSpellInChain` and `GetTalentSpellPos`
 ([src/game/ObjectMgr.cpp](../src/game/ObjectMgr.cpp) lines 12399-12437).
 
-The authoring path needs no SQL editing. `.character premadesavespec <name>` dumps the logged-in
+The authoring path needs no SQL editing. `.character premade savespec <name>` dumps the logged-in
 character's `character_spell` rows, minus racial and starting spells, into a new template
 ([src/game/Commands/CharacterCommands.cpp](../src/game/Commands/CharacterCommands.cpp) lines 2172-2228),
-and `.character premadespec <entry|name>` applies one. So the workflow is to level or copy a character,
-spec it exactly as wanted in-game, save it under a name, and hand that name to a roster member.
+and `.character premade spec <entry|name>` applies one. So the workflow is to level or copy a character,
+spec it exactly as wanted in-game, save it under a name, and hand that name to a roster member. The
+alternative, used for the six specs below, is to generate the rows from Talent.dbc and check them.
 
-**A loader trap sits directly in the path of our intended design, and it fails silently.**
+**A loader trap sat directly in the path of our intended design, and it failed silently. Fixed.**
 `LoadPlayerPremadeTemplates` loads four things in sequence - gear templates, gear items, spec templates,
-spec spells - and it `return`s early if either *gear* query comes back empty
-([src/game/ObjectMgr.cpp](../src/game/ObjectMgr.cpp) lines 12131-12138 and 12194-12201):
-
-```cpp
-std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT ... FROM `player_premade_item_template`"));
-if (!result)
-{
-    ...
-    sLog.Out(..., ">> Loaded 0 premade player templates. DB table `player_premade_template` is empty.");
-    return;
-}
-```
-
-The consequence is precisely inverted from what we want. Our design deliberately **does not** use premade
-gear templates, because applying one wipes the earned gear this whole project exists to accumulate. But
-leaving those gear tables empty means the loader returns before it ever reaches
-`player_premade_spell_template`, so **every talent spec silently fails to load** and spec application always
-reports a missing entry. The log line even names the wrong table. Two systems that look independent are
-coupled by control flow, and the failure mode is "my carefully authored specs do nothing." Either seed a
-dummy gear row or fix the early return; do not leave it to be discovered later.
+spec spells - and it used to `return` if either *gear* query came back empty, so the two later sections
+never ran. The consequence was precisely inverted from what we want: our design deliberately **does not**
+use premade gear templates, because applying one wipes the earned gear this whole project exists to
+accumulate, and leaving those tables empty stopped every talent spec from loading while the log named a
+third table that was fine. Two systems that look independent were coupled by control flow, and the
+failure mode was "my carefully authored specs do nothing". The sections are independent now, verified
+against a copy of the world database with both gear tables truncated: all 59 spec templates still load.
 
 Three more defects in the same system, all of which bite a roster:
 
@@ -1064,37 +1085,47 @@ Three more defects in the same system, all of which bite a roster:
   ([src/game/ObjectMgr.cpp](../src/game/ObjectMgr.cpp) lines 12428-12435), so nothing validates tier
   prerequisites or the point budget against level. An authored template with a bad row produces an illegal
   build - deep talents granted without the tree investment beneath them, or more points spent than the level
-  allows, with free points clamped to zero and no error. Authoring by `.character premadesavespec` from a
-  real character avoids this, since the source build was legal; hand-written SQL does not.
-- **Below-level fallback under-spends talents.** Bot spec selection prefers an exact class-and-level match
-  and otherwise collects every template *below* the bot's level
-  ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 2416-2444),
-  while application only ever levels a character *up* to the template level. A level 45 bot given a level 30
-  template keeps its 36 talent points and spends the 30-point build, leaving points unspent. Since our design
-  matches bot level to the human's, templates must exist at every level used, or selection must be explicit.
-- **`.character premadesavespec` captures the whole spellbook**, not just talents
+  allows, with free points clamped to zero and no error. This is still true at runtime and is not worth
+  fixing there; it is instead checked at both ends. `contrib/harness/author_premade_specs.py` validates a
+  build against Talent.dbc before it can be written, and `.harness talents` reports spend per tree against
+  what the level allows and names any talent standing on nothing. Both earn their keep: the validator
+  caught two prerequisites in the arms build that the game enforces and the author did not know about.
+- **Below-level fallback under-spends talents**, which is the open half of this section. See below.
+- **`.character premade savespec` captures the whole spellbook**, not just talents
   ([src/game/Commands/CharacterCommands.cpp](../src/game/Commands/CharacterCommands.cpp) lines 2205-2220),
   and re-application resets talents but never removes previously learned non-talent spells. Specs therefore
   accumulate cruft across changes. Both save commands also omit the `role` column, so it defaults to
-  `ROLE_INVALID`, which feeds the random selection below.
+  `ROLE_INVALID`. That no longer feeds a random draw, but it does mean a saved spec is invisible to
+  role-based selection until the column is set by hand.
 
-**What blocks deliberate composition today is the selection logic, not the data.**
-`LearnPremadeSpecForClass` filters templates by class and level, prefers one whose `role` matches, and
-otherwise **picks at random**
-([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 2407-2451).
-Worse, party bot init calls it *before* `AutoAssignRole` when no role is preset
-([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 635-638), so the role is
-still `ROLE_INVALID` at selection time and the **first spawn always takes the random path**. And
-`AutoAssignRole` itself detects specs by hardcoded single spell IDs such as `SPELL_SANCTITY_AURA = 20218`
+**What blocked deliberate composition was the selection logic, not the data. Fixed.**
+`LearnPremadeSpecForClass` filtered templates by class and level, preferred one whose `role` matched, and
+otherwise picked at random. Party bot init calls it *before* `AutoAssignRole` when no role is preset
+([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1044-1047), so the role
+was still `ROLE_INVALID` at selection time and the first spawn always took the random path. Note that this
+ordering cannot simply be reversed: `AutoAssignRole` infers the role from the talents the spec is about to
+grant, so it has nothing to read before one is applied. The answer is to remove the need to guess rather
+than to reorder.
+
+A named spec now wins outright, which is also the only way to express a build the role enum cannot: that
+enum holds tank, melee damage, ranged damage and healer, so a fire and a frost mage are the same value and
+the choice between them used to be a coin flip. Failing a name, selection is totally ordered — preferred
+role, then highest level, then entry — with the entry tie-break there because the template map is a
+`std::unordered_map` and ties genuinely resolved differently between runs. With no role known it prefers a
+damage build. Composition rules can now be real constraints: at least two protection warriors, a target
+number of frost mages before Molten Core, shaman spread across subgroups.
+
+`AutoAssignRole` remains unreliable in a way worth knowing: it detects specs by hardcoded single spell IDs
+such as `SPELL_SANCTITY_AURA = 20218`
 ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 17-29), which
-miss when the bot knows a different rank of the same talent - so role detection is unreliable even once it
-does run.
-The role enum is only tank, melee damage, ranged damage, and healer, so a frost and a fire mage are
-indistinguishable to it and the choice between them is a coin flip. Fixing this is small: the roster row
-stores an explicit **spec template entry** rather than a role, and provisioning applies that exact
-template. Composition rules then become real constraints — at least two protection warriors, a target
-number of frost mages before Molten Core, shaman spread across subgroups — instead of hoping the random
-pick cooperates.
+miss when the bot knows a different rank of the same talent. A roster that names both spec and role never
+consults it, so this is now only a fallback path, but it is still wrong.
+
+**Six level 60 specs were missing entirely**, seeded by
+[sql/migrations/20260808220000_world.sql](../sql/migrations/20260808220000_world.sql): there was no fire
+mage, no arms warrior, no destruction warlock, no dagger rogue, no discipline priest and no cat druid,
+which between them are most of a raid's damage and one of its healing specs. The shipped 53 templates
+cover levels 19, 29, 39, 49 and 60, with everything below 60 being a PvP twink build.
 
 Roster size is unconstrained in any way that matters. The guild member cap is never enforced, and bot
 accounts only need distinct nonzero `account` values on the character rows, so an eighty-member roster
@@ -1110,6 +1141,35 @@ Two hazards to respect:
   and never on each spawn. This is already safe by accident: the database-load path in
   [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 652-661 does not call
   `LearnPremadeSpecForClass` at all, and only the temporary-character path does. Preserve that boundary.
+
+#### Open: every level that is not 60 [next]
+
+A template is a **set** of finished talent spells, not a spend order. `player_premade_spell` is
+`(entry, spell)` with no ordering column and no `ORDER BY` on load, so there is nothing anywhere that
+says which talent a build takes first. Templates exist only at levels 19, 29, 39, 49 and 60. Those five
+levels land cleanly and every other level does not, which matters because the design matches bot level to
+the human's.
+
+Concretely, four level 45 bots for a five-man today: no exact match, so selection falls back to every
+template *below* 45 and takes the highest, which is the level 39 twink build. `GiveLevel` only fires when
+the bot is *lower* than the template, so they stay level 45 and spend a 30 point build with 36 points
+available. Six points vanish silently, into a spec tuned for level 39 battlegrounds. Nothing reports this;
+`.harness talents` is now the thing that would, since it prints spent against available.
+
+Two ways out, and the second is the one to build:
+
+- **Templates at every level.** Fifty levels times roughly two specs a class is several hundred rows to
+  author and maintain, and each is a separate chance to be wrong. Rejected on volume.
+- **An ordered spend list per spec.** Add a sequence column so a spec becomes "take these talents in this
+  order" and application spends down the list until the point budget for the character's level runs out.
+  One row set per spec covers every level, a level 45 character gets the first 36 points of the level 60
+  build, and levelling a member re-spends the tail without re-authoring anything. This is what the
+  provisioning stage has always assumed, and `contrib/harness/author_premade_specs.py` is already the
+  right place to emit it, since it resolves talents by name and can check legality *at every prefix* of
+  the order rather than only at the end. That prefix check is the real work: an order is only valid if
+  each point spent is legal at the moment it is spent, which hand-authoring will not get right.
+
+Until that exists, keep roster members at 60, or accept under-spent talents below it.
 - A `.raidguild report` command showing per-member gear score, resistance totals, durability,
   enchantment coverage, and consumable stock, which doubles as the readiness check before a raid
   attempt.
