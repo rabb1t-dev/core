@@ -72,14 +72,14 @@ up front.
 
 ### Next
 
-Phase 0 roster work. The `raidguild_member` table, provisioning and summoning are done:
-`.raidguild add`, `remove`, `list`, `provision`, `summon`, `dismiss`, `status` and `reload`,
+Phase 0 roster work is done: the `raidguild_member` table and the `.raidguild` command group
+of `add`, `remove`, `list`, `provision`, `summon`, `dismiss`, `status`, `guild` and `reload`,
 backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
 provisioning, idempotence, account distinctness, adoption of an existing character, and that
 a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
-member roster reaching the world as a raid, landing in its rostered subgroups, leaving on
-dismissal, and keeping what it earned across the round trip. Still to do, in order: creating
-the guild and bulk-adding members offline, then level matching and bind reconciliation.
+member roster being guilded with six of them offline, reaching the world as a raid, landing
+in its rostered subgroups, leaving on dismissal, and keeping what it earned across the round
+trip. Still to do: level matching, attunement mirroring, and bind reconciliation.
 
 Note the sequencing dependency in Phase 4: wipe recovery lives in the companion document but
 gates raid use of this one, since without it a single wipe ends the night. It is in progress
@@ -144,8 +144,8 @@ flowchart TD
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
 **Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table,
-provisioning and summoning are done and verified live. Still not started: guild creation,
-level matching, attunement mirroring, and bind reconciliation.
+provisioning, summoning and the guild are done and verified live. Still not started: level
+matching, attunement mirroring, and bind reconciliation.
 
 ### Roster [done]
 
@@ -184,10 +184,33 @@ membership to place. `RaidGuildMgr::Update` reconciles it once a second instead,
 silently when the wanted subgroup is full, which is the right answer to a roster that asks
 for nine people in one of them.
 
-`.raidguild status` reports who is in the world, whether the group is a raid, and the
-subgroup each member is in against the one it is rostered for. It exists because nothing here
-happens on the tick the command returns: summoning takes a session load then a group join,
-and dismissal takes a logout, so anything waiting on either has to be able to ask.
+`.raidguild status` reports who is in the world, whether the group is a raid, the subgroup
+each member is in against the one it is rostered for, and the guild each one is carrying. It
+exists because nothing here happens on the tick the command returns: summoning takes a
+session load then a group join, and dismissal takes a logout, so anything waiting on either
+has to be able to ask.
+
+### The guild [done]
+
+`.raidguild guild <name> [founder]` finds or founds the guild and puts every provisioned
+member in it, and is idempotent, so it is how a guild is brought up to date after the roster
+grows rather than something to run once.
+
+Only the founder has to be in the world. `Guild::Create` needs a session, because it reads
+the locale off it to name the default ranks; filling the tables by hand instead would leave a
+guild with no ranks, so the requirement is kept rather than worked around. Everyone else goes
+in through `Guild::AddMember`, which writes `guild_member` directly for an offline character.
+A roster of forty does not have to be summoned to be guilded.
+
+The one sharp edge is that the offline branch of `AddMember` reads the member's name, level
+and class out of the player cache and refuses outright if there is no entry. A provisioned
+member normally has one, but an adopted character need not, since adoption reads the
+`characters` table precisely because the cache can be missing a row that exists. So the cache
+is reloaded for that member first rather than the add failing for a character that is
+demonstrably there.
+
+Members join at `GR_MEMBER` rather than the lowest rank. Initiate is what a guild gives
+someone it is still deciding about, and every one of these was written down on purpose.
 
 The original design notes follow.
 
