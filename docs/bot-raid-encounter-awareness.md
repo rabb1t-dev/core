@@ -43,6 +43,7 @@ Status key: **not started** / **in progress** / **done**.
 | `f2514c6a8` | Every instance and every raid proving its own corpse run |
 | `ec47f1e2a` | A corpse's faction derived from its race rather than dereferenced unset |
 | `a23a5ac39` | Death, drinking and ammo made costly by default, and visible to the harness |
+| `8ac59f148` | Rogue poisons applied from a vial that is then gone, rather than cast for free |
 
 ### Findings that changed the plan
 
