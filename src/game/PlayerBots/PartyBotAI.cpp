@@ -44,11 +44,18 @@ enum PartyBotSpells
 
 // How much nearer the destination a corpse run has to get before it counts as progressing.
 static constexpr float PB_CORPSE_RUN_PROGRESS_STEP = 5.0f;
+// How many no-progress deadlines' worth of walking a run is allowed in total before the bot is
+// made to give up regardless of how busy it looks. The longest run in the game is well inside
+// this, and the point is only to put an end to a ghost pacing a loop it cannot get out of.
+static constexpr int PB_CORPSE_RUN_MAX_TIMEOUTS = 10;
 
 // How near a dungeon entrance the bot has to be before it is worth checking which area trigger
 // it is standing in. Comfortably wider than the largest entrance box, which runs to about
 // sixteen yards from its centre at Maraudon.
 static constexpr float PB_PORTAL_SCAN_RANGE = 60.0f;
+// Close enough to a way in that the remaining gap is the mesh falling short of the door rather
+// than any distance worth pathing, so it is crossed in a straight line.
+static constexpr float PB_PORTAL_STEP_IN_RANGE = 25.0f;
 
 // How far from a map's ghost entrance an area trigger may sit and still be taken to be the
 // doorway those coordinates are naming. The two describe the same spot, so this only has to
@@ -328,6 +335,13 @@ bool PartyBotAI::FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, 
     // A portal that teleports straight in, which is how all but one dungeon is entered. The
     // trigger's own position is used rather than the map's ghost entrance coordinates, which
     // are a flat x and y saying nothing about the height of a cave mouth sunk into the ground.
+    //
+    // The nearest of them rather than the first, because a dungeon can have more than one way in
+    // and they are not close together: Maraudon's two are three hundred yards apart at opposite
+    // ends of a canyon. The container these come from is unordered, so taking the first match
+    // picks between them by hash order, and half the time that is the far one.
+    AreaTriggerEntry const* pNearest = nullptr;
+    float bestDistance = 0.0f;
     for (auto const& itr : sObjectMgr.GetAreaTriggersMap())
     {
         AreaTriggerEntry const* pTrigger = &itr.second;
@@ -335,13 +349,23 @@ bool PartyBotAI::FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, 
             continue;
 
         AreaTriggerTeleport const* pTeleport = sObjectMgr.GetAreaTriggerTeleport(pTrigger->id);
-        if (pTeleport && pTeleport->destination.mapId == instanceMapId)
-        {
-            x = pTrigger->x;
-            y = pTrigger->y;
-            z = pTrigger->z;
-            return true;
-        }
+        if (!pTeleport || pTeleport->destination.mapId != instanceMapId)
+            continue;
+
+        float const distance = me->GetDistance(pTrigger->x, pTrigger->y, pTrigger->z);
+        if (pNearest && distance >= bestDistance)
+            continue;
+
+        pNearest = pTrigger;
+        bestDistance = distance;
+    }
+
+    if (pNearest)
+    {
+        x = pNearest->x;
+        y = pNearest->y;
+        z = pNearest->z;
+        return true;
     }
 
     // Blackwing Lair is entered by no such portal. Its way back in is a scripted trigger beside
@@ -456,18 +480,47 @@ bool PartyBotAI::UpdateCorpseRun()
     // Steep ground is not excluded the way it is when a bot is alive. Several dungeon mouths
     // sit at the bottom of a drop, and refusing the descent leaves the ghost pacing the rim
     // above its own corpse. Falling costs a ghost nothing.
+    //
+    // The last few yards are walked in a straight line instead. Pathfinding stops where the mesh
+    // does and an instance portal regularly sits a little past that, so the ghost ends up beside
+    // the door: close enough to see it, too far for the five yard tolerance the trigger handler
+    // applies, and hopping between the last two reachable points until chance drops it inside.
+    // Maraudon spent a full minute doing exactly that. Walking the remainder directly is what a
+    // player does, and a short line through scenery costs a ghost nothing.
     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE)
-        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+    {
+        // Measured flat, because the gap that needs crossing here is usually the vertical one.
+        // A cave mouth is sunk into the ground and the mesh route ends on the lip above it, so
+        // the ghost stands within a few paces of its door and forty-eight yards over the top of
+        // it, which is precisely where Maraudon kept stranding them. Dropping in is the way in.
+        bool const atTheDoor = !corpseIsOnThisMap && me->GetDistance2d(x, y) < PB_PORTAL_STEP_IN_RANGE;
+        me->GetMotionMaster()->MovePoint(0, x, y, z, atTheDoor ? MOVE_NONE : MOVE_PATHFINDING);
+    }
 
     // Progress is measured rather than assumed, because a ghost with nowhere to path still
     // looks busy: its movement generator finishes immediately and gets reissued forever.
-    if (m_corpseRunBestDistance < 0.0f || (distance + PB_CORPSE_RUN_PROGRESS_STEP) < m_corpseRunBestDistance)
+    //
+    // What counts is ground covered, not distance remaining. Distance remaining calls a stall
+    // on every route that has to go the long way around, and dungeon mouths are full of them:
+    // a ghost spiralling through Blackrock Mountain or working down into the Maraudon canyon
+    // walks perfectly well for minutes at a time while the straight line to where it is headed
+    // gets no shorter. A ghost that is actually stuck does something quite different, which is
+    // stand still.
+    if (m_corpseRunBestDistance < 0.0f)
     {
         m_corpseRunBestDistance = distance;
+        me->GetPosition(m_corpseRunLastX, m_corpseRunLastY, m_corpseRunLastZ);
         return true;
     }
 
-    return false;
+    // Only advanced on progress, so short steps accumulate across ticks instead of each one
+    // being judged on its own and found wanting.
+    if (me->GetDistance(m_corpseRunLastX, m_corpseRunLastY, m_corpseRunLastZ) < PB_CORPSE_RUN_PROGRESS_STEP)
+        return false;
+
+    me->GetPosition(m_corpseRunLastX, m_corpseRunLastY, m_corpseRunLastZ);
+    m_corpseRunBestDistance = std::min(m_corpseRunBestDistance, distance);
+    return true;
 }
 
 // Recovery after death. A resurrection is always preferred, but nothing here may depend on
@@ -535,19 +588,49 @@ void PartyBotAI::UpdateDeadAI()
         me->BuildPlayerRepop();
         me->ScheduleRepopAtGraveyard();
         m_ghostSince = now;
+        m_ghostStart = now;
         m_corpseRunBestDistance = -1.0f;
         return;
     }
 
     // Released, and on the way back to the body.
     if (!m_ghostSince)
+    {
         m_ghostSince = now;
+        m_ghostStart = now;
+    }
 
-    // A run that is getting somewhere keeps the deadline at bay, however long it takes.
-    if (UpdateCorpseRun())
+    // A run that is getting somewhere keeps the deadline at bay, but not indefinitely, since
+    // ground can be covered in a circle as easily as in a line.
+    bool const walkedLongEnough = timeout &&
+        (now - m_ghostStart) >= time_t(timeout) * PB_CORPSE_RUN_MAX_TIMEOUTS;
+
+    if (UpdateCorpseRun() && !walkedLongEnough)
         m_ghostSince = now;
     else if (timeout && (now - m_ghostSince) >= time_t(timeout))
     {
+        // Three quite different things end up here and they are indistinguishable from
+        // outside: no corpse to run to at all, a corpse somewhere with no way back in, and a
+        // route the bot could not walk. Say which, or every one of these costs an afternoon.
+        Corpse* pCorpse = me->GetCorpse();
+        float x = 0.0f, y = 0.0f, z = 0.0f;
+        char const* target = "no corpse";
+        if (pCorpse && pCorpse->GetMapId() == me->GetMapId())
+        {
+            pCorpse->GetPosition(x, y, z);
+            target = "its corpse";
+        }
+        else if (pCorpse)
+            target = FindInstanceEntrance(pCorpse->GetMapId(), x, y, z) ? "the way in"
+                                                                        : "no way in";
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBot] '%s' gave up its corpse run after %us standing at %.0f %.0f %.0f "
+                 "on map %u, heading for %s at %.0f %.0f %.0f, %.0f yards off.",
+                 me->GetName(), uint32(now - m_ghostStart), me->GetPositionX(),
+                 me->GetPositionY(), me->GetPositionZ(), me->GetMapId(), target, x, y, z,
+                 me->GetDistance(x, y, z));
+
         // Take the spirit healer's terms. Plenty of ways to die leave a corpse that cannot
         // be reached at all, and one bot stuck on the way back would otherwise hold up
         // everyone else indefinitely.
@@ -1064,6 +1147,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     // death cannot inherit stale timestamps and skip straight to the spirit healer.
     m_corpseSince = 0;
     m_ghostSince = 0;
+    m_ghostStart = 0;
     m_corpseRunBestDistance = -1.0f;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))

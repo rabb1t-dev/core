@@ -115,9 +115,13 @@ public:
     // on its own gets bailed out rather than stalling the group.
     time_t m_corpseSince = 0;
     time_t m_ghostSince = 0;
-    // Nearest the corpse run has managed to get, so a stalled run can be told apart from a
-    // slow one. Negative means the run has not started, since arriving makes this zero.
+    time_t m_ghostStart = 0;
+    // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
+    // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;
+    float m_corpseRunLastX = 0.0f;
+    float m_corpseRunLastY = 0.0f;
+    float m_corpseRunLastZ = 0.0f;
 };
 
 #endif
