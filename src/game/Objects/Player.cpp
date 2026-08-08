@@ -2169,6 +2169,7 @@ void Player::ProcessDelayedOperations()
         SetPower(POWER_ENERGY, GetMaxPower(POWER_ENERGY));
 
         SpawnCorpseBones();
+        ClearResurrectRequestData();
     }
 
     if (m_delayedOperations & DELAYED_SAVE_PLAYER)
@@ -4673,6 +4674,10 @@ void Player::BuildPlayerRepop()
     if (!corpse)
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "Error creating corpse for Player %s [%u]", GetName(), GetGUIDLow());
+        // Returning while still a ghost but in CORPSE state strands the player for good:
+        // release refuses anyone already flagged as a ghost, and no corpse exists to
+        // resurrect at.
+        RemoveGhostForm();
         return;
     }
     GetMap()->Add(corpse);
@@ -20229,6 +20234,11 @@ void Player::ResurrectUsingRequestData()
     SetPower(POWER_ENERGY, GetMaxPower(POWER_ENERGY));
 
     SpawnCorpseBones();
+
+    // Otherwise the request stays pending until the next death, and resurrection spells
+    // refuse a target that already has one. A healer working down a pile of corpses would
+    // get one revive per player and then silently fail.
+    ClearResurrectRequestData();
 }
 
 void Player::SetClientControl(Unit const* target, uint8 allowMove) const
