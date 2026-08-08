@@ -32,6 +32,9 @@ Status key: **not started** / **in progress** / **done**.
 | `c905be64c` | Navmesh diagnostics: `.harness path`, `graveyard`, `loadmmaps`, `.mmap loc` |
 | `24bb1f211` | Sweep of every instance entrance for a walkable corpse run |
 | `18c47ba47` | Six offmesh links bridging entrances the mesh leaves unreachable |
+| `8b21ca2b6` | `.harness rewardquest`, the only way to attune a bot to anything |
+| `45ae0768d` | Ghost entrance height read from the trigger rather than the terrain |
+| `7bbba792a` | Bots report every area trigger they stand in, not the lowest numbered |
 
 ### Findings that changed the plan
 
@@ -54,6 +57,31 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   fully green first sweep that was entirely false, including a 1786-yard "path" straight
   through Dustwallow Marsh. `.harness loadmmaps` exists to make such reasoning valid. The
   same trap applies to any future tooling that asks about somewhere nobody is standing.
+- **A survey is only worth what its agreement with the live code is worth, and two of them
+  disagreed silently.** The sweep took Blackwing Lair's entrance height from the area trigger
+  standing at the map's ghost entrance; the bot took it from `GetHeight` on the terrain. Both
+  are defensible readings of two coordinates that carry no height, and they differ by 144
+  yards, because the Orb of Command is inside Blackrock Mountain and there is walkable summit
+  above it. So the sweep passed and the live run walked to precisely the right spot on the map,
+  a hundred and forty yards over the orb, and stalled there until the spirit healer collected
+  it. A ghost entrance names a trigger, and a trigger knows its own height; both now ask it.
+- **Area triggers overlap, and taking the lowest numbered one is not a tie-break, it is a
+  coin toss.** Two triggers sit within a foot of each other at the Orb of Command. 3846 has no
+  script, no teleport and no effect of any kind; 3847 is the only way a ghost re-enters
+  Blackwing Lair. `ActivateNearbyAreaTrigger` reported the first it found and stopped, so the
+  bot completed an eighteen hundred yard run, fired the inert one, and walked away. It now
+  reports all of them, which is what a client does and what the handler is written to expect:
+  it re-tests range per packet, so once one moves the bot the rest lapse.
+- **A test that asserts the destination rather than the route will pass on the wrong
+  mechanism.** The first BWL run ended with the bot alive inside Blackwing Lair and was
+  scored a pass. It had in fact stalled, been revived at the graveyard by the spirit healer,
+  and follow-teleported to its leader. Any recovery test needs to fail on the deadlock
+  breakers firing, not just on the final position.
+- **Attunement cannot be granted by `.quest complete`.** It stops at `QUEST_STATUS_COMPLETE`,
+  and only quests flagged `AUTO_REWARDED` go further, whereas the gates are checked with
+  `GetQuestRewardStatus`. Blackhand's Command is flagged `RAID`, not auto-rewarded. Hence
+  `.harness rewardquest`, which the roster work needs anyway for Onyxia, Molten Core and
+  Naxxramas.
 - **Detour's path type must be read as flags, never matched as a value.** The interesting
   answers are combinations: `NORMAL|NOT_USING_PATH` is a straight line drawn because the
   mesh was unavailable. Matching on the value alone reported it as "OTHER" and concealed the
