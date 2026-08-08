@@ -102,6 +102,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "createchar", SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessCreateCharCommand,   "", nullptr },
         { "login",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessLoginCommand,        "", nullptr },
         { "spells",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessSpellsCommand,       "", nullptr },
+        { "talents",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessTalentsCommand,      "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 

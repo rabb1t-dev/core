@@ -5,6 +5,8 @@
 #include "SpellEntry.h"
 #include "Player.h"
 
+struct PlayerPremadeSpecTemplate;
+
 struct HealSpellCompare
 {
     bool operator() (SpellEntry const* const lhs, SpellEntry const* const rhs) const
@@ -102,6 +104,8 @@ public:
     void SummonPetIfNeeded();
     void LearnArmorProficiencies();
     void LearnPremadeSpecForClass();
+    PlayerPremadeSpecTemplate const* FindPremadeSpecByName(std::string const& name) const;
+    PlayerPremadeSpecTemplate const* SelectPremadeSpecTemplate() const;
     void EquipPremadeGearTemplate();
     void EquipRandomGearInEmptySlots();
     void AutoEquipGear(uint32 option);
@@ -620,6 +624,11 @@ public:
     bool m_receivedBgInvite = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
+
+    // Name or entry of a `player_premade_spell_template` to build this bot from. Set before the
+    // bot initialises. Empty means fall back to picking by role, which cannot distinguish two
+    // specs that share one, so anything caring which build it gets should set this.
+    std::string m_specName;
 };
 
 #endif

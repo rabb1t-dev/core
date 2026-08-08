@@ -180,6 +180,50 @@ class Harness:
 
         return {"summary": summary, "slots": slots, "totems": totems}
 
+    def talents(self, character):
+        """A character's talent build: totals, per tree spend, and every learned talent.
+
+        The summary's `illegal` and `spent` versus `available` counts are the point of this.
+        Premade specs are applied with LearnSpell rather than LearnTalent, so the server never
+        checks tier requirements or the point budget, and a build that could not be made in the
+        client applies without complaint. This is the only way to see that from a test.
+        """
+        text = self.run(f"harness talents {character}")
+
+        summary = {}
+        trees = {}
+        talents = {}
+        illegal = []
+        for line in text.splitlines():
+            line = line.strip()
+
+            match = re.match(r"^tab id=(\d+) page=(\d+) spent=(\d+) name=(.*)$", line)
+            if match:
+                trees[match.group(4) or match.group(1)] = int(match.group(3))
+                continue
+
+            match = re.match(
+                r"^talent id=(\d+) tab=(\d+) row=(\d+) rank=(\d+) max=(\d+) spell=(\d+) name=(.*)$",
+                line)
+            if match:
+                talents[match.group(7)] = {
+                    "id": int(match.group(1)),
+                    "tab": int(match.group(2)),
+                    "row": int(match.group(3)),
+                    "rank": int(match.group(4)),
+                    "max": int(match.group(5)),
+                    "spell": int(match.group(6)),
+                }
+                continue
+
+            if line.startswith("illegal "):
+                illegal.append(dict(re.findall(r"(\w+)=(\S+)", line)))
+            elif line.startswith("talents "):
+                summary = {k: int(v) if v.isdigit() else v
+                           for k, v in re.findall(r"(\w+)=(\S+)", line)}
+
+        return {"summary": summary, "trees": trees, "talents": talents, "illegal": illegal}
+
     # -- world queries -----------------------------------------------------
 
     def graveyard(self, map_id, x, y, z, team=HORDE):

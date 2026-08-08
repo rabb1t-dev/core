@@ -12126,6 +12126,12 @@ void ObjectMgr::GetAreaLocaleString(uint32 entry, int32 loc_idx, std::string* na
 
 void ObjectMgr::LoadPlayerPremadeTemplates()
 {
+    // The four sections below are independent, and each is wrapped so that it can give up on its
+    // own without taking the others down with it. They used to `return`, and because the two gear
+    // tables load first, leaving those empty stopped every talent spec from loading as well --
+    // while the log line blamed a third table that was fine. That is a trap for anyone who wants
+    // authored specs without authored gear, which is exactly what a persistent roster wants.
+    do
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading player premade gear templates ...");
         m_playerPremadeGearMap.clear();
@@ -12138,8 +12144,8 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
             BarGoLink bar(1);
             bar.step();
 
-            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded 0 premade player templates. DB table `player_premade_template` is empty.");
-            return;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded 0 premade player gear templates. DB table `player_premade_item_template` is empty.");
+            break;
         }
 
         BarGoLink bar(result->GetRowCount());
@@ -12189,8 +12195,9 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded " SIZEFMTD " premade player gear templates", m_playerPremadeGearMap.size());
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
-    }
+    } while (false);
 
+    do
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading player premade items ...");
         //                                                               0        1       2          3
@@ -12202,7 +12209,7 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
             bar.step();
 
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded 0 premade player items. DB table `player_premade_item` is empty.");
-            return;
+            break;
         }
 
         BarGoLink bar(result->GetRowCount());
@@ -12247,8 +12254,9 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded %u premade player items", count);
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
-    }
+    } while (false);
 
+    do
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading player premade spec templates ...");
         m_playerPremadeSpecMap.clear();
@@ -12262,7 +12270,7 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
             bar.step();
 
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded 0 premade player spec templates. DB table `player_premade_spell_template` is empty.");
-            return;
+            break;
         }
 
         BarGoLink bar(result->GetRowCount());
@@ -12312,8 +12320,9 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded " SIZEFMTD " premade player spec templates", m_playerPremadeSpecMap.size());
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
-    }
+    } while (false);
 
+    do
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading player premade spells ...");
         //                                                               0        1
@@ -12325,7 +12334,7 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
             bar.step();
 
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded 0 premade player spells. DB table `player_premade_spell` is empty.");
-            return;
+            break;
         }
 
         BarGoLink bar(result->GetRowCount());
@@ -12355,7 +12364,7 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, ">> Loaded %u premade player spells", count);
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
-    }
+    } while (false);
 }
 
 void ObjectMgr::ApplyPremadeGearTemplateToPlayer(uint32 entry, Player* pPlayer) const

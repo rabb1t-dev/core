@@ -889,6 +889,7 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
     uint8 botClass = 0;
     uint32 botLevel = pPlayer->GetLevel();
     CombatBotRoles botRole = ROLE_INVALID;
+    std::string botSpec;
 
     if (char* arg1 = ExtractArg(&args))
     {
@@ -935,6 +936,11 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
         // Prevent setting a custom level for bots unless the account is a GM or skipping checks is enabled.
         if (GetSession()->GetSecurity() > SEC_PLAYER || sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
             ExtractUInt32(&args, botLevel);
+
+        // Optional trailing spec, by name or entry. Role cannot express which of two builds
+        // sharing it is wanted, so `.partybot add mage fire-pve` is the only way to insist.
+        if (char* arg2 = ExtractArg(&args))
+            botSpec = arg2;
     }
 
     if (!botClass)
@@ -956,6 +962,7 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
     pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
 
     PartyBotAI* ai = new PartyBotAI(pPlayer, nullptr, botRole, botRace, botClass, botLevel, pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
+    ai->m_specName = botSpec;
     if (sPlayerBotMgr.AddBot(ai))
         SendSysMessage("New party bot added.");
     else

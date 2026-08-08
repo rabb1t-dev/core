@@ -2677,8 +2677,39 @@ void CombatBotBaseAI::LearnArmorProficiencies()
     }
 }
 
-void CombatBotBaseAI::LearnPremadeSpecForClass()
+PlayerPremadeSpecTemplate const* CombatBotBaseAI::FindPremadeSpecByName(std::string const& name) const
 {
+    // Accept an entry id as well as a name, matching what `.character premade spec` takes.
+    uint32 const entry = std::strtoul(name.c_str(), nullptr, 10);
+
+    for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
+    {
+        if (itr.second.requiredClass != me->GetClass())
+            continue;
+
+        if (itr.second.name == name || (entry && itr.second.entry == entry))
+            return &itr.second;
+    }
+
+    return nullptr;
+}
+
+// Picks the spec template this bot should be built from, or nullptr to fall back to random
+// talents. The ordering is total, so two bots asked for the same thing get the same build.
+// That is what lets a roster describe a raid rather than hope the dice cooperate.
+PlayerPremadeSpecTemplate const* CombatBotBaseAI::SelectPremadeSpecTemplate() const
+{
+    // A named spec wins outright. It is also the only way to ask for a build the role enum
+    // cannot express, since that enum has no way to tell a fire mage from a frost one.
+    if (!m_specName.empty())
+    {
+        if (PlayerPremadeSpecTemplate const* pNamed = FindPremadeSpecByName(m_specName))
+            return pNamed;
+
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "CombatBot: no premade spec '%s' for class %u, falling back",
+                 m_specName.c_str(), uint32(me->GetClass()));
+    }
+
     std::vector<PlayerPremadeSpecTemplate const*> vSpecs;
     for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
     {
@@ -2686,7 +2717,9 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
             itr.second.level == me->GetLevel())
             vSpecs.push_back(&itr.second);
     }
-    // Use lower level spec template if there are no templates for the current level.
+    // Use lower level spec template if there are no templates for the current level. Note that
+    // this under-spends talents, because application only levels a character up to the template
+    // level and never spends the difference. Templates must exist at every level actually used.
     if (vSpecs.empty())
     {
         for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
@@ -2696,24 +2729,43 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
                 vSpecs.push_back(&itr.second);
         }
     }
-    if (!vSpecs.empty())
+
+    if (vSpecs.empty())
+        return nullptr;
+
+    // With no role yet, prefer a damage build. Init has to choose a spec before AutoAssignRole
+    // can run, because that infers the role from the very talents this is about to grant, so
+    // something has to break the tie -- and defaulting to damage beats healing by accident.
+    auto isPreferredRole = [this](PlayerPremadeSpecTemplate const* pSpec)
     {
-        PlayerPremadeSpecTemplate const* pSpec = nullptr;
-        // Try to find a role appropriate gear template.
         if (m_role != ROLE_INVALID)
-        {
-            for (const auto itr : vSpecs)
-            {
-                if (itr->role == m_role &&
-                   (!pSpec || pSpec->level < itr->level))
-                {
-                    pSpec = itr;
-                }
-            }
-        }
-        // There is no spec template for this role, pick randomly.
-        if (!pSpec)
-            pSpec = SelectRandomContainerElement(vSpecs);
+            return pSpec->role == m_role;
+
+        return pSpec->role == ROLE_MELEE_DPS || pSpec->role == ROLE_RANGE_DPS;
+    };
+
+    // Sorted rather than scanned because the template map is unordered, so ties previously
+    // resolved differently from one run to the next. Entry is the final tie break for that reason.
+    std::sort(vSpecs.begin(), vSpecs.end(),
+        [&isPreferredRole](PlayerPremadeSpecTemplate const* a, PlayerPremadeSpecTemplate const* b)
+    {
+        bool const aPreferred = isPreferredRole(a);
+        if (aPreferred != isPreferredRole(b))
+            return aPreferred;
+
+        if (a->level != b->level)
+            return a->level > b->level;
+
+        return a->entry < b->entry;
+    });
+
+    return vSpecs.front();
+}
+
+void CombatBotBaseAI::LearnPremadeSpecForClass()
+{
+    if (PlayerPremadeSpecTemplate const* pSpec = SelectPremadeSpecTemplate())
+    {
         sObjectMgr.ApplyPremadeSpecTemplateToPlayer(pSpec->entry, me);
         if (m_role == ROLE_INVALID)
             m_role = pSpec->role;

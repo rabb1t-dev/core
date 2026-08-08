@@ -559,6 +559,198 @@ bool ChatHandler::HandleHarnessSpellsCommand(char* args)
     return true;
 }
 
+// TalentTab.dbc carries tree names but the server's format string discards the name column, and
+// an unnamed tree makes a build report unreadable at the moment you are trying to tell fire from
+// frost. Keyed by tab id rather than by TalentTabEntry::tabpage, because that ordering column is
+// wrong for mage: tabs 41 (Fire) and 81 (Arcane) both claim page 0.
+static char const* GetTalentTabName(uint32 tabId)
+{
+    switch (tabId)
+    {
+        case 161: return "Arms";
+        case 164: return "Fury";
+        case 163: return "Protection";
+        case 382: return "Holy";
+        case 383: return "Protection";
+        case 381: return "Retribution";
+        case 361: return "Beast Mastery";
+        case 363: return "Marksmanship";
+        case 362: return "Survival";
+        case 182: return "Assassination";
+        case 181: return "Combat";
+        case 183: return "Subtlety";
+        case 201: return "Discipline";
+        case 202: return "Holy";
+        case 203: return "Shadow";
+        case 261: return "Elemental";
+        case 263: return "Enhancement";
+        case 262: return "Restoration";
+        case 81:  return "Arcane";
+        case 41:  return "Fire";
+        case 61:  return "Frost";
+        case 302: return "Affliction";
+        case 303: return "Demonology";
+        case 301: return "Destruction";
+        case 283: return "Balance";
+        case 281: return "Feral Combat";
+        case 282: return "Restoration";
+    }
+
+    return "";
+}
+
+bool ChatHandler::HandleHarnessTalentsCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // Premade specs are applied with LearnSpell rather than LearnTalent, which grants the spell
+    // without checking that the tree beneath it was paid for. So an authored build can be
+    // illegal in ways the game would never allow, and nothing says so at apply time. Recompute
+    // the rules here instead of trusting that the build got in legitimately.
+    struct TabState
+    {
+        uint32 tabId = 0;
+        uint32 tabPage = 0;
+        uint32 spent = 0;
+        std::map<uint32 /*row*/, uint32 /*points*/> spentByRow;
+    };
+
+    std::map<uint32 /*tab id*/, TabState> tabs;
+    for (uint32 i = 0; i < sTalentTabStore.GetNumRows(); ++i)
+    {
+        TalentTabEntry const* pTabInfo = sTalentTabStore.LookupEntry(i);
+        if (!pTabInfo || (pTarget->GetClassMask() & pTabInfo->ClassMask) == 0)
+            continue;
+
+        TabState& tab = tabs[pTabInfo->TalentTabID];
+        tab.tabId = pTabInfo->TalentTabID;
+        tab.tabPage = pTabInfo->tabpage;
+    }
+
+    struct LearnedTalent
+    {
+        uint32 talentId = 0;
+        uint32 tabId = 0;
+        uint32 row = 0;
+        uint32 rank = 0;
+        uint32 maxRank = 0;
+        uint32 spellId = 0;
+        uint32 dependsOn = 0;
+        uint32 dependsOnRank = 0;
+    };
+
+    std::vector<LearnedTalent> learned;
+    for (uint32 talentId = 0; talentId < sTalentStore.GetNumRows(); ++talentId)
+    {
+        TalentEntry const* pTalentInfo = sTalentStore.LookupEntry(talentId);
+        if (!pTalentInfo || !tabs.count(pTalentInfo->TalentTab))
+            continue;
+
+        uint32 maxRank = 0;
+        while (maxRank < MAX_TALENT_RANK && pTalentInfo->RankID[maxRank])
+            ++maxRank;
+
+        // Rank is one-based and counted from the highest known, because the apply path learns
+        // intermediate ranks too and the top one is what the player actually has.
+        uint32 rank = 0;
+        uint32 spellId = 0;
+        for (uint32 i = 0; i < maxRank; ++i)
+        {
+            if (pTarget->HasSpell(pTalentInfo->RankID[i]))
+            {
+                rank = i + 1;
+                spellId = pTalentInfo->RankID[i];
+            }
+        }
+
+        if (!rank)
+            continue;
+
+        LearnedTalent entry;
+        entry.talentId = talentId;
+        entry.tabId = pTalentInfo->TalentTab;
+        entry.row = pTalentInfo->Row;
+        entry.rank = rank;
+        entry.maxRank = maxRank;
+        entry.spellId = spellId;
+        entry.dependsOn = pTalentInfo->DependsOn;
+        entry.dependsOnRank = pTalentInfo->DependsOnRank;
+        learned.push_back(entry);
+
+        TabState& tab = tabs[pTalentInfo->TalentTab];
+        tab.spent += rank;
+        tab.spentByRow[pTalentInfo->Row] += rank;
+    }
+
+    uint32 totalSpent = 0;
+    for (auto const& itr : tabs)
+        totalSpent += itr.second.spent;
+
+    // A talent on row r needs five points per row above it in the same tree.
+    uint32 illegal = 0;
+    for (auto const& entry : learned)
+    {
+        TabState const& tab = tabs[entry.tabId];
+
+        uint32 spentAbove = 0;
+        for (auto const& itrRow : tab.spentByRow)
+            if (itrRow.first < entry.row)
+                spentAbove += itrRow.second;
+
+        char const* problem = nullptr;
+        if (spentAbove < entry.row * 5)
+            problem = "tier";
+        else if (entry.dependsOn)
+        {
+            TalentEntry const* pPrereq = sTalentStore.LookupEntry(entry.dependsOn);
+            uint32 prereqRank = 0;
+            if (pPrereq)
+                for (uint32 i = 0; i < MAX_TALENT_RANK && pPrereq->RankID[i]; ++i)
+                    if (pTarget->HasSpell(pPrereq->RankID[i]))
+                        prereqRank = i + 1;
+
+            if (prereqRank <= entry.dependsOnRank)
+                problem = "prereq";
+        }
+
+        if (problem)
+        {
+            ++illegal;
+            PSendSysMessage("illegal talent=%u tab=%u row=%u rank=%u reason=%s spell=%u",
+                entry.talentId, entry.tabId, entry.row, entry.rank, problem, entry.spellId);
+        }
+    }
+
+    // available is what the level entitles the character to, so spent below it means an authored
+    // build is leaving points on the table -- the quiet failure when a level 39 template lands
+    // on a level 45 bot. free is what the server itself thinks is unspent.
+    uint32 const available = pTarget->GetLevel() < 10 ? 0 : pTarget->GetLevel() - 9;
+    PSendSysMessage("talents character=%s class=%u level=%u spent=%u available=%u free=%u illegal=%u",
+        pTarget->GetName(), pTarget->GetClass(), pTarget->GetLevel(),
+        totalSpent, available, pTarget->GetFreeTalentPoints(), illegal);
+
+    for (auto const& itr : tabs)
+    {
+        PSendSysMessage("tab id=%u page=%u spent=%u name=%s", itr.second.tabId,
+            itr.second.tabPage, itr.second.spent, GetTalentTabName(itr.second.tabId));
+    }
+
+    for (auto const& entry : learned)
+    {
+        SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(entry.spellId);
+        PSendSysMessage("talent id=%u tab=%u row=%u rank=%u max=%u spell=%u name=%s",
+            entry.talentId, entry.tabId, entry.row, entry.rank, entry.maxRank, entry.spellId,
+            pSpell ? pSpell->SpellName[0].c_str() : "");
+    }
+
+    return true;
+}
+
 bool ChatHandler::HandleHarnessInfoCommand(char* args)
 {
     Player* pTarget = GetHarnessTarget(&args);
