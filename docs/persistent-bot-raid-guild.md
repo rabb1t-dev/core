@@ -87,7 +87,15 @@ character and reads the build back; all twenty it can reach spend 51 of 51 point
   work.** The plan had asked for ordered spend lists without saying what the current data
   actually is: `player_premade_spell` is `(entry, spell)` with no sequence column at all, so a
   template can only ever be applied whole, at the level it was authored for. Templates exist at
-  five levels and nowhere else. Written up under Phase 3.
+  five levels and nowhere else. Fixed by a `spend_order` column holding one row per talent point;
+  written up under Phase 3.
+- **Filling a talent tree from the top down is legal for free, which is what makes a spend order
+  generatable rather than authored.** A talent on row r needs 5r points above it in its own tree,
+  and a finished build already satisfies that for every talent it holds, so spending its points
+  row by row can never reach a row early — the prefix sums are the same numbers the final check
+  already passed. Only prerequisites need real handling, by deferring a talent until the one it
+  depends on is paid for. So the order comes out of the build itself, and the author's only
+  remaining choice is which tree to spend first.
 - **Talent trees are client data with no server-side table, so nothing in SQL can check a
   build.** There is no `talent` table in the world database; trees live in Talent.dbc. Combined
   with specs being applied through `LearnSpell`, which validates nothing, an authored build had
@@ -122,11 +130,16 @@ provisioning, idempotence, account distinctness, adoption of an existing charact
 a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
 member roster being guilded with six of them offline, reaching the world as a raid, landing
 in its rostered subgroups, inheriting the leader's attunements, entering Zul'Gurub as one
-instance rather than two, dropping a planted stale bind, leaving on dismissal, and keeping
-what it earned across the round trip.
+instance rather than two, dropping a planted stale bind, arriving on the leader's level rather
+than the one it was left on, leaving on dismissal, and keeping what it earned across the round
+trip. `contrib/harness/test_bot_gear_preservation.py` covers the four ways the bot AI used to
+lose gear, on the back of two new harness commands, `.harness equipnew` and `.harness items`.
 
-Still to do in Phase 0: level matching, which lands in `PartyBotAI` and `CombatBotBaseAI`
-alongside the talent spend order and so waits on that agent rather than on anything here.
+**Phase 0 is done.** Level matching landed in `RaidGuildMgr` rather than in the load path the
+plan pointed at, which kept it clear of the two files the other agents are working in and, as
+it turned out, behaves better: writing the level before the session loads means a member
+arrives correct rather than being corrected in front of everyone. Next is Phase 1, the item
+evaluation engine, which the gear preservation work was the stated prerequisite for.
 
 Two spec items follow from `547a3416c`. Provisioning should pass the roster row's `spec` to
 `CombatBotBaseAI::m_specName`, which is a one line change and makes the column live. Ordered
@@ -195,9 +208,11 @@ flowchart TD
 
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
-**Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table,
-provisioning, summoning, the guild, bind reconciliation and attunement mirroring are done and
-verified live. Still not started: level matching.
+**Status.** Complete and verified live: group joining (`a19dc86dc`), the roster table,
+provisioning, summoning, the guild, bind reconciliation, attunement mirroring and level
+matching. The one thing carried forward is the ordered talent spend list, which belongs to the
+companion document and is what a member dropped to a lower level needs before it arrives with
+a spec rather than with refunded points.
 
 ### Roster [done]
 
@@ -390,6 +405,9 @@ feel like a guild — gear, upgrades, loot history — is earned in content run 
 - `.partybot add` already defaults a new bot to the leader's level
   ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) line 880). The
   persistent `.partybot load` path does **not** adjust level, so level matching is the change needed.
+  **Done, and not where this expected.** It landed in `RaidGuildMgr::MatchMemberLevel` rather than
+  in the load path, which turned out to be both less code and better behaved. See "Level matching,
+  as built" below.
 - **Talent builds must be stored as an ordered spend list, not a finished spec.** The spawn path calls
   `GiveLevel` followed by `InitTalentForLevel`
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 621-626), and a
@@ -414,6 +432,34 @@ feel like a guild — gear, upgrades, loot history — is earned in content run 
   `.partybot clone` ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp)
   lines 849-853), and `PartyBot.MaxBots` is only checked inside `PartyBotAddRequirementCheck`, which
   the load path skips entirely.
+
+### Level matching, as built [done]
+
+Summoning writes the leader's level into the member's `characters` row before the session
+loads, in `RaidGuildMgr::MatchMemberLevel`. That is the same write the offline branch of
+`.character level` makes, and its comment is why this is safe: everything else is recomputed
+at loading. `LoadFromDB` calls `InitTalentForLevel` after loading spells, so a member brought
+down to a level it can no longer afford its talents at has them refunded rather than kept.
+
+Doing it before the load rather than after was the whole trick, and it is the same trick as
+the instance binds. A member corrected a second after arriving would be visible as a bot that
+spawns and then re-rolls its stats and loses talents in front of everyone. Doing it first
+means it simply arrives right, and there is no reconciling tick to fight a human who sets a
+member's level deliberately.
+
+The test asks the discriminating question rather than the easy one. Every member is already
+on the leader's level by the time the round trip happens, so checking that they match would
+pass while doing nothing; the witness is therefore left on level 25 before dismissal and
+required to come back on the leader's 60.
+
+This is also why the persistence witness in that test is no longer a level. Level is a free
+parameter the roster assigns on every summon, so a level surviving a round trip would say
+nothing about whether the character was saved. An item is used instead, which is what the
+roster is meant to accumulate anyway.
+
+What is **not** done is the ordered talent spend list. A member dropped to a lower level has
+its talents refunded and not re-spent, so it arrives specless until the spend-order work in
+the companion document lands and can be asked for the first N points.
 
 ### Content gating and attunement
 
@@ -814,12 +860,32 @@ than walked past; sends the replaced item to the bags or the mail through
 `Player::AutoUnequipItemFromSlot` instead of destroying it, and declines the swap if that fails;
 and calls `AutoUnequipOffhandIfNeed` afterwards.
 
-Two things are deliberately left. Consumables are still used on receipt rather than saved, which
-is the remaining half of the trade problem and wants its own change. And none of this has a live
-test, unlike the rest of Phase 0: `EquipOrUseNewItem` is reachable only from trade completion and
-there is no way to drive a trade over SOAP, so a harness command that calls it directly is the
-prerequisite for testing it. The roster suites were run to confirm nothing regressed, which is not
-the same as confirming these paths behave.
+**Both of the things left behind are now closed too.** Consumables are kept rather than used on
+receipt: the pass ran on trade completion, so a raid handed forty flasks drank them in the trade
+window, standing in a city. Nothing else in the bot AI touches bag consumables, so leaving them
+alone leaves the decision with whoever handed them over.
+
+And the paths have a live test, `contrib/harness/test_bot_gear_preservation.py`, built on two new
+harness commands: `.harness equipnew` calls the pass directly, since trade completion is its only
+other trigger and there is no way to conduct a trade over SOAP, and `.harness items` reports what
+a character is wearing, carrying **and holding in the mail**. The mail is the part that matters:
+displaced gear that the bags will not take is mailed, so a test that looked only at bags and
+equipment could not tell that from destruction, which is exactly the distinction being made.
+
+Four cases, each starting from a stripped bot: a swap leaves the displaced sword in the bags, a
+sword requiring level 60 stays off a level 1 bot, a two-hander takes the shield off rather than
+being worn beside it, and a potion is still there afterwards.
+
+Stripping between cases is not tidiness. **This pass has no notion of better**: it equips
+everything it can, in bag order, so the last thing it looks at is what ends up worn. The first
+version of the test assumed otherwise and failed by watching a starting axe beat a sword it had
+just equipped. Choosing between two usable items is the evaluator's job and the evaluator is
+Phase 1.
+
+One bug was introduced by the fix and caught here. Moving the displaced item to the bags instead
+of destroying it means the loop, which reads the bags as it walks them, finds it further along
+and swaps it straight back in. `EquipOrUseNewItem` now decides which slots to consider before it
+starts, so an item put down by this pass is not picked up again by it.
 
 The safety rules proper:
 
@@ -1270,43 +1336,52 @@ that you select forty from per raid is fine and is the intended shape.
 
 Two hazards to respect:
 
-- `ApplyPremadeSpecTemplateToPlayer` calls `GiveLevel` up to the template's level when the player is
-  lower. Applying a level 60 template to a level 30 bot **levels it to 60**, which collides directly with
-  matching bots to the human's level. Either keep templates per level band or spend talents in a
-  recorded order, which is why ordered talent spending sits in the provisioning stage.
+- `ApplyPremadeSpecTemplateToPlayer` still calls `GiveLevel` up to the template's level for an
+  **unordered** template, so applying a level 60 one of those to a level 30 bot levels it to 60. That is
+  the whole population of 53 shipped templates. Ordered specs are exempt and never move the character.
 - The same function calls `ResetTalents(true)`, so spec application must happen **once at provisioning**
   and never on each spawn. This is already safe by accident: the database-load path in
   [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 652-661 does not call
   `LearnPremadeSpecForClass` at all, and only the temporary-character path does. Preserve that boundary.
 
-#### Open: every level that is not 60 [next]
+#### Levels other than 60 [done]
 
-A template is a **set** of finished talent spells, not a spend order. `player_premade_spell` is
-`(entry, spell)` with no ordering column and no `ORDER BY` on load, so there is nothing anywhere that
-says which talent a build takes first. Templates exist only at levels 19, 29, 39, 49 and 60. Those five
-levels land cleanly and every other level does not, which matters because the design matches bot level to
-the human's.
+A template used to be a **set** of finished talent spells with no order anywhere, so it could only be
+applied whole and only meant anything at the level it was authored for. Templates exist at levels 19, 29,
+39, 49 and 60 and nowhere else, which collided directly with matching bot level to the human's. Four level
+45 bots for a five-man got the level 39 twink build, because selection falls back to the highest template
+*below* the level and `GiveLevel` only fires when the bot is lower than the template. They stayed level 45
+and spent a 30 point build out of 36 available. Six points vanished, into a spec tuned for level 39
+battlegrounds, and nothing said so.
 
-Concretely, four level 45 bots for a five-man today: no exact match, so selection falls back to every
-template *below* 45 and takes the highest, which is the level 39 twink build. `GiveLevel` only fires when
-the bot is *lower* than the template, so they stay level 45 and spend a 30 point build with 36 points
-available. Six points vanish silently, into a spec tuned for level 39 battlegrounds. Nothing reports this;
-`.harness talents` is now the thing that would, since it prints spent against available.
+Authoring a template per level was rejected on volume: fifty levels times roughly two specs a class is
+several hundred row sets, each its own chance to be wrong. What landed instead is a spend order.
+`player_premade_spell` now carries `spend_order`, numbering a spec's rows from 1 with **one row per
+talent point** rather than one per talent, so the first N rows are exactly the build for a character
+holding N points. `ApplyPremadeSpecTemplateToPlayer` takes as many rows as the character's own budget
+allows and, for an ordered spec, never calls `GiveLevel`: a level 45 bot stays level 45 and gets the first
+36 points of the real level 60 build. Levelling a roster member later spends the tail with nothing
+re-authored. Rows left at 0 are an unordered set and keep the old whole-template behaviour, which is what
+the 53 shipped templates still rely on.
 
-Two ways out, and the second is the one to build:
+`contrib/harness/author_premade_specs.py` derives the order rather than taking it by hand. Trees are spent
+in the order the spec lists them and, within a tree, by row and then column, which is legal for free: a
+talent on row r needs 5r points above it in its own tree, the finished build already satisfies that, so
+filling rows top down can never arrive at a row early. Prerequisites are the one thing row order does not
+settle, so a talent whose prerequisite is not yet paid for is deferred and retried. Every prefix is then
+validated as a build in its own right, because a prefix is a real character and an order can be legal at
+60 while illegal at 39. All six specs pass at all 51 of their prefixes.
 
-- **Templates at every level.** Fifty levels times roughly two specs a class is several hundred rows to
-  author and maintain, and each is a separate chance to be wrong. Rejected on volume.
-- **An ordered spend list per spec.** Add a sequence column so a spec becomes "take these talents in this
-  order" and application spends down the list until the point budget for the character's level runs out.
-  One row set per spec covers every level, a level 45 character gets the first 36 points of the level 60
-  build, and levelling a member re-spends the tail without re-authoring anything. This is what the
-  provisioning stage has always assumed, and `contrib/harness/author_premade_specs.py` is already the
-  right place to emit it, since it resolves talents by name and can check legality *at every prefix* of
-  the order rather than only at the end. That prefix check is the real work: an order is only valid if
-  each point spent is legal at the moment it is spent, which hand-authoring will not get right.
+What the generator cannot supply is a human's priorities. Row order means a talent a real character would
+rush is taken whenever its row comes up, and a later tree is untouched until the one before it is
+finished. Ordering the trees is the author's only lever, and it is used twice: the priest spends Holy
+before the shallower Discipline tree, and the cat druid spends Restoration before Balance so Furor arrives
+as early as the build can afford it. At the full level every ordering produces the same build, so this
+costs nothing at 60.
 
-Until that exists, keep roster members at 60, or accept under-spent talents below it.
+`test_premade_specs.py --only levels` applies all six at levels 22, 45 and 60 and asserts the character is
+still the level it was asked for, spends its whole budget, holds nothing illegal, and at 60 still matches
+the authored build.
 - A `.raidguild report` command showing per-member gear score, resistance totals, durability,
   enchantment coverage, and consumable stock, which doubles as the readiness check before a raid
   attempt.
