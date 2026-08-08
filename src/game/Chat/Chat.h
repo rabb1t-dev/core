@@ -283,6 +283,7 @@ class ChatHandler
         bool HandleHarnessPathCommand(char* args);
         bool HandleHarnessGraveyardCommand(char* args);
         bool HandleHarnessLoadMmapsCommand(char* args);
+        bool HandleHarnessRewardQuestCommand(char* args);
         bool HandleHarnessCreateCharCommand(char* args);
         bool HandleHarnessLoginCommand(char* args);
 

@@ -342,6 +342,67 @@ bool ChatHandler::HandleHarnessPathCommand(char* args)
     return true;
 }
 
+// .harness rewardquest <character> <quest>
+// Grants a quest as though the character had walked up to the ender and handed it in.
+//
+// Attunements are checked with GetQuestRewardStatus, and .quest complete does not satisfy it:
+// that stops at COMPLETE, and only a quest flagged auto-rewarded goes the rest of the way. So
+// there is otherwise no way to attune a bot to anything, and no way for a headless character to
+// reach a quest ender to do it honestly.
+bool ChatHandler::HandleHarnessRewardQuestCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 questId = 0;
+    if (!ExtractUInt32(&args, questId))
+    {
+        SendSysMessage("Syntax: .harness rewardquest <character> <quest>");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Quest const* pQuest = sObjectMgr.GetQuestTemplate(questId);
+    if (!pQuest)
+    {
+        PSendSysMessage("Quest %u does not exist.", questId);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (pTarget->GetQuestStatus(questId) == QUEST_STATUS_NONE)
+    {
+        // AddQuest asserts on a full log rather than refusing, which would take the server
+        // down with it.
+        if (!pTarget->CanAddQuest(pQuest, false))
+        {
+            PSendSysMessage("Harness: %s cannot take quest %u.", pTarget->GetName(), questId);
+            SetSentErrorMessage(true);
+            return false;
+        }
+        pTarget->AddQuest(pQuest, nullptr);
+    }
+
+    // Objectives first, since RewardQuest takes the required items back off the player.
+    pTarget->FullQuestComplete(questId);
+    pTarget->RewardQuest(pQuest, 0, pTarget, false);
+
+    PSendSysMessage("quest=%u rewarded=%u", questId,
+        pTarget->GetQuestRewardStatus(questId) ? 1 : 0);
+    return true;
+}
+
 // .harness loadmmaps <map>
 // Pulls every navigation tile of a map into memory at once.
 //
