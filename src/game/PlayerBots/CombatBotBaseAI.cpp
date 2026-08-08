@@ -2,6 +2,7 @@
 #include "CombatBotBaseAI.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "Bag.h"
 #include "Group.h"
 #include "Totem.h"
 #include "PlayerBotMgr.h"
@@ -1973,6 +1974,60 @@ std::vector<CombatBotBaseAI::SpellSlot> CombatBotBaseAI::GetSpellSlots() const
     return {};
 }
 
+// Whether using this item is what casts this spell.
+static bool ItemAppliesSpell(ItemPrototype const* pProto, SpellEntry const* pSpellEntry)
+{
+    for (const auto& itemSpell : pProto->Spells)
+    {
+        if (itemSpell.SpellId == pSpellEntry->Id &&
+            itemSpell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+            return true;
+    }
+    return false;
+}
+
+// The item whose use casts this spell, if one exists. A rogue never learns a poison enchant: it
+// learns the trade spell that makes the vial, and the vial carries the enchant as its on-use
+// spell. So the enchant is all the bot has written down, and the item that applies it has to be
+// found by asking what each item does. Only worth doing once, when stocking up.
+static ItemPrototype const* FindItemApplyingSpell(SpellEntry const* pSpellEntry)
+{
+    for (auto const& itr : sObjectMgr.GetItemPrototypeMap())
+    {
+        if (ItemAppliesSpell(&itr.second, pSpellEntry))
+            return &itr.second;
+    }
+    return nullptr;
+}
+
+// The same thing among what the bot is carrying, which is a few dozen slots rather than the whole
+// item table, and answers the question that matters at the point of use: is there a vial left.
+static Item* FindCarriedItemApplyingSpell(Player const* pPlayer, SpellEntry const* pSpellEntry)
+{
+    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    {
+        Item* pItem = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (pItem && ItemAppliesSpell(pItem->GetProto(), pSpellEntry))
+            return pItem;
+    }
+
+    for (int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+    {
+        Bag* pBag = (Bag*)pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (!pBag)
+            continue;
+
+        for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+        {
+            Item* pItem = pBag->GetItemByPos(j);
+            if (pItem && ItemAppliesSpell(pItem->GetProto(), pSpellEntry))
+                return pItem;
+        }
+    }
+
+    return nullptr;
+}
+
 void CombatBotBaseAI::AddAllSpellReagents()
 {
     for (const auto& pSpell : m_spells.raw.spells)
@@ -1988,6 +2043,17 @@ void CombatBotBaseAI::AddAllSpellReagents()
             {
                 if (totem && !me->HasItemCount(totem, 1))
                     AddItemToInventory(totem);
+            }
+
+            // A weapon enchant the bot has picked but never learned comes out of an item, and the
+            // item is the thing it is short of. Rogue poisons are the only ones: the vial is a
+            // reagent in everything but the field it is filed under, so it is stocked like one,
+            // once, and runs out like one. Both hands share the stack when they share a poison.
+            if (pSpell->Effect[0] == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY && !me->HasSpell(pSpell->Id))
+            {
+                if (ItemPrototype const* pProto = FindItemApplyingSpell(pSpell))
+                    if (!me->HasItemCount(pProto->ItemId, 1))
+                        AddItemToInventory(pProto->ItemId, pProto->GetMaxStackSize());
             }
         }
     }
@@ -3573,13 +3639,29 @@ SpellCastResult CombatBotBaseAI::CastWeaponBuff(SpellEntry const* pSpellEntry, E
     if (pWeapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
         return SPELL_FAILED_ITEM_ALREADY_ENCHANTED;
 
+    SpellCastTargets targets;
+    targets.setItemTarget(pWeapon);
+
+    // An enchant the character never learned is a poison, and a poison is applied by using the
+    // vial rather than by casting anything. Casting it by name, which is what this did, asked for
+    // a spell the rogue does not have and consumed nothing, because with no vial in the story
+    // there is nothing for an application to cost. Going through the item spends one per
+    // application, which is the entire point of poisons.
+    if (!me->HasSpell(pSpellEntry->Id))
+    {
+        Item* pSource = FindCarriedItemApplyingSpell(me, pSpellEntry);
+        if (!pSource)
+            return SPELL_FAILED_ITEM_NOT_FOUND;
+
+        me->CastItemUseSpell(pSource, targets);
+        return SPELL_CAST_OK;
+    }
+
     // Cast for real rather than triggered. Triggered skips the mana cost, the global cooldown,
     // range and line of sight, silence and school lockouts, and reagent consumption, so a shaman
     // imbued its weapon for nothing and instantly. Enhancement throughput measured against that
     // is measured against a shaman with a mana cost fewer than it has.
     Spell* spell = new Spell(me, pSpellEntry, false, ObjectGuid(), nullptr, nullptr, nullptr);
-    SpellCastTargets targets;
-    targets.setItemTarget(pWeapon);
     return spell->prepare(std::move(targets), nullptr);
 }
 

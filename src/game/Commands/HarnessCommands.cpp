@@ -781,11 +781,24 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
     Powers const powerType = pTarget->GetPowerType();
     uint32 const ammoId = pTarget->GetUInt32Value(PLAYER_AMMO_ID);
     Item const* pMainHand = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
-    PSendSysMessage("health=%u maxhealth=%u power=%u maxpower=%u powertype=%u ammo=%u ammocount=%u mhenchant=%u",
+    Item const* pOffHand = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
+    PSendSysMessage("health=%u maxhealth=%u power=%u maxpower=%u powertype=%u ammo=%u ammocount=%u mhenchant=%u ohenchant=%u",
         pTarget->GetHealth(), pTarget->GetMaxHealth(),
         pTarget->GetPower(powerType), pTarget->GetMaxPower(powerType), uint32(powerType),
         ammoId, ammoId ? pTarget->GetItemCount(ammoId) : 0,
-        pMainHand ? pMainHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0);
+        pMainHand ? pMainHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0,
+        pOffHand ? pOffHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0);
+
+    // What the bot is carrying, which nothing outside the server could see at all. A consumable
+    // that is supposed to be spent looks exactly like one that is not until the stack is counted,
+    // and a rogue's poison vials are the case in hand: the enchant on the blade above says a
+    // poison was applied and says nothing about whether applying it cost anything.
+    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    {
+        if (Item const* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            PSendSysMessage("item entry=%u count=%u slot=%d name=%s", pItem->GetEntry(),
+                pItem->GetCount(), i, pItem->GetProto()->Name1);
+    }
 
     Group* pGroup = pTarget->GetGroup();
     if (!pGroup)

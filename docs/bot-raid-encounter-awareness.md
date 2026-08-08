@@ -194,12 +194,21 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   and the cost is calculated either way, so shaman imbues were always paid for. What the
   triggered flag really skipped was the global cooldown, range and line of sight, and the
   silence and school lockouts, which is worth having and is what the fix bought.
-- **Rogue poisons are free for a reason no flag controls.** A rogue never learns the poison
-  enchant; it learns the trade spell that makes the vial, and the vial applies the enchant
-  when used. The bot skips the vial and casts the enchant by name, so it is not that the
-  consumption is being waived, it is that nothing is ever consumed and no poison need exist.
-  Making the cast non-triggered changes nothing here. The fix is to hold the item and apply it
-  by use, and it belongs with poison selection rather than with the cast path.
+- **Rogue poisons were free for a reason no flag controls.** [fixed] A rogue never learns the
+  poison enchant; it learns the trade spell that makes the vial, and the vial applies the
+  enchant when used. The bot skipped the vial and cast the enchant by name, so it was not that
+  the consumption was being waived, it was that nothing was ever consumed and no poison needed
+  to exist. Making the cast non-triggered changed nothing here.
+
+  The fix turned out to need no part of poison selection, which is what had made it look like
+  someone else's job. A weapon enchant the character never learned is, by that fact alone, one
+  that comes out of an item, and the item can be found by asking which item casts it. So
+  `CastWeaponBuff` splits on `HasSpell`: a shaman imbue is cast, and anything else is applied by
+  using the vial the bot is carrying, through `Player::CastItemUseSpell` — the same path the
+  client uses, which spends a charge and destroys the vial. Stocking rides along with the
+  reagents at spawn, since a vial is a reagent in everything but the field it is filed under.
+  Verified live: a rogue with two different poisons carries 19 of each after buffing both hands,
+  and one with the same poison in both carries 18 of a single stack.
 - **Free full health and mana out of range was load-bearing, so removing it alone hangs the
   bot.** The out-of-combat block tests for food and drink before it tests for distance, and a
   bot that needs either never falls through, so the only way one could ever reach the teleport
@@ -498,17 +507,13 @@ than it is alone.
 The free-resource defaults are done, and the death penalty is now the default rather than a
 setting the dev server happens to carry: `PartyBot.AutoRevive` is off, the out-of-combat full
 restore is gone, the spawn-time restore no longer reaches characters loaded from the database,
-hunters are stocked once when they spawn instead of whenever a shot finds an empty quiver, and
-weapon buffs go through the normal cast path. Two of the four turned out to be different
-bugs than this document described, both recorded under findings. `.harness info` reports
-health, power, ammo and the main hand's temporary enchant now, because none of this could be
-seen from outside otherwise. Both suites were re-run against it: 26 of 26 and 7 of 7, clean.
-
-What is left in this phase is one item, and it is smaller than it was: rogue poisons cost
-nothing, because the bot applies the enchant directly rather than using a poison item, so no
-vial is ever consumed. That is not the triggered-cast flag and was not fixed by changing it.
-It belongs with whoever owns poison selection, since the fix is to craft or stock the item and
-apply it by use.
+hunters are stocked once when they spawn instead of whenever a shot finds an empty quiver,
+weapon buffs go through the normal cast path, and a rogue's poisons are applied by using a vial
+that is then gone. Three of the five turned out to be different bugs than this document
+described, all recorded under findings. `.harness info` reports health, power, ammo, both
+weapons' temporary enchants and everything in the bot's bags now, because none of this could be
+seen from outside otherwise, and a consumable that is spent looks exactly like one that is not
+until the stack is counted. Both suites were re-run against it: 26 of 26 and 7 of 7, clean.
 
 `Corpse::GetFactionTemplateId` is fixed. The claimed double durability loss on environmental
 death was not real; see findings.
@@ -565,10 +570,11 @@ paid for. Reagent consumption is skipped, but these spells have no reagents, so 
 nothing either. The cast is normal now, which buys the cooldown and the two checks and is worth
 having, and enhancement throughput was never inflated the way this said.
 
-Poisons are a separate problem that the flag never touched, and they really are free: a rogue
-knows the trade spell that makes the vial, not the enchant the vial applies, and the bot casts
-the enchant by name without ever holding a poison. Fixing that means stocking the item and
-applying it by use, which belongs with poison selection.
+[done] Poisons were a separate problem that the flag never touched, and they really were free: a
+rogue knows the trade spell that makes the vial, not the enchant the vial applies, and the bot
+cast the enchant by name without ever holding a poison. `CastWeaponBuff` now splits on whether
+the character knows the spell, which is exactly the line between an imbue and a poison, and
+applies the latter by using the vial. See findings.
 
 Bot mount copying does something similar and worse, setting `PLAYER_CHEAT_NO_CAST_TIME` and
 `PLAYER_CHEAT_NO_POWER` around a triggered cast, though that one only affects travel.
@@ -582,6 +588,8 @@ Erasing only gold, therefore acceptable to keep:
 - **Free reagents at spawn.** `AddAllSpellReagents` grants every reagent and totem the bot's spells
   require ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line
   1827). Costs gold only, and a roster of forty bots shopping for Sacred Candles is pure tedium.
+  A rogue's poison vials are now stocked here too, one stack per poison and only when the bot has
+  none, since spending them is a cost in gold and applying them is not a cost in anything else.
 - **Fake food and drink.** `DrinkAndEat` casts spells 1131 and 1137 rather than consuming real items
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 185). This removes the
   gold cost of water while **keeping the time cost of drinking**, which is the part that matters, so it
@@ -607,23 +615,23 @@ is. It fires only on bot removal and exists to avoid leaving corpses behind on d
 **The death and corpse code was cold while bots self-resurrected; turning that off makes it hot, and it has
 bugs.** An audit found several, of which two are directly in the corpse-run path:
 
-- **A resurrect request is never cleared on success.** `ResurrectUsingRequestData` resurrects and spawns bones
+- **A resurrect request is never cleared on success.** [fixed] `ResurrectUsingRequestData` resurrects and spawns bones
   but never calls `ClearResurrectRequestData`, and that only otherwise runs on transition to `JUST_DIED`
   ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) around lines 20164-20220). Since
   `SpellEffects.cpp` refuses a resurrection spell while `IsRessurectRequested()` is true, **a bot that
   accepts one resurrection cannot be resurrected again until it dies afresh.** For a raid healer working down
   a pile of corpses, that is the difference between recovering and not.
-- **Release can leave a bot permanently stuck.** If `CreateCorpse` fails inside `BuildPlayerRepop`, the
+- **Release can leave a bot permanently stuck.** [fixed] If `CreateCorpse` fails inside `BuildPlayerRepop`, the
   function has already applied ghost form and returns before `SetDeathState(DEAD)`
   ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 4644-4695). The bot then holds the
   ghost flag while still in `CORPSE` state, and `HandleRepopRequestOpcode` refuses to release anything already
   flagged as a ghost - so it can neither release again nor be resurrected, with no corpse registered.
 
-Two more are worth fixing while in this code: environmental deaths apply the ten percent durability loss
-**twice**, once inside `DealDamage` and again in `Player::EnvironmentalDamage`, which compounds fast across
-unattended attempts; and `Corpse::GetFactionTemplateId` dereferences an `m_faction` that is never set for
-DB-loaded corpses or for bones spawned by `Map::RemoveCorpses` when the owner is elsewhere, which is a crash
-rather than a glitch.
+Two more were listed here as worth fixing while in this code, and only one of them was real.
+`Corpse::GetFactionTemplateId` did dereference an `m_faction` that is never set for DB-loaded corpses
+or for bones spawned by `Map::RemoveCorpses` when the owner is elsewhere, which is a crash rather than
+a glitch, and it is fixed. Environmental deaths were said to apply the ten percent durability loss
+twice; they do not, and never did. See findings.
 
 One item needs verifying rather than fixing blind, because it decides whether release works at all for bots.
 `ScheduleRepopAtGraveyard` defers the graveyard teleport when `GetSession()->IsConnected()`, and the deferred
@@ -654,8 +662,8 @@ means run-to-corpse pathing inside the instance would be dead code, and `CMSG_RE
 rarely be the resurrection path in practice.
 
 The state machine. Release, the `ShouldAutoRevive` gate, ghost-targeted resurrection and the
-spirit-healer deadline landed in `2c28cd731`; the run back and re-entry have not. The analysis
-below is kept because it is what the implementation was built from.
+spirit-healer deadline landed in `2c28cd731`, and the run back and re-entry followed in
+`22989e473`. The analysis below is kept because it is what the implementation was built from.
 
 - **Release.** [done] Send the equivalent of `CMSG_REPOP_REQUEST`, or call `BuildPlayerRepop()` followed by
   `ScheduleRepopAtGraveyard()` directly, mirroring what battleground bots already do at

@@ -102,16 +102,30 @@ class Harness:
 
         fields = {}
         members = []
+        items = []
+        # Repeated lines are collected rather than merged, since each one describes a different
+        # thing and folding them into the same dict leaves only whichever came last.
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             pairs = dict(re.findall(r"(\w+)=(\S+)", line))
+
+            # The last value on a line runs to the end of it, spaces and all. Names are put
+            # last for exactly that reason, so that nothing has to be quoted, and the pair
+            # pattern above would otherwise keep only the first word of one.
+            trailing = re.search(r"(\w+)=([^=]*)$", line)
+            if trailing:
+                pairs[trailing.group(1)] = trailing.group(2)
+
             if line.startswith("member "):
                 members.append(pairs)
+            elif line.startswith("item "):
+                items.append(pairs)
             else:
                 fields.update(pairs)
         fields["members_detail"] = members
+        fields["items"] = items
         return fields
 
     def login(self, character, timeout=60.0):
