@@ -27,6 +27,11 @@ Status key: **not started** / **in progress** / **done**.
 | `700a41239` | Two corpse-path bugs that strand a dead player |
 | `2c28cd731` | Wipe recovery: release, healer window, spirit-healer fallback |
 | `203d9e1a9` | Wipe recovery test, and the death state `.harness info` needed to see it |
+| `64d8df0f3` | Map-transfer acks moved to `PlayerBotAI`, so headless characters can change map |
+| `22989e473` | Corpse run: graveyard back to the corpse or the way into the instance |
+| `c905be64c` | Navmesh diagnostics: `.harness path`, `graveyard`, `loadmmaps`, `.mmap loc` |
+| `24bb1f211` | Sweep of every instance entrance for a walkable corpse run |
+| `18c47ba47` | Six offmesh links bridging entrances the mesh leaves unreachable |
 
 ### Findings that changed the plan
 
@@ -43,6 +48,35 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   `CHEAT_TYPE_PENDING_ACK_DELAY` violation each time. Fixed in `5e77b066d` by treating a bot
   as having no client at both sites. **The corpse-run design in Phase 0 is therefore sound as
   written.**
+- **A path query whose destination sits in an unloaded tile does not fail; it abandons the
+  mesh and returns a straight line.** Tiles load with the grids around a player, so anything
+  that reasons about a route from a distance reports success everywhere. This produced a
+  fully green first sweep that was entirely false, including a 1786-yard "path" straight
+  through Dustwallow Marsh. `.harness loadmmaps` exists to make such reasoning valid. The
+  same trap applies to any future tooling that asks about somewhere nobody is standing.
+- **Detour's path type must be read as flags, never matched as a value.** The interesting
+  answers are combinations: `NORMAL|NOT_USING_PATH` is a straight line drawn because the
+  mesh was unavailable. Matching on the value alone reported it as "OTHER" and concealed the
+  bug above.
+- **A dungeon portal is a volume, not a point, and testing arrival by distance to its centre
+  is wrong.** Half of them are box shaped with a radius of zero, and Ragefire Chasm's box is
+  twenty one yards tall — a ghost standing in the doorway measures ten yards from the centre.
+  Using a fixed radius produced five false failures out of nine. Arrival is
+  `IsPointInAreaTriggerZone` with the same tolerance the bot uses, and nothing else.
+- **`areatrigger_teleport` is not the complete set of ways into an instance.** Blackwing Lair
+  is entered by a C++ scripted trigger beside the Orb of Command (`at_orb_of_command`,
+  trigger 3847) that fires only for a dead player whose corpse is inside, and it has no row
+  in that table. Reading the table alone concluded the raid was permanently unreachable. The
+  map's `ghost_entrance` names the spot correctly, so that is the fallback. Auditing the
+  other 56 scripted triggers found no further instance entrances, so this is the only case.
+  Note the trigger also requires quest **7761** (Blackhand's Command) rewarded, which is a
+  roster attunement problem rather than a corpse-run one.
+- **Entrance descents are routinely missing from the mesh, and the pattern is recognisable.**
+  Wailing Caverns, Blackrock Depths, Blackrock Spire, Sunken Temple and Blackfathom Deeps all
+  stalled with the ghost directly above its dungeon: both sides meshed, no connection, drops
+  of eighty to a hundred and thirty yards. An offmesh link in `contrib/mmap/offmesh.txt` plus
+  a single-tile regeneration fixes each in a few minutes. The tile field in that file is
+  `(32 - y/533.33),(32 - x/533.33)`, which is not the order the header comment suggests.
 - **`ProcessDelayedOperations` holds a verbatim copy of the tail of
   `ResurrectUsingRequestData`.** Any fix to one needs applying to both. This is the path taken
   whenever the resurrector is on another map, which is the common raid case.
@@ -307,11 +341,16 @@ server. Observed sequence for a full wipe in Durotar: dead in place, released an
 graveyard two seconds later, ghost until the timeout, spirit resurrection at 58 seconds, then
 walking back to the group.
 
-Still open in this phase: the `MovePoint` corpse-run chain and instance re-entry, which is
-what makes recovery cost distance rather than a flat timeout; the remaining free-resource
-defaults (out-of-combat full restore, hunter ammo, triggered weapon buffs); and the two engine
-bugs (double durability loss on environmental death, `Corpse::GetFactionTemplateId`
-dereferencing an unset faction).
+The corpse run has since landed too (`22989e473`), so recovery costs distance rather than a
+flat timeout. Every entrance in the game has been surveyed and every one is reachable from
+the graveyard its ghosts release to: 19 dungeons and all 7 raids, confirmed by
+`contrib/harness/sweep_corpse_runs.py`. Six of them needed an offmesh link first
+(`18c47ba47`). Live-confirmed end to end at Wailing Caverns and Ahn'Qiraj Temple; the rest
+rest on the survey, which proves a route exists but not that the movement executes it.
+
+Still open in this phase: the remaining free-resource defaults (out-of-combat full restore,
+hunter ammo, triggered weapon buffs); and the two engine bugs (double durability loss on
+environmental death, `Corpse::GetFactionTemplateId` dereferencing an unset faction).
 
 Note that the spirit-healer fallback is not scaffolding to be deleted once the corpse run
 lands. It stays as the outer deadline, since a corpse in a spot the bot cannot path to would
@@ -483,16 +522,20 @@ below is kept because it is what the implementation was built from.
   both have `ghostEntranceMap = 0` with valid coordinates, as does Deadmines. Naxxramas has
   `ghostEntranceMap = -1` and relies on an explicit `game_graveyard_zone` row for zone 3456, so it
   needs a special case. If no graveyard resolves at all, the ghost simply stays where it died.
-- **Run back.** [not started] A `MovePoint` chain from the graveyard to the instance portal. `BattleBotWaypoints`
-  is the right shape for this — it moves with `MovePoint(..., MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES)`
-  and calls `ActivateNearbyAreaTrigger()` at each point — but it aborts when the bot is not alive and
-  its path selection is hardcoded per battleground, so it needs generalizing rather than reusing.
+- **Run back.** [done] `PartyBotAI::UpdateCorpseRun`. `BattleBotWaypoints` turned out not to be worth
+  reusing: authored waypoints are unnecessary because the mesh already knows the terrain, so the run
+  is a `MovePoint` reissued each time the previous leg ends. Steep slopes are *not* excluded the way
+  they are for a living bot — several dungeon mouths sit at the bottom of a drop, and refusing the
+  descent leaves the ghost pacing the rim above its own corpse.
 - **Enter.** `CombatBotBaseAI::ActivateNearbyAreaTrigger()`
   ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines
   3305-3319) routes to `HandleAreaTriggerOpcode`, which contains explicit ghost-entering-a-dungeon
   handling at [src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 712-756.
-  Note that it scans every area trigger globally and takes the first match within 5 yards, so prefer
-  sending a known entrance trigger id directly over relying on proximity scanning.
+  Note that it scans every area trigger globally and takes the first match within 5 yards. The
+  advice here was originally to send a known entrance trigger id directly and skip the scan; that
+  turned out to be wrong, because Blackwing Lair's entrance is a scripted trigger that no lookup of
+  the teleport table finds. The scan is the correct behaviour and matches what a client does; it is
+  merely gated on being within 60 yards of the entrance so a long run does not pay for it each tick.
 - Ghosts may re-enter even mid-encounter. The anti-rush check at
   [src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 2157-2164 only blocks living players.
 
