@@ -95,16 +95,17 @@ roster row — the column is loaded and written but nothing applies it yet — a
 ### Next
 
 The `raidguild_member` table and the `.raidguild` command group of `add`, `remove`, `list`,
-`provision`, `summon`, `dismiss`, `status`, `guild`, `resetbinds` and `reload` are done,
-backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
+`provision`, `summon`, `dismiss`, `status`, `guild`, `resetbinds`, `attune` and `reload` are
+done, backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
 provisioning, idempotence, account distinctness, adoption of an existing character, and that
 a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
 member roster being guilded with six of them offline, reaching the world as a raid, landing
-in its rostered subgroups, entering Zul'Gurub as one instance rather than two, dropping a
-planted stale bind, leaving on dismissal, and keeping what it earned across the round trip.
+in its rostered subgroups, inheriting the leader's attunements, entering Zul'Gurub as one
+instance rather than two, dropping a planted stale bind, leaving on dismissal, and keeping
+what it earned across the round trip.
 
-Still to do in Phase 0: level matching and attunement mirroring. Both currently overlap with
-the other two agents' files, so they wait on those settling.
+Still to do in Phase 0: level matching, which lands in `PartyBotAI` and `CombatBotBaseAI`
+alongside the talent spend order and so waits on that agent rather than on anything here.
 
 Two spec items follow from `547a3416c`. Provisioning should pass the roster row's `spec` to
 `CombatBotBaseAI::m_specName`, which is a one line change and makes the column live. Ordered
@@ -174,8 +175,8 @@ flowchart TD
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
 **Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table,
-provisioning, summoning, the guild and bind reconciliation are done and verified live. Still
-not started: level matching and attunement mirroring.
+provisioning, summoning, the guild, bind reconciliation and attunement mirroring are done and
+verified live. Still not started: level matching.
 
 ### Roster [done]
 
@@ -412,8 +413,14 @@ player's inventory** ([src/game/Objects/GameObject.cpp](../src/game/Objects/Game
 in-instance object check would need bypassing separately. Granting the real state once is less code than
 special-casing every gate.
 
-There is no API to enumerate which conditions a player satisfies, so mirroring uses a small hardcoded
-manifest. The verified gates are narrower than expected:
+**A hardcoded manifest was the plan and is not what landed, because writing one down proved the
+idea wrong.** The manifest below said Naxxramas was gated on quests 9121, 9122 or 9123; this
+server's own trigger asks for 9378, and nothing about a list kept in a header can notice that it
+has drifted from the database it is describing. So mirroring reads the doorways instead. See
+"Mirroring, as built" below; the manifest is kept because it is still the clearest statement of
+what the gates are, with the Naxxramas line corrected.
+
+The verified gates are narrower than expected:
 
 - **Molten Core** (area triggers 3528 and 3529): quest **7848** or **7487** rewarded. Not an item. The
   Aqual Quintessence is for summoning Ragnaros and is unrelated to entry.
@@ -423,8 +430,8 @@ manifest. The verified gates are narrower than expected:
   50 and a raid group. Quest 7761 matters solely for the Orb of Command corpse-resurrection shortcut
   ([src/scripts/eastern_kingdoms/burning_steppes/blackwing_lair/instance_blackwing_lair.cpp](../src/scripts/eastern_kingdoms/burning_steppes/blackwing_lair/instance_blackwing_lair.cpp)
   lines 1091-1104). The real gate is the UBRS door key above.
-- **Naxxramas** (area trigger 4055): one of quests **9121**, **9122**, or **9123** rewarded. Argent Dawn
-  Honored gates *accepting* those quests, not entering the instance.
+- **Naxxramas** (area trigger 4055): quest **9378** rewarded, through condition 9124. Argent Dawn
+  Honored gates *accepting* the quest, not entering the instance.
 - **Ahn'Qiraj**, both 20 and 40 (area triggers 4008 and 4010): **game event 83 inactive**. This is
   server-wide state, not per-player, so there is nothing to mirror.
 
@@ -433,6 +440,38 @@ Grant path per bot: `AddQuest` followed by `FullQuestComplete` for quest gates (
 Argent Dawn standing is ever wanted for flavor. Run the sync when the roster is spawned, skipping
 anything a bot already has, and remember the raid-group requirement in
 `MapManager::CanPlayerEnter` still applies independently of attunement.
+
+### Mirroring, as built [done]
+
+`.raidguild attune <leader> [name]` walks every `areatrigger_teleport` that leads to a dungeon,
+follows its `required_condition` through the `conditions` tree, and collects the
+`CONDITION_QUESTREWARDED` and `CONDITION_ITEM` leaves. A member is then given every leaf **the
+leader already satisfies and the member does not.**
+
+Whether a composite is an AND or an OR is deliberately not considered, which sounds like a
+shortcut and is not. A member holding everything the leader holds satisfies whatever the leader
+satisfies, whichever way the tree is wired, so the shape never needs to be interpreted. It also
+means the two Molten Core triggers cost nothing to handle: the window entrance is
+`OR(quest 7487, quest 7848)` and the leader's copy of one of them is what gets passed on, while
+the lava entrance is `AND(patch, race and class)` and yields no leaves at all. The Ahn'Qiraj
+gates fall out the same way, being a game event rather than anything a character can carry.
+
+Reading `ConditionEntry` needed accessors, since only `Meets` was public and "is it satisfied"
+is the one question mirroring cannot use. `GetType` and `GetValue1` through `GetValue4` were
+added alongside the existing `GetTeam`.
+
+Two things this does not cover, both known. The Upper Blackrock Spire door to Blackwing Lair is
+a `LOCK_KEY_ITEM` on a gameobject rather than an area trigger condition, so the Seal of Ascension
+is not found by walking triggers. And `RewardQuest` pays out experience, which on a roster below
+sixty would move levels around; attunement quests are level 55 content, so a roster running them
+is at sixty already, but it is a real edge and level matching should account for it.
+
+The test gives the leader one gate of each shape, Attunement to the Core for a quest and the
+Drakefire Amulet for an item, mirrors, and then mirrors again. The second pass granting nothing
+is the assertion that matters: since a grant only happens when the leader has something the
+member lacks, nothing left to grant means no member is missing anything the leader holds. It
+proves the property without the test needing to know which quests and items this server's
+doorways ask for, which is the same reason the code does not know either.
 
 ### Ahn'Qiraj and server-wide world events
 
@@ -1159,10 +1198,24 @@ miss when the bot knows a different rank of the same talent. A roster that names
 consults it, so this is now only a fallback path, but it is still wrong.
 
 **Six level 60 specs were missing entirely**, seeded by
-[sql/migrations/20260808220000_world.sql](../sql/migrations/20260808220000_world.sql): there was no fire
-mage, no arms warrior, no destruction warlock, no dagger rogue, no discipline priest and no cat druid,
+[sql/migrations/20260808220000_world.sql](../sql/migrations/20260808220000_world.sql) and then rebuilt on
+researched builds by
+[sql/migrations/20260808230000_world.sql](../sql/migrations/20260808230000_world.sql): there was no fire
+mage, no arms warrior, no SM/Ruin warlock, no dagger rogue, no full-budget priest healer and no cat druid,
 which between them are most of a raid's damage and one of its healing specs. The shipped 53 templates
 cover levels 19, 29, 39, 49 and 60, with everything below 60 being a PvP twink build.
+
+The rebuild is the more useful half of that. The first version was written from memory of vanilla
+theorycraft and checked only for legality, and legality turns out to say very little: a build can spend
+all 51 points, stand on every prerequisite, and still be a bad character. Four of the six bought talents
+that do nothing to a raid boss — Impact, Deflection, Martyrdom, Improved Nature's Grasp — purely as a toll
+to reach the next tier, and two were the wrong build outright. The warlock was a deep destruction spec
+nobody raids, when the two real choices are DS/Ruin, already shipped, and SM/Ruin, which was the actual
+gap. The druid had no Restoration points and therefore no Furor, which is the talent the entire cat
+rotation is built on. The current six are the builds the surviving 1.12 guides agree on: fire 18/31/2,
+arms 31/20, SM/Ruin 30/0/21, Seal Fate daggers 30/16/5, holy 21/30, powershifting cat 14/32/5.
+
+PENDING_SHIPPED_AUDIT
 
 Roster size is unconstrained in any way that matters. The guild member cap is never enforced, and bot
 accounts only need distinct nonzero `account` values on the character rows, so an eighty-member roster
