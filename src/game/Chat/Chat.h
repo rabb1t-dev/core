@@ -293,7 +293,11 @@ class ChatHandler
         bool HandleRaidGuildRemoveCommand(char* args);
         bool HandleRaidGuildListCommand(char* args);
         bool HandleRaidGuildProvisionCommand(char* args);
+        bool HandleRaidGuildSummonCommand(char* args);
+        bool HandleRaidGuildDismissCommand(char* args);
+        bool HandleRaidGuildStatusCommand(char* args);
         bool HandleRaidGuildReloadCommand(char* args);
+        Player* RaidGuildResolveLeader(char** args);
 
         bool PartyBotAddRequirementCheck(Player const* pPlayer, Player const* pTarget);
         bool HandlePartyBotAddCommand(char * args);

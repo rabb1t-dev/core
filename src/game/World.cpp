@@ -2136,6 +2136,9 @@ void World::Update(uint32 diff)
 
     // Update PlayerBotMgr
     sPlayerBotMgr.Update(diff);
+    // Put summoned roster members in the subgroups they are rostered for, which cannot be
+    // done when they are summoned because they have not joined the group yet
+    sRaidGuildMgr.Update(diff);
     // Update AutoBroadcast
     sAutoBroadCastMgr.Update(diff);
     // Update ban list if necessary

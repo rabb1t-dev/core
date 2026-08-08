@@ -16,8 +16,10 @@
 
 #include "Common.h"
 #include "Chat.h"
+#include "Group.h"
 #include "Player.h"
 #include "World.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Database/DBCStores.h"
 #include "SharedDefines.h"
@@ -220,6 +222,171 @@ bool ChatHandler::HandleRaidGuildProvisionCommand(char* args)
 
     PSendSysMessage("provision created=%u failed=%u already=%u", created, failed,
         uint32(sRaidGuildMgr.GetRoster().size() - names.size()));
+    return true;
+}
+
+// The leader is named rather than taken from the session, because the harness drives every
+// one of these over SOAP where there is no session player to take it from. An in-game caller
+// may still leave it off and mean itself.
+Player* ChatHandler::RaidGuildResolveLeader(char** args)
+{
+    if (char* nameStr = ExtractArg(args))
+    {
+        std::string name = nameStr;
+        normalizePlayerName(name);
+
+        Player* pLeader = ObjectAccessor::FindPlayerByName(name.c_str());
+        if (!pLeader || !pLeader->IsInWorld())
+        {
+            PSendSysMessage("RaidGuild: '%s' is not in the world.", name.c_str());
+            return nullptr;
+        }
+
+        return pLeader;
+    }
+
+    if (Player* pSelf = GetSession() ? GetSession()->GetPlayer() : nullptr)
+        return pSelf;
+
+    SendSysMessage("RaidGuild: expected the name of a character to summon to.");
+    return nullptr;
+}
+
+// .raidguild summon <leader> [name]
+// Brings the roster, or one member of it, into the world around the named character. The
+// group is made before anyone is summoned so that the arriving members find it rather than
+// race each other to create it.
+bool ChatHandler::HandleRaidGuildSummonCommand(char* args)
+{
+    Player* pLeader = RaidGuildResolveLeader(&args);
+    if (!pLeader)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::vector<std::string> names;
+    if (char* nameStr = ExtractArg(&args))
+    {
+        std::string name = nameStr;
+        normalizePlayerName(name);
+        names.push_back(name);
+    }
+    else
+    {
+        for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+            if (member.IsProvisioned() && !sRaidGuildMgr.FindSummonedMember(member))
+                names.push_back(member.name);
+    }
+
+    // Sized for what the group is about to hold, not for what is being added now, so that
+    // summoning the second half of a raid one member at a time does not leave a party that
+    // has to be promoted partway through.
+    uint32 expected = pLeader->GetGroup() ? pLeader->GetGroup()->GetMembersCount() : 1;
+    expected += uint32(names.size());
+
+    std::string error;
+    if (!sRaidGuildMgr.PrepareGroup(pLeader, expected, error))
+    {
+        PSendSysMessage("RaidGuild: cannot summon to '%s', %s.", pLeader->GetName(), error.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 summoned = 0;
+    uint32 failed = 0;
+    for (std::string const& name : names)
+    {
+        if (sRaidGuildMgr.SummonMember(name, pLeader, error))
+        {
+            summoned++;
+            continue;
+        }
+
+        failed++;
+        PSendSysMessage("RaidGuild: cannot summon '%s', %s.", name.c_str(), error.c_str());
+    }
+
+    PSendSysMessage("summon leader=%s summoned=%u failed=%u", pLeader->GetName(), summoned, failed);
+    return true;
+}
+
+// .raidguild dismiss [name]
+// Logs members out, which is also what saves them. Reports how many were asked to go, not
+// how many have gone; use .raidguild status to wait for that.
+bool ChatHandler::HandleRaidGuildDismissCommand(char* args)
+{
+    std::vector<std::string> names;
+    if (char* nameStr = ExtractArg(&args))
+    {
+        std::string name = nameStr;
+        normalizePlayerName(name);
+        names.push_back(name);
+    }
+    else
+    {
+        for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+            if (sRaidGuildMgr.FindSummonedMember(member))
+                names.push_back(member.name);
+    }
+
+    uint32 dismissed = 0;
+    uint32 failed = 0;
+    for (std::string const& name : names)
+    {
+        std::string error;
+        if (sRaidGuildMgr.DismissMember(name, error))
+        {
+            dismissed++;
+            continue;
+        }
+
+        failed++;
+        PSendSysMessage("RaidGuild: cannot dismiss '%s', %s.", name.c_str(), error.c_str());
+    }
+
+    PSendSysMessage("dismiss dismissed=%u failed=%u", dismissed, failed);
+    return true;
+}
+
+// .raidguild status
+// Who is actually in the world and where the group put them. Logging out takes a while and
+// joining a group takes a couple of seconds, so anything waiting on either needs to be able
+// to ask rather than assume.
+bool ChatHandler::HandleRaidGuildStatusCommand(char* /*args*/)
+{
+    uint32 online = 0;
+    uint32 grouped = 0;
+
+    for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+    {
+        Player* pPlayer = sRaidGuildMgr.FindSummonedMember(member);
+        if (!pPlayer)
+            continue;
+
+        online++;
+
+        Group* pGroup = pPlayer->GetGroup();
+        if (pGroup)
+            grouped++;
+
+        // Reported one based to match how the roster asks for it, and as zero for a member
+        // that is in a party, where subgroups do not exist.
+        uint32 subGroup = 0;
+        if (pGroup && pGroup->isRaidGroup())
+        {
+            uint8 const slot = pGroup->GetMemberGroup(pPlayer->GetObjectGuid());
+            if (slot < MAX_RAID_SUBGROUPS)
+                subGroup = uint32(slot) + 1;
+        }
+
+        PSendSysMessage("summoned name=%s guid=%u inworld=%u group=%u raid=%u subgroup=%u wanted=%u",
+            member.name.c_str(), member.guid, pPlayer->IsInWorld() ? 1 : 0,
+            pGroup ? 1 : 0, (pGroup && pGroup->isRaidGroup()) ? 1 : 0,
+            subGroup, uint32(member.subGroup));
+    }
+
+    PSendSysMessage("status online=%u grouped=%u", online, grouped);
     return true;
 }
 

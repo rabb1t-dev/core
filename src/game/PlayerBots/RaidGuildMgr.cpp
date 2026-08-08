@@ -19,12 +19,17 @@
 #include "AccountMgr.h"
 #include "Database/DatabaseEnv.h"
 #include "Database/DBCStores.h"
+#include "Group.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "PartyBotAI.h"
 #include "Player.h"
+#include "PlayerBotMgr.h"
 #include "Policies/SingletonImp.h"
 #include "Util.h"
+#include "Utilities/Random.h"
 #include "World.h"
 #include "WorldSession.h"
 
@@ -43,6 +48,11 @@ INSTANTIATE_SINGLETON_1(RaidGuildMgr);
 // highest real account plus ten thousand and rises by one per bot spawned, so reaching this
 // would take five million spawns in a single uptime.
 static uint32 const RAIDGUILD_ACCOUNT_BASE = 5000000;
+
+// How often summoned members are checked against the subgroup the roster asks for. Only
+// worth doing while members are arriving, which is a few seconds after a summon, so this
+// wants to be often enough not to be noticed and rare enough not to matter.
+static uint32 const RAIDGUILD_RECONCILE_INTERVAL = 1000;
 
 void RaidGuildMgr::Load()
 {
@@ -284,4 +294,165 @@ bool RaidGuildMgr::ProvisionMember(std::string const& name, std::string& error)
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[RaidGuild] provisioned '%s' as character %u on account %u.",
         pMember->name.c_str(), guidLow, accountId);
     return true;
+}
+
+Player* RaidGuildMgr::FindSummonedMember(RaidGuildMember const& member) const
+{
+    if (!member.IsProvisioned())
+        return nullptr;
+
+    // Not FindPlayer, which only answers for a player already in the world. A member that
+    // is still loading is very much summoned, and summoning it a second time would be
+    // refused by AddBot as an account that is already online.
+    return sObjectAccessor.FindPlayerNotInWorld(ObjectGuid(HIGHGUID_PLAYER, member.guid));
+}
+
+bool RaidGuildMgr::PrepareGroup(Player* pLeader, uint32 expectedSize, std::string& error)
+{
+    Group* pGroup = pLeader->GetGroup();
+    if (!pGroup)
+    {
+        pGroup = new Group;
+        if (!pGroup->Create(pLeader->GetObjectGuid(), pLeader->GetName()))
+        {
+            delete pGroup;
+            error = "the group could not be created";
+            return false;
+        }
+
+        sObjectMgr.AddGroup(pGroup);
+    }
+
+    if (!pGroup->IsLeader(pLeader->GetObjectGuid()))
+    {
+        error = "is not the leader of the group it is in";
+        return false;
+    }
+
+    // Promoted before anyone joins rather than when the sixth member is turned away. Doing
+    // it here also settles the question once, for the whole summon, instead of leaving each
+    // arriving bot to notice the group is full and convert it, which is a race when two
+    // arrive on the same tick.
+    //
+    // Only when the party will not hold them, since a raid group of three is not what a
+    // player would form for a five man and it changes how the group reads to everything
+    // downstream.
+    if (expectedSize > MAX_GROUP_SIZE && !pGroup->isRaidGroup())
+        pGroup->ConvertToRaid();
+
+    // Stated rather than inherited. Group::Create hardcodes these two, and the loot design
+    // this roster is being built for keys off both, so a change to that default would
+    // silently change how the guild distributes loot.
+    pGroup->SetLootMethod(GROUP_LOOT);
+    pGroup->SetLooterGuid(ObjectGuid());
+    pGroup->SetLootThreshold(ITEM_QUALITY_UNCOMMON);
+    pGroup->SendUpdate();
+    return true;
+}
+
+bool RaidGuildMgr::SummonMember(std::string const& name, Player* pLeader, std::string& error)
+{
+    RaidGuildMember* pMember = FindMemberInternal(name);
+    if (!pMember)
+    {
+        error = "not on the roster";
+        return false;
+    }
+
+    if (!pMember->IsProvisioned())
+    {
+        error = "not provisioned yet";
+        return false;
+    }
+
+    if (FindSummonedMember(*pMember))
+    {
+        error = "already in the world";
+        return false;
+    }
+
+    float x, y, z;
+    pLeader->GetNearPoint(pLeader, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+
+    // The load constructor, which leaves race and class zero. That is not an omission: it
+    // is what keeps the bot off the init branch that unequips every slot, resets talents
+    // and re-rolls gear, and so it is the only constructor a member carrying earned gear
+    // may ever be spawned through.
+    PartyBotAI* pAI = new PartyBotAI(pLeader, pLeader->GetMapId(),
+        pLeader->GetMap()->GetInstanceId(), x, y, z, pLeader->GetOrientation());
+
+    // The roster's word beats the spell book. Left invalid, the bot works its role out from
+    // which talents it happens to have, which is a reasonable guess and not a decision.
+    if (pMember->role != ROLE_INVALID)
+        pAI->m_role = pMember->role;
+
+    if (!sPlayerBotMgr.AddBot(pMember->guid, false, pAI))
+    {
+        delete pAI;
+        error = "the bot session could not be started";
+        return false;
+    }
+
+    return true;
+}
+
+bool RaidGuildMgr::DismissMember(std::string const& name, std::string& error)
+{
+    RaidGuildMember const* pMember = FindMemberInternal(name);
+    if (!pMember)
+    {
+        error = "not on the roster";
+        return false;
+    }
+
+    if (!FindSummonedMember(*pMember))
+    {
+        error = "not in the world";
+        return false;
+    }
+
+    // Logging out is what saves the character, so this is the only way a member may be
+    // sent away. Killing the session instead loses everything since the last periodic save,
+    // which is up to fifteen minutes of a raid night.
+    if (!sPlayerBotMgr.DeleteBot(pMember->guid))
+    {
+        error = "the bot session could not be stopped";
+        return false;
+    }
+
+    return true;
+}
+
+void RaidGuildMgr::Update(uint32 diff)
+{
+    if (m_reconcileTimer > diff)
+    {
+        m_reconcileTimer -= diff;
+        return;
+    }
+
+    m_reconcileTimer = RAIDGUILD_RECONCILE_INTERVAL;
+
+    for (RaidGuildMember const& member : m_roster)
+    {
+        if (!member.subGroup)
+            continue;
+
+        Player* pPlayer = FindSummonedMember(member);
+        if (!pPlayer || !pPlayer->IsInWorld())
+            continue;
+
+        Group* pGroup = pPlayer->GetGroup();
+        if (!pGroup || !pGroup->isRaidGroup())
+            continue;
+
+        uint8 const wanted = member.subGroup - 1;
+        if (pGroup->GetMemberGroup(pPlayer->GetObjectGuid()) == wanted)
+            continue;
+
+        // Silently declines a subgroup that is already full, which is the right answer to a
+        // roster that asks for nine people in one of them. The member keeps the slot it was
+        // given rather than the run stopping over a seating plan.
+        pGroup->ChangeMembersGroup(pPlayer, wanted);
+    }
 }
