@@ -7267,7 +7267,10 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced, float ratio)
     // for player case, we look for some custom rates
     if (IsPlayer())
     {
-        if (GetDeathState() == CORPSE)
+        // DEAD is the released ghost, which is the only thing here that ever moves. CORPSE is
+        // the body lying on the floor before release, so the ghost run speed was being applied
+        // to the one state in the game that cannot walk anywhere, and never to the ghost.
+        if (GetDeathState() == DEAD)
             speed *= sWorld.getConfig(((Player*)this)->InBattleGround() ? CONFIG_FLOAT_GHOST_RUN_SPEED_BG : CONFIG_FLOAT_GHOST_RUN_SPEED_WORLD);
     }
 

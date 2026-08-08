@@ -4702,6 +4702,10 @@ void Player::BuildPlayerRepop()
     // stop countdown until repop
     m_deathTimer = 0;
     SetDeathState(DEAD);
+
+    // The ghost run speed rate keys off this state, and ghost form was applied further up
+    // while the state was still CORPSE, so nothing has recalculated speed since it changed.
+    UpdateSpeed(MOVE_RUN, true);
 }
 
 void Player::ResurrectPlayer(float restore_percent, bool applySickness)
