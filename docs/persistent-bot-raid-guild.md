@@ -94,14 +94,17 @@ roster row — the column is loaded and written but nothing applies it yet — a
 
 ### Next
 
-Phase 0 roster work is done: the `raidguild_member` table and the `.raidguild` command group
-of `add`, `remove`, `list`, `provision`, `summon`, `dismiss`, `status`, `guild` and `reload`,
+The `raidguild_member` table and the `.raidguild` command group of `add`, `remove`, `list`,
+`provision`, `summon`, `dismiss`, `status`, `guild`, `resetbinds` and `reload` are done,
 backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
 provisioning, idempotence, account distinctness, adoption of an existing character, and that
 a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
 member roster being guilded with six of them offline, reaching the world as a raid, landing
-in its rostered subgroups, leaving on dismissal, and keeping what it earned across the round
-trip. Still to do: level matching, attunement mirroring, and bind reconciliation.
+in its rostered subgroups, entering Zul'Gurub as one instance rather than two, dropping a
+planted stale bind, leaving on dismissal, and keeping what it earned across the round trip.
+
+Still to do in Phase 0: level matching and attunement mirroring. Both currently overlap with
+the other two agents' files, so they wait on those settling.
 
 Two spec items follow from `547a3416c`. Provisioning should pass the roster row's `spec` to
 `CombatBotBaseAI::m_specName`, which is a one line change and makes the column live. Ordered
@@ -171,8 +174,8 @@ flowchart TD
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
 **Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table,
-provisioning, summoning and the guild are done and verified live. Still not started: level
-matching, attunement mirroring, and bind reconciliation.
+provisioning, summoning, the guild and bind reconciliation are done and verified live. Still
+not started: level matching and attunement mirroring.
 
 ### Roster [done]
 
@@ -238,6 +241,40 @@ demonstrably there.
 
 Members join at `GR_MEMBER` rather than the lowest rank. Initiate is what a guild gives
 someone it is still deciding about, and every one of these was written down on purpose.
+
+### Instance binds [done]
+
+The rule is that **a roster member holds no personal instance bind.** It is a body following
+the leader, not a raider with a lockout of its own, so the group's bind should be the only
+thing deciding which copy of a map it walks into. `SummonMember` clears the member's
+`character_instance` rows before the session loads, and `.raidguild resetbinds [name]` does
+the same on demand for weekly resets and experimentation. `.raidguild status` reports how
+many binds each summoned member is carrying, which should always be none.
+
+Clearing before the session loads is not incidental. It is the only race-free moment: after
+login the bot is teleported to the leader within a couple of seconds, and if that lands it at
+an instance door holding a bind that disagrees, the answer is `MANGOS_ASSERT` rather than an
+error. `DungeonMap::BindPlayerOrGroupOnEnter` has four such branches
+([src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 2201-2305) and three of them fire on
+a personal bind that does not match. Deleting the rows of an offline character is also what
+`Group::ChangeLeader` and `Player::ConvertInstancesToGroup` already do, so it is not a new
+kind of write.
+
+A member already in the world keeps two things: the bind for the map it is standing on, since
+unbinding that is how a character ends up inside an instance it has no claim to, and any bind
+the group already agrees with.
+
+`contrib/harness/test_raid_guild_summon.py` covers it by taking the seven member raid into
+Zul'Gurub and requiring that all of them arrive in **one** copy of the map. The failure this
+guards against is not a refusal at the door; it is a raid that silently splits across two
+instance IDs, which from the outside looks like bots that will not follow.
+
+The test plants a bind rather than waiting for one, and the reason is worth recording:
+entering behind a group that is not permanently saved leaves no personal bind at all, because
+`BindPlayerOrGroupOnEnter` only binds the entrant when `groupBind->perm` is set. A test that
+merely observed binds staying at zero would therefore pass whether or not anything was being
+cleared. It writes a `character_instance` row directly while the member is offline and then
+requires the summon to have removed it.
 
 The original design notes follow.
 
