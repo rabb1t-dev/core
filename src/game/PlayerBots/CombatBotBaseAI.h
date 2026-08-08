@@ -87,8 +87,16 @@ public:
     void SendAreaTriggerPacket(uint32 areaTriggerId);
     void ActivateNearbyAreaTrigger();
 
+    // A named slot paired with whatever population put in it, for .harness spells.
+    struct SpellSlot
+    {
+        char const* name;
+        SpellEntry const* spell;
+    };
+
     void AutoAssignRole();
     void PopulateSpellData();
+    std::vector<SpellSlot> GetSpellSlots() const;
     void ResetSpellData();
     void AddAllSpellReagents();
     void SummonPetIfNeeded();

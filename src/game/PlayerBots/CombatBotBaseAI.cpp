@@ -147,6 +147,11 @@ void CombatBotBaseAI::PopulateSpellData()
     SpellEntry const* pBlessingOfKings = nullptr;
     SpellEntry const* pBlessingOfSanctuary = nullptr;
 
+    // Paladin and warlock spells that a higher level one supersedes, kept aside so the
+    // slot falls back to them rather than staying empty below the level that grants it.
+    SpellEntry const* pPurify = nullptr;
+    SpellEntry const* pDemonSkin = nullptr;
+
     // Paladin Auras
     SpellEntry const* pDevotionAura = nullptr;
     SpellEntry const* pConcentrationAura = nullptr;
@@ -198,11 +203,14 @@ void CombatBotBaseAI::PopulateSpellData()
     // Mage Frost Armor (to replace ice armor at low level)
     SpellEntry const* pFrostArmor = nullptr;
 
-    bool hasDeadlyPoison = false;
-    bool hasInstantPoison = false;
-    bool hasCripplingPoison = false;
-    bool hasWoundPoison = false;
-    bool HasMindNumbingPoison = false;
+    // The best poison of each kind the rogue can actually make. Held as the spell rather
+    // than a flag because a poison's rank is spelled into its name, so the name is the only
+    // thing that identifies which enchant to look for later.
+    SpellEntry const* pKnownDeadlyPoison = nullptr;
+    SpellEntry const* pKnownInstantPoison = nullptr;
+    SpellEntry const* pKnownCripplingPoison = nullptr;
+    SpellEntry const* pKnownWoundPoison = nullptr;
+    SpellEntry const* pKnownMindNumbingPoison = nullptr;
 
     for (const auto& spell : me->GetSpellMap())
     {
@@ -353,6 +361,11 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.paladin.pCleanse))
                         m_spells.paladin.pCleanse = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Purify") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(pPurify))
+                        pPurify = pSpellEntry;
+                }
                 else if (pSpellEntry->SpellName[0].find("Divine Shield") != std::string::npos)
                 {
                     if (IsHigherRankSpell(m_spells.paladin.pDivineShield))
@@ -452,6 +465,16 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.shaman.pGhostWolf))
                         m_spells.shaman.pGhostWolf = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Cure Disease") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.shaman.pCureDisease))
+                        m_spells.shaman.pCureDisease = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Cure Poison") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.shaman.pCurePoison))
+                        m_spells.shaman.pCurePoison = pSpellEntry;
+                }
                 else if (pSpellEntry->SpellName[0].find("Frostbrand Weapon") != std::string::npos)
                 {
                     if (IsHigherRankSpell(pFrostbrandWeapon))
@@ -547,7 +570,9 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(pFireResistanceTotem))
                         pFireResistanceTotem = pSpellEntry;
                 }
-                else if (pSpellEntry->SpellName[0].find("Disease Resistance Totem") != std::string::npos)
+                // No spell is named "Disease Resistance Totem"; the water totem that cures
+                // disease is the cleansing one, so this slot was matching nothing at all.
+                else if (pSpellEntry->SpellName[0].find("Disease Cleansing Totem") != std::string::npos)
                 {
                     if (IsHigherRankSpell(pDiseaseCleansingTotem))
                         pDiseaseCleansingTotem = pSpellEntry;
@@ -937,6 +962,11 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.warlock.pDemonArmor))
                         m_spells.warlock.pDemonArmor = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Demon Skin") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(pDemonSkin))
+                        pDemonSkin = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Death Coil") != std::string::npos)
                 {
@@ -1351,25 +1381,33 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.rogue.pSprint))
                         m_spells.rogue.pSprint = pSpellEntry;
                 }
+                // Ranked by level rather than by IsHigherRankSpell, because what the rank
+                // text says is beside the point here: the enchant is found by name, and
+                // the name of the highest level one the rogue can craft is the answer.
                 else if (pSpellEntry->SpellName[0].find("Deadly Poison") != std::string::npos)
                 {
-                    hasDeadlyPoison = true;
+                    if (!pKnownDeadlyPoison || pKnownDeadlyPoison->spellLevel < pSpellEntry->spellLevel)
+                        pKnownDeadlyPoison = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Instant Poison") != std::string::npos)
                 {
-                    hasInstantPoison = true;
+                    if (!pKnownInstantPoison || pKnownInstantPoison->spellLevel < pSpellEntry->spellLevel)
+                        pKnownInstantPoison = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Crippling Poison") != std::string::npos)
                 {
-                    hasCripplingPoison = true;
+                    if (!pKnownCripplingPoison || pKnownCripplingPoison->spellLevel < pSpellEntry->spellLevel)
+                        pKnownCripplingPoison = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Wound Poison") != std::string::npos)
                 {
-                    hasWoundPoison = true;
+                    if (!pKnownWoundPoison || pKnownWoundPoison->spellLevel < pSpellEntry->spellLevel)
+                        pKnownWoundPoison = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Mind-numbing Poison") != std::string::npos)
                 {
-                    HasMindNumbingPoison = true;
+                    if (!pKnownMindNumbingPoison || pKnownMindNumbingPoison->spellLevel < pSpellEntry->spellLevel)
+                        pKnownMindNumbingPoison = pSpellEntry;
                 }
                 break;
             }
@@ -1616,7 +1654,10 @@ void CombatBotBaseAI::PopulateSpellData()
                     break;
                 case SPELL_EFFECT_RESURRECT:
                 case SPELL_EFFECT_RESURRECT_NEW:
-                    m_resurrectionSpell = pSpellEntry;
+                    // The spell map is unordered, so taking the last one seen left the rank
+                    // down to hash order rather than to level.
+                    if (IsHigherRankSpell(m_resurrectionSpell))
+                        m_resurrectionSpell = pSpellEntry;
                     break;
                 case SPELL_EFFECT_APPLY_AURA:
                 {
@@ -1682,6 +1723,9 @@ void CombatBotBaseAI::PopulateSpellData()
                 auras.push_back(pFireResistanceAura);
             if (!auras.empty())
                 m_spells.paladin.pAura = SelectRandomContainerElement(auras);
+
+            if (!m_spells.paladin.pCleanse && pPurify)
+                m_spells.paladin.pCleanse = pPurify;
 
             break;
         }
@@ -1779,39 +1823,50 @@ void CombatBotBaseAI::PopulateSpellData()
 
             break;
         }
+        case CLASS_WARLOCK:
+        {
+            if (!m_spells.warlock.pDemonArmor && pDemonSkin)
+                m_spells.warlock.pDemonArmor = pDemonSkin;
+
+            break;
+        }
         case CLASS_ROGUE:
         {
-            // Rogues can only craft an item that applies the poison, they don't know the actual poison enchant.
-            auto GetHighestRankOfPoisonByName = [](std::string name, uint32 level)
+            // Rogues can only craft an item that applies the poison, they don't know the actual poison
+            // enchant. The two share a name exactly, so the crafting spell the rogue knows names the
+            // enchant to look for.
+            //
+            // This used to search for the base name and take the highest level match, which sounds
+            // equivalent and is not: ranks past the first are named "Deadly Poison II" and upwards, so an
+            // exact match on "Deadly Poison" could only ever find rank 1. Every rogue bot in the game has
+            // been applying the level 30 poison, and the level 20 Instant Poison, whatever its level.
+            auto GetPoisonEnchant = [](SpellEntry const* pKnownPoison) -> SpellEntry const*
             {
-                SpellEntry const* pHighestRank = nullptr;
+                if (!pKnownPoison)
+                    return nullptr;
+
                 for (uint32 i = 0; i < sSpellMgr.GetMaxSpellId(); i++)
                 {
                     if (SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(i))
                     {
                         if (pSpellEntry->Effect[0] == SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY &&
-                            pSpellEntry->SpellName[0] == name && pSpellEntry->spellLevel <= level &&
-                           (!pHighestRank || pHighestRank->spellLevel < pSpellEntry->spellLevel))
+                            pSpellEntry->SpellName[0] == pKnownPoison->SpellName[0])
                         {
-                            pHighestRank = pSpellEntry;
+                            return pSpellEntry;
                         }
                     }
                 }
-                return pHighestRank;
+                return nullptr;
             };
 
-            SpellEntry const* pPoisonSpell = nullptr;
             std::vector<SpellEntry const*> vPoisons;
-            if (hasDeadlyPoison && (pPoisonSpell = GetHighestRankOfPoisonByName("Deadly Poison", me->GetLevel())))
-                vPoisons.push_back(pPoisonSpell);
-            if (hasInstantPoison && (pPoisonSpell = GetHighestRankOfPoisonByName("Instant Poison", me->GetLevel())))
-                vPoisons.push_back(pPoisonSpell);
-            if (hasCripplingPoison && (pPoisonSpell = GetHighestRankOfPoisonByName("Crippling Poison", me->GetLevel())))
-                vPoisons.push_back(pPoisonSpell);
-            if (hasWoundPoison && (pPoisonSpell = GetHighestRankOfPoisonByName("Wound Poison", me->GetLevel())))
-                vPoisons.push_back(pPoisonSpell);
-            if (HasMindNumbingPoison && (pPoisonSpell = GetHighestRankOfPoisonByName("Mind-numbing Poison", me->GetLevel())))
-                vPoisons.push_back(pPoisonSpell);
+            for (SpellEntry const* pKnownPoison : { pKnownDeadlyPoison, pKnownInstantPoison,
+                                                    pKnownCripplingPoison, pKnownWoundPoison,
+                                                    pKnownMindNumbingPoison })
+            {
+                if (SpellEntry const* pPoisonSpell = GetPoisonEnchant(pKnownPoison))
+                    vPoisons.push_back(pPoisonSpell);
+            }
 
             if (!vPoisons.empty())
             {
@@ -1822,6 +1877,113 @@ void CombatBotBaseAI::PopulateSpellData()
             break;
         }
     }
+}
+
+// Names every slot the function above fills, so a null one can be seen from the outside.
+// An unfilled slot presents as "the bot never uses this spell", which is indistinguishable
+// from a rotation bug, and several have sat null for the life of the file on that account.
+std::vector<CombatBotBaseAI::SpellSlot> CombatBotBaseAI::GetSpellSlots() const
+{
+#define SLOT(cls, member) CombatBotBaseAI::SpellSlot{ #member, m_spells.cls.member }
+
+    switch (me->GetClass())
+    {
+        case CLASS_PALADIN:
+            return { SLOT(paladin, pAura), SLOT(paladin, pSeal), SLOT(paladin, pBlessingBuff),
+                     SLOT(paladin, pBlessingOfProtection), SLOT(paladin, pBlessingOfFreedom),
+                     SLOT(paladin, pBlessingOfSacrifice), SLOT(paladin, pHammerOfJustice),
+                     SLOT(paladin, pJudgement), SLOT(paladin, pExorcism), SLOT(paladin, pConsecration),
+                     SLOT(paladin, pHammerOfWrath), SLOT(paladin, pCleanse), SLOT(paladin, pDivineShield),
+                     SLOT(paladin, pLayOnHands), SLOT(paladin, pRighteousFury), SLOT(paladin, pHolyShock),
+                     SLOT(paladin, pDivineFavor), SLOT(paladin, pHolyWrath), SLOT(paladin, pTurnEvil),
+                     SLOT(paladin, pHolyShield) };
+        case CLASS_SHAMAN:
+            return { SLOT(shaman, pLightningBolt), SLOT(shaman, pChainLightning), SLOT(shaman, pEarthShock),
+                     SLOT(shaman, pFlameShock), SLOT(shaman, pFrostShock), SLOT(shaman, pPurge),
+                     SLOT(shaman, pStormstrike), SLOT(shaman, pElementalMastery), SLOT(shaman, pLightningShield),
+                     SLOT(shaman, pGhostWolf), SLOT(shaman, pCureDisease), SLOT(shaman, pCurePoison),
+                     SLOT(shaman, pAirTotem), SLOT(shaman, pEarthTotem), SLOT(shaman, pFireTotem),
+                     SLOT(shaman, pWaterTotem), SLOT(shaman, pManaTideTotem), SLOT(shaman, pWeaponBuff) };
+        case CLASS_HUNTER:
+            return { SLOT(hunter, pAspectOfTheCheetah), SLOT(hunter, pAspectOfTheMonkey),
+                     SLOT(hunter, pAspectOfTheHawk), SLOT(hunter, pSerpentSting), SLOT(hunter, pArcaneShot),
+                     SLOT(hunter, pAimedShot), SLOT(hunter, pMultiShot), SLOT(hunter, pConcussiveShot),
+                     SLOT(hunter, pWingClip), SLOT(hunter, pHuntersMark), SLOT(hunter, pMongooseBite),
+                     SLOT(hunter, pRaptorStrike), SLOT(hunter, pDisengage), SLOT(hunter, pFeignDeath),
+                     SLOT(hunter, pScareBeast), SLOT(hunter, pVolley) };
+        case CLASS_MAGE:
+            return { SLOT(mage, pIceArmor), SLOT(mage, pArcaneIntellect), SLOT(mage, pArcaneBrilliance),
+                     SLOT(mage, pIceBarrier), SLOT(mage, pManaShield), SLOT(mage, pPolymorph),
+                     SLOT(mage, pFrostbolt), SLOT(mage, pFireBlast), SLOT(mage, pFireball),
+                     SLOT(mage, pArcaneExplosion), SLOT(mage, pFrostNova), SLOT(mage, pConeofCold),
+                     SLOT(mage, pBlink), SLOT(mage, pCounterspell), SLOT(mage, pPresenceOfMind),
+                     SLOT(mage, pArcanePower), SLOT(mage, pRemoveLesserCurse), SLOT(mage, pScorch),
+                     SLOT(mage, pPyroblast), SLOT(mage, pEvocation), SLOT(mage, pIceBlock),
+                     SLOT(mage, pBlizzard), SLOT(mage, pBlastWave), SLOT(mage, pCombustion) };
+        case CLASS_PRIEST:
+            return { SLOT(priest, pPowerWordFortitude), SLOT(priest, pDivineSpirit),
+                     SLOT(priest, pPrayerofSpirit), SLOT(priest, pPrayerofFortitude),
+                     SLOT(priest, pPrayerofShadowProtection), SLOT(priest, pInnerFire),
+                     SLOT(priest, pShadowProtection), SLOT(priest, pPowerWordShield), SLOT(priest, pHolyNova),
+                     SLOT(priest, pHolyFire), SLOT(priest, pMindBlast), SLOT(priest, pMindFlay),
+                     SLOT(priest, pShadowWordPain), SLOT(priest, pInnerFocus), SLOT(priest, pAbolishDisease),
+                     SLOT(priest, pDispelMagic), SLOT(priest, pManaBurn), SLOT(priest, pDevouringPlague),
+                     SLOT(priest, pPsychicScream), SLOT(priest, pShadowform), SLOT(priest, pVampiricEmbrace),
+                     SLOT(priest, pSilence), SLOT(priest, pFade), SLOT(priest, pShackleUndead),
+                     SLOT(priest, pSmite) };
+        case CLASS_WARLOCK:
+            return { SLOT(warlock, pDemonArmor), SLOT(warlock, pDeathCoil), SLOT(warlock, pDetectInvisibility),
+                     SLOT(warlock, pShadowWard), SLOT(warlock, pShadowBolt), SLOT(warlock, pCorruption),
+                     SLOT(warlock, pConflagrate), SLOT(warlock, pShadowburn), SLOT(warlock, pSearingPain),
+                     SLOT(warlock, pImmolate), SLOT(warlock, pRainOfFire), SLOT(warlock, pDemonicSacrifice),
+                     SLOT(warlock, pDrainLife), SLOT(warlock, pSiphonLife), SLOT(warlock, pBanish),
+                     SLOT(warlock, pFear), SLOT(warlock, pHowlofTerror), SLOT(warlock, pCurseofAgony),
+                     SLOT(warlock, pCurseofDoom), SLOT(warlock, pCurseoftheElements),
+                     SLOT(warlock, pCurseofShadow), SLOT(warlock, pCurseofRecklessness),
+                     SLOT(warlock, pCurseofTongues), SLOT(warlock, pCurseofExhaustion), SLOT(warlock, pLifeTap) };
+        case CLASS_WARRIOR:
+            return { SLOT(warrior, pBattleStance), SLOT(warrior, pBerserkerStance),
+                     SLOT(warrior, pDefensiveStance), SLOT(warrior, pCharge), SLOT(warrior, pIntercept),
+                     SLOT(warrior, pOverpower), SLOT(warrior, pHeroicStrike), SLOT(warrior, pCleave),
+                     SLOT(warrior, pExecute), SLOT(warrior, pMortalStrike), SLOT(warrior, pBloodthirst),
+                     SLOT(warrior, pBloodrage), SLOT(warrior, pBerserkerRage), SLOT(warrior, pRecklessness),
+                     SLOT(warrior, pRetaliation), SLOT(warrior, pDeathWish), SLOT(warrior, pIntimidatingShout),
+                     SLOT(warrior, pPummel), SLOT(warrior, pRend), SLOT(warrior, pDisarm),
+                     SLOT(warrior, pWhirlwind), SLOT(warrior, pBattleShout), SLOT(warrior, pDemoralizingShout),
+                     SLOT(warrior, pHamstring), SLOT(warrior, pThunderClap), SLOT(warrior, pSweepingStrikes),
+                     SLOT(warrior, pLastStand), SLOT(warrior, pShieldBlock), SLOT(warrior, pShieldWall),
+                     SLOT(warrior, pShieldBash), SLOT(warrior, pShieldSlam), SLOT(warrior, pSunderArmor),
+                     SLOT(warrior, pConcussionBlow), SLOT(warrior, pPiercingHowl) };
+        case CLASS_ROGUE:
+            return { SLOT(rogue, pSliceAndDice), SLOT(rogue, pSinisterStrike), SLOT(rogue, pAdrenalineRush),
+                     SLOT(rogue, pEviscerate), SLOT(rogue, pStealth), SLOT(rogue, pGarrote),
+                     SLOT(rogue, pAmbush), SLOT(rogue, pCheapShot), SLOT(rogue, pPremeditation),
+                     SLOT(rogue, pBackstab), SLOT(rogue, pHemorrhage), SLOT(rogue, pGhostlyStrike),
+                     SLOT(rogue, pGouge), SLOT(rogue, pRupture), SLOT(rogue, pExposeArmor),
+                     SLOT(rogue, pKidneyShot), SLOT(rogue, pColdBlood), SLOT(rogue, pBladeFlurry),
+                     SLOT(rogue, pVanish), SLOT(rogue, pBlind), SLOT(rogue, pPreparation),
+                     SLOT(rogue, pEvasion), SLOT(rogue, pRiposte), SLOT(rogue, pKick), SLOT(rogue, pSprint),
+                     SLOT(rogue, pMainHandPoison), SLOT(rogue, pOffHandPoison) };
+        case CLASS_DRUID:
+            return { SLOT(druid, pBearForm), SLOT(druid, pCatForm), SLOT(druid, pTravelForm),
+                     SLOT(druid, pAquaticForm), SLOT(druid, pMoonkinForm), SLOT(druid, pWrath),
+                     SLOT(druid, pMoonfire), SLOT(druid, pStarfire), SLOT(druid, pHurricane),
+                     SLOT(druid, pInsectSwarm), SLOT(druid, pBarkskin), SLOT(druid, pNaturesGrasp),
+                     SLOT(druid, pMarkoftheWild), SLOT(druid, pGiftoftheWild), SLOT(druid, pThorns),
+                     SLOT(druid, pRemoveCurse), SLOT(druid, pCurePoison), SLOT(druid, pAbolishPoison),
+                     SLOT(druid, pRebirth), SLOT(druid, pFaerieFire), SLOT(druid, pInnervate),
+                     SLOT(druid, pNaturesSwiftness), SLOT(druid, pEntanglingRoots), SLOT(druid, pHibernate),
+                     SLOT(druid, pProwl), SLOT(druid, pPounce), SLOT(druid, pRavage), SLOT(druid, pClaw),
+                     SLOT(druid, pShred), SLOT(druid, pRake), SLOT(druid, pRip), SLOT(druid, pFerociousBite),
+                     SLOT(druid, pTigersFury), SLOT(druid, pDash), SLOT(druid, pFaerieFireFeral),
+                     SLOT(druid, pCower), SLOT(druid, pGrowl), SLOT(druid, pChallengingRoar),
+                     SLOT(druid, pDemoralizingRoar), SLOT(druid, pEnrage), SLOT(druid, pFrenziedRegeneration),
+                     SLOT(druid, pSwipe), SLOT(druid, pMaul), SLOT(druid, pBash), SLOT(druid, pFeralCharge) };
+    }
+
+#undef SLOT
+
+    return {};
 }
 
 void CombatBotBaseAI::AddAllSpellReagents()

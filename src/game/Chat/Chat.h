@@ -286,6 +286,7 @@ class ChatHandler
         bool HandleHarnessRewardQuestCommand(char* args);
         bool HandleHarnessCreateCharCommand(char* args);
         bool HandleHarnessLoginCommand(char* args);
+        bool HandleHarnessSpellsCommand(char* args);
 
         bool PartyBotAddRequirementCheck(Player const* pPlayer, Player const* pTarget);
         bool HandlePartyBotAddCommand(char * args);

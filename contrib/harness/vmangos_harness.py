@@ -139,6 +139,34 @@ class Harness:
     def teleport(self, character, x, y, z, map_id):
         return self.execute(character, f"go xyz {x:.2f} {y:.2f} {z:.2f} {map_id}")
 
+    def spells(self, character):
+        """Every named spell slot of a combat bot, as {slot: {...}} plus a summary.
+
+        Slots are parsed by position rather than by the usual key=value sweep, because a
+        spell name contains spaces and so has to be the rest of the line.
+        """
+        text = self.run(f"harness spells {character}")
+
+        summary = {}
+        slots = {}
+        for line in text.splitlines():
+            line = line.strip()
+            match = re.match(
+                r"^slot (\w+) id=(\d+) rank=(\d+) level=(\d+) known=(\d+) name=(.*)$", line)
+            if match:
+                slots[match.group(1)] = {
+                    "id": int(match.group(2)),
+                    "rank": int(match.group(3)),
+                    "level": int(match.group(4)),
+                    "known": int(match.group(5)) == 1,
+                    "name": match.group(6),
+                }
+            elif line.startswith("spells "):
+                summary = {k: int(v) if v.isdigit() else v
+                           for k, v in re.findall(r"(\w+)=(\S+)", line)}
+
+        return {"summary": summary, "slots": slots}
+
     # -- world queries -----------------------------------------------------
 
     def graveyard(self, map_id, x, y, z, team=HORDE):

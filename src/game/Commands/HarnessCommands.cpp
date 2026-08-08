@@ -28,6 +28,7 @@
 #include "Util.h"
 #include "PlayerBotMgr.h"
 #include "PlayerBotAI.h"
+#include "CombatBotBaseAI.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
@@ -478,6 +479,64 @@ bool ChatHandler::HandleHarnessGraveyardCommand(char* args)
 
     PSendSysMessage("graveyard id=%u map=%u x=%.2f y=%.2f z=%.2f",
         pGraveyard->ID, pGraveyard->map_id, pGraveyard->x, pGraveyard->y, pGraveyard->z);
+    return true;
+}
+
+// .harness spells <character>
+// What the bot's spell population actually produced, slot by slot.
+//
+// Population matches spells by name into named struct slots, and a slot that never matches
+// stays null forever. From the outside that is indistinguishable from a rotation that
+// declines to cast: the shaman cure slots had no matcher at all and simply read as Horde
+// never dispelling. Naming the empty slots is the difference between the two.
+bool ChatHandler::HandleHarnessSpellsCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PlayerBotEntry const* pEntry = pTarget->GetSession()->GetBot();
+    CombatBotBaseAI const* pAI = pEntry ? dynamic_cast<CombatBotBaseAI const*>(pEntry->ai.get()) : nullptr;
+    if (!pAI)
+    {
+        PSendSysMessage("Harness: '%s' is not running a combat bot AI.", pTarget->GetName());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::vector<CombatBotBaseAI::SpellSlot> const slots = pAI->GetSpellSlots();
+
+    uint32 filled = 0;
+    for (auto const& slot : slots)
+        if (slot.spell)
+            ++filled;
+
+    SpellEntry const* pResurrection = pAI->m_resurrectionSpell;
+    PSendSysMessage("spells character=%s class=%u level=%u role=%u slots=%u filled=%u resurrection=%u",
+        pTarget->GetName(), pTarget->GetClass(), pTarget->GetLevel(), uint32(pAI->GetRole()),
+        uint32(slots.size()), filled, pResurrection ? pResurrection->Id : 0);
+
+    // The spell name goes last because it contains spaces, so a reader can take the rest of
+    // the line without having to quote anything.
+    for (auto const& slot : slots)
+    {
+        if (!slot.spell)
+        {
+            PSendSysMessage("slot %s id=0 rank=0 level=0 known=0 name=", slot.name);
+            continue;
+        }
+
+        // level is the spell's own level rather than the bot's, because a slot holding a
+        // rank far below the bot is the quiet version of this failure: rogue poisons were
+        // resolving to the level 30 rank on a level 60 bot and nothing said so.
+        PSendSysMessage("slot %s id=%u rank=%u level=%u known=%u name=%s",
+            slot.name, slot.spell->Id, slot.spell->GetRank(), slot.spell->spellLevel,
+            pTarget->HasSpell(slot.spell->Id) ? 1 : 0, slot.spell->SpellName[0].c_str());
+    }
+
     return true;
 }
 
