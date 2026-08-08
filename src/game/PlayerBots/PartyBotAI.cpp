@@ -239,9 +239,8 @@ bool PartyBotAI::DrinkAndEat()
 
 bool PartyBotAI::ShouldAutoRevive() const
 {
-    if (me->GetDeathState() == DEAD)
-        return true;
-
+    // Deliberately no shortcut for the DEAD state here. A released ghost is mid-recovery,
+    // and reviving it on the spot would undo the release and destroy its own corpse.
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return false;
@@ -269,6 +268,122 @@ bool PartyBotAI::ShouldAutoRevive() const
     }
 
     return alivePlayerNearby;
+}
+
+bool PartyBotAI::IsGroupInCombat() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (pMember && pMember != me && pMember->IsAlive() && pMember->IsInCombat())
+            return true;
+    }
+
+    return false;
+}
+
+// Someone left standing who could resurrect this corpse. Being in range says nothing about
+// whether the resurrection will actually arrive, so callers have to be able to give up.
+Player* PartyBotAI::FindGroupHealer() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (pMember && pMember != me && pMember->IsAlive() &&
+            IsHealerClass(pMember->GetClass()) && pMember->IsWithinDistInMap(me, 40.0f))
+            return pMember;
+    }
+
+    return nullptr;
+}
+
+// Recovery after death. A resurrection is always preferred, but nothing here may depend on
+// one arriving: after a wipe there is nobody left to cast it, which is exactly the case that
+// used to leave the whole group on the floor permanently.
+void PartyBotAI::UpdateDeadAI()
+{
+    // Battlegrounds run their own graveyard cycle and already worked.
+    if (me->InBattleGround())
+    {
+        if (me->GetDeathState() == CORPSE)
+        {
+            me->BuildPlayerRepop();
+            me->RepopAtGraveyard();
+        }
+        return;
+    }
+
+    time_t const now = time(nullptr);
+    uint32 const timeout = sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_DEATH_RECOVERY_TIMEOUT);
+
+    if (me->GetDeathState() == CORPSE)
+    {
+        // An offer is already in flight and bots accept immediately, so never release out
+        // from under one.
+        if (me->IsRessurectRequested())
+            return;
+
+        // While the group is still fighting there is nothing to break out of, and releasing
+        // would throw away both the battle res and the free one after the kill. Combat ends
+        // one way or another, so wait it out and start the clock from there.
+        if (IsGroupInCombat())
+        {
+            m_corpseSince = 0;
+            return;
+        }
+
+        if (!m_corpseSince)
+            m_corpseSince = now;
+
+        // Once the fight is over, patience is budgeted, because a healer who survived the
+        // wipe but is out of mana would otherwise keep this bot down for good.
+        if (Player* pHealer = FindGroupHealer())
+        {
+            // Resurrection is a ten second cast, so a healer working down a pile of corpses
+            // is making progress well before reaching this one. Only start the clock once
+            // they stop casting altogether.
+            if (pHealer->IsNonMeleeSpellCasted(false))
+                m_corpseSince = now;
+
+            if (!timeout || (now - m_corpseSince) < time_t(timeout))
+                return;
+        }
+
+        if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_AUTO_REVIVE) && ShouldAutoRevive())
+        {
+            me->ResurrectPlayer(0.5f);
+            me->SpawnCorpseBones();
+            me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
+            return;
+        }
+
+        // Nothing is coming, so release rather than lying here. The engine stopped
+        // auto-releasing inside instances in 1.11, so this has to be explicit.
+        me->BuildPlayerRepop();
+        me->ScheduleRepopAtGraveyard();
+        m_ghostSince = now;
+        return;
+    }
+
+    // Released, and running around as a ghost.
+    if (!m_ghostSince)
+        m_ghostSince = now;
+
+    if (timeout && (now - m_ghostSince) >= time_t(timeout))
+    {
+        // Take the spirit healer's terms. Until the corpse run lands this is the only way
+        // back, and even afterwards it is the timeout that keeps a bot whose corpse is
+        // unreachable from stalling everyone else indefinitely.
+        me->GetSession()->SendSpiritResurrect();
+    }
 }
 
 bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
@@ -467,7 +582,10 @@ Player* PartyBotAI::SelectResurrectionTarget() const
             if (pMember == me)
                 continue;
 
-            if (pMember->GetDeathState() != CORPSE)
+            // Released ghosts count too. Refusing them meant a healer gave up on anyone who
+            // released, which is everyone once wipe recovery is doing its job.
+            DeathState const deathState = pMember->GetDeathState();
+            if (deathState != CORPSE && deathState != DEAD)
                 continue;
 
             if (!me->IsWithinLOSInMap(pMember))
@@ -769,26 +887,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (me->IsDead())
     {
-        if (me->InBattleGround())
-        {
-            if (me->GetDeathState() == CORPSE)
-            {
-                me->BuildPlayerRepop();
-                me->RepopAtGraveyard();
-            }
-        }
-        else
-        {
-            if (ShouldAutoRevive())
-            {
-                me->ResurrectPlayer(0.5f);
-                me->SpawnCorpseBones();
-                me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
-            }
-        }
-
+        UpdateDeadAI();
         return;
     }
+
+    // Back on our feet, by whichever route. Clearing here covers all of them, so a later
+    // death cannot inherit stale timestamps and skip straight to the spirit healer.
+    m_corpseSince = 0;
+    m_ghostSince = 0;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {

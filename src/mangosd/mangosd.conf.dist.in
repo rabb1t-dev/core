@@ -3005,6 +3005,24 @@ AHBot.itemcount = 50
 #        A lower number equals to gear being more close to the bot level.
 #        Default: 10 (bots will equip gear down to a minimum of 10 item level difference)
 #
+#    PartyBot.AutoRevive
+#        Lets a dead party bot resurrect itself on the spot once the fight is over and no
+#        healer is left to do it. Turning this off makes death cost something, so bots release
+#        and recover the way a player does. Recovery from a full wipe does not depend on this
+#        setting: nobody is alive to resurrect anyone, so bots release either way.
+#        Default: 1 (on)
+#                 0 (off, death has a real cost)
+#
+#    PartyBot.DeathRecoveryTimeout
+#        Seconds a dead bot will hold out for a better outcome before settling for a worse
+#        one: how long it waits on its corpse for a resurrection before releasing, and then
+#        how long it spends as a ghost before the spirit healer revives it at the cost of
+#        durability and resurrection sickness. These are deadlock breakers rather than
+#        preferences. A healer who survives the wipe but is out of mana, or a ghost that
+#        cannot reach its corpse, would otherwise keep the group down permanently.
+#        Default: 60
+#                 0 (disabled, bots wait indefinitely at both stages)
+#
 #    BattleBot.AutoEquip
 #        What gear will new battlebots spawn with.
 #        Default: 1 (random items)
@@ -3031,6 +3049,8 @@ PartyBot.MaxBots = 0
 PartyBot.SkipChecks = 0
 PartyBot.AutoEquip = 1
 PartyBot.RandomGearLevelDifference = 10
+PartyBot.AutoRevive = 1
+PartyBot.DeathRecoveryTimeout = 60
 
 BattleBot.AutoEquip = 1
 BattleBot.AutoJoin = 0

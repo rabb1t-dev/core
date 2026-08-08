@@ -60,6 +60,9 @@ public:
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;
     bool DrinkAndEat();
     bool ShouldAutoRevive() const;
+    bool IsGroupInCombat() const;
+    Player* FindGroupHealer() const;
+    void UpdateDeadAI();
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);
     Unit* GetDistancingTarget(Unit* pEnemy);
     bool RunAwayFromTarget(Unit* pEnemy);
@@ -105,6 +108,10 @@ public:
     float m_z = 0.0f;
     float m_o = 0.0f;
     bool m_resetSpellData = false;
+    // How long this bot has been waiting at each stage of death, so one that cannot recover
+    // on its own gets bailed out rather than stalling the group.
+    time_t m_corpseSince = 0;
+    time_t m_ghostSince = 0;
 };
 
 #endif
