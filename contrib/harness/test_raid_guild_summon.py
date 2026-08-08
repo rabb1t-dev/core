@@ -54,6 +54,20 @@ STAGING = (-600.0, -2515.0, 92.0, 1)
 ATTUNE_QUEST = 7848
 ATTUNE_ITEM = 16309
 
+# Deathstalker Shortsword, given to one member and looked for again after a round trip. It
+# only has to be something the character has no other reason to be carrying.
+WITNESS_ITEM = 3455
+
+# What the witness is left on before being dismissed, so that coming back on the leader's
+# level means something. Any level that is not the leader's would do.
+WRONG_LEVEL = 25
+
+
+def holds_item(harness, name, entry):
+    """Whether the character has the item, worn or carried."""
+    text = harness.run(f"harness items {name}")
+    return any(f"entry={entry} " in f"{line.strip()} " for line in text.splitlines())
+
 
 def query(sql):
     """The characters database directly, for the one thing SOAP cannot say.
@@ -294,13 +308,21 @@ def main():
 
     # The claim the whole design rests on, made falsifiable. Player::Create sets
     # m_saveDisabled and nothing clears it, so a generated bot changed in the world is
-    # unchanged the moment it leaves; a member spawned through the load path should not
-    # be. A level is used because it is the cheapest thing to set that .harness info
-    # already reports back.
+    # unchanged the moment it leaves; a member spawned through the load path should not be.
+    #
+    # An item is the witness rather than a level, which was the obvious choice and is now
+    # the wrong one: the roster sets a member's level from the leader's on every summon, so
+    # a level surviving a round trip would say nothing about saving. Gear is what this
+    # roster is meant to accumulate anyway, which makes it the honest thing to ask about.
     witness = MEMBERS[1][0]
-    harness.run(f"character level {witness} 20")
-    if (harness.info(witness) or {}).get("level") != "20":
-        failures.append(f"{witness} would not take a level change while in the world")
+    harness.run(f"harness exec {witness} additem {WITNESS_ITEM}")
+    if not holds_item(harness, witness, WITNESS_ITEM):
+        failures.append(f"{witness} would not take an item while in the world")
+
+    # And put the witness on a level nobody asked for, so that the level check after the
+    # round trip has something to disagree with. Without this every member is already on the
+    # leader's level and matching them to it would pass while doing nothing at all.
+    harness.run(f"character level {witness} {WRONG_LEVEL}")
 
     harness.run("raidguild dismiss")
 
@@ -328,9 +350,19 @@ def main():
         failures.append(
             f"only {summary.get('online')} of {expected} members could be summoned a second time")
 
-    level = (harness.info(witness) or {}).get("level")
-    if level != "20":
-        failures.append(f"{witness} came back at level {level}, so the session was not saved")
+    if not holds_item(harness, witness, WITNESS_ITEM):
+        failures.append(f"{witness} came back without the item it was given, "
+                        f"so the session was not saved")
+
+    # And it came back at the leader's level rather than the one it was left on, which is
+    # the roster's business rather than the character's: the human levels alone and calls
+    # the guild in for the hard parts, so a bot can never earn enough experience to keep
+    # pace and is simply set to match. The witness went out at WRONG_LEVEL deliberately.
+    leader_level = (harness.info(LEADER) or {}).get("level")
+    for name, *_ in MEMBERS:
+        level = summoned.get(name, {}).get("level")
+        if level != leader_level:
+            failures.append(f"{name} was summoned at level {level}, not the leader's {leader_level}")
 
     # The check that matters more than the first one, because this time there was
     # demonstrably something to clear.
@@ -344,7 +376,8 @@ def main():
             f"AND guid = (SELECT guid FROM characters WHERE name = '{witness}')"):
         failures.append(f"{witness} kept its planted bind to instance {stale} through a summon")
 
-    print("status " + " ".join(f"{k}={v}" for k, v in sorted(summary.items())) + f" witnesslevel={level}")
+    print("status " + " ".join(f"{k}={v}" for k, v in sorted(summary.items()))
+          + f" leaderlevel={leader_level}")
 
     harness.run("raidguild dismiss")
     wait_for(harness, lambda s, summary: summary.get("online") == "0")

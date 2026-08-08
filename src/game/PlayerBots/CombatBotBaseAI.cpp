@@ -3374,8 +3374,21 @@ void CombatBotBaseAI::AddHunterAmmo()
 
 void CombatBotBaseAI::EquipOrUseNewItem()
 {
+    // Which backpack slots held something when this started. A swap now puts the displaced
+    // item back into the bags rather than destroying it, and it lands in a slot that was
+    // free, so a loop reading the bags as it walks them would find it further along and
+    // swap it straight back in. Deciding up front what to consider is what stops that.
+    bool occupied[INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START] = { false };
+    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        occupied[i - INVENTORY_SLOT_ITEM_START] = me->GetItemByPos(INVENTORY_SLOT_BAG_0, i) != nullptr;
+
     for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
     {
+        if (!occupied[i - INVENTORY_SLOT_ITEM_START])
+            continue;
+
+        // Re-read rather than trusting a pointer taken above, since a swap earlier in the
+        // pass can have moved things around.
         Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
         if (pItem && !pItem->IsEquipped())
         {
@@ -3383,9 +3396,11 @@ void CombatBotBaseAI::EquipOrUseNewItem()
             {
                 case ITEM_CLASS_CONSUMABLE:
                 {
-                    SpellCastTargets targets;
-                    targets.setUnitTarget(me);
-                    me->CastItemUseSpell(pItem, targets);
+                    // Kept, not drunk. This runs on trade completion, so using a consumable
+                    // the moment it arrives means a raid handed forty flasks drinks them in
+                    // the trade window, standing in a city, out of combat. Nothing else in
+                    // the bot AI uses bag consumables, so leaving them alone leaves the
+                    // decision with whoever handed them over.
                     break;
                 }
                 case ITEM_CLASS_WEAPON:

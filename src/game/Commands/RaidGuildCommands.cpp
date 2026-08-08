@@ -385,9 +385,9 @@ bool ChatHandler::HandleRaidGuildStatusCommand(char* /*args*/)
         // The guild is reported from the character rather than from the guild tables,
         // because the question it answers is whether an offline bulk add actually reaches
         // a member when it next logs in, which is a different claim from the row existing.
-        PSendSysMessage("summoned name=%s guid=%u inworld=%u map=%u instance=%u group=%u raid=%u subgroup=%u wanted=%u guild=%u binds=%u",
+        PSendSysMessage("summoned name=%s guid=%u inworld=%u level=%u map=%u instance=%u group=%u raid=%u subgroup=%u wanted=%u guild=%u binds=%u",
             member.name.c_str(), member.guid, pPlayer->IsInWorld() ? 1 : 0,
-            pPlayer->GetMapId(), pPlayer->GetInstanceId(),
+            pPlayer->GetLevel(), pPlayer->GetMapId(), pPlayer->GetInstanceId(),
             pGroup ? 1 : 0, (pGroup && pGroup->isRaidGroup()) ? 1 : 0,
             subGroup, uint32(member.subGroup), pPlayer->GetGuildId(),
             sRaidGuildMgr.CountMemberBinds(member));

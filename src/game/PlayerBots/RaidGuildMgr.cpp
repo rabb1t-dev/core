@@ -382,6 +382,8 @@ bool RaidGuildMgr::SummonMember(std::string const& name, Player* pLeader, std::s
     // would otherwise walk into at the door of a raid the leader is saved to.
     ClearMemberBinds(*pMember, pLeader->GetGroup());
 
+    MatchMemberLevel(*pMember, pLeader->GetLevel());
+
     float x, y, z;
     pLeader->GetNearPoint(pLeader, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
 
@@ -623,6 +625,31 @@ uint32 RaidGuildMgr::MirrorAttunements(Player* pLeader, Player* pMember) const
             granted, pLeader->GetName(), pMember->GetName());
 
     return granted;
+}
+
+bool RaidGuildMgr::MatchMemberLevel(RaidGuildMember const& member, uint32 level) const
+{
+    if (!member.IsProvisioned() || !level || level > PLAYER_STRONG_MAX_LEVEL)
+        return false;
+
+    // Written to the table rather than applied to a Player, because this runs before the
+    // session loads and that is the point. Level is a free parameter here, so a member
+    // arriving at the wrong one and being corrected a second later would be visible as a
+    // bot that spawns, then re-rolls its stats and loses talents in front of everyone.
+    // Doing it first means it simply arrives right.
+    //
+    // The offline branch of .character level is the same write, and its comment is the
+    // reason this is safe: everything else is recomputed at loading. That includes
+    // InitTalentForLevel, which LoadFromDB calls after spells, so a member brought down to
+    // a level it cannot afford its talents at has them refunded rather than kept.
+    std::unique_ptr<QueryResult> result(CharacterDatabase.PQuery(
+        "SELECT `level` FROM `characters` WHERE `guid` = '%u'", member.guid));
+    if (!result || result->Fetch()[0].GetUInt32() == level)
+        return false;
+
+    CharacterDatabase.PExecute("UPDATE `characters` SET `level` = '%u', `xp` = 0 WHERE `guid` = '%u'",
+        level, member.guid);
+    return true;
 }
 
 uint32 RaidGuildMgr::CountMemberBinds(RaidGuildMember const& member) const

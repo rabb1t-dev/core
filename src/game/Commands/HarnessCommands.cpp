@@ -30,6 +30,8 @@
 #include "PlayerBotAI.h"
 #include "CombatBotBaseAI.h"
 #include "Totem.h"
+#include "MasterPlayer.h"
+#include "Mail/Mail.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
@@ -556,6 +558,95 @@ bool ChatHandler::HandleHarnessSpellsCommand(char* args)
             pTotem->GetSpell(), pTotem->GetName());
     }
 
+    return true;
+}
+
+// .harness items <character>
+// Everything the character is wearing, carrying in the backpack, or has waiting in the mail.
+//
+// The mail count is the part that matters and the reason this is not just a convenience. Gear
+// that a swap displaces goes to the bags, and to the mail when the bags will not take it, so a
+// test that only looked at bags and equipment could not tell an item that was mailed away from
+// one that was destroyed. Those are the two outcomes it most needs to distinguish.
+bool ChatHandler::HandleHarnessItemsCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 equipped = 0;
+    for (uint32 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+        if (pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            equipped++;
+
+    uint32 bag = 0;
+    for (uint32 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        if (pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            bag++;
+
+    // Mail lives on the MasterPlayer rather than the Player.
+    MasterPlayer* pMaster = pTarget->GetSession()->GetMasterPlayer();
+
+    uint32 mailed = 0;
+    if (pMaster)
+        for (auto itr = pMaster->GetMailBegin(); itr != pMaster->GetMailEnd(); ++itr)
+            mailed += uint32((*itr)->items.size());
+
+    PSendSysMessage("items character=%s equipped=%u bag=%u mailed=%u",
+        pTarget->GetName(), equipped, bag, mailed);
+
+    for (uint32 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+    {
+        if (Item* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            PSendSysMessage("equipped slot=%u entry=%u count=%u", i, pItem->GetEntry(), pItem->GetCount());
+    }
+
+    for (uint32 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    {
+        if (Item* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            PSendSysMessage("bag slot=%u entry=%u count=%u", i, pItem->GetEntry(), pItem->GetCount());
+    }
+
+    if (pMaster)
+        for (auto itr = pMaster->GetMailBegin(); itr != pMaster->GetMailEnd(); ++itr)
+            for (auto const& item : (*itr)->items)
+                PSendSysMessage("mailed entry=%u", item.itemId);
+
+    return true;
+}
+
+// .harness equipnew <character>
+// Runs the bot's own "something new turned up in my bags" pass.
+//
+// It exists because that pass is otherwise reachable only from trade completion, and there is
+// no way to conduct a trade over SOAP. That left the one code path that decides what happens
+// to a bot's current gear when better gear arrives as the only part of this work with no test
+// at all, which is a poor place for a gap: until recently it freed the slot by destroying
+// whatever was in it.
+bool ChatHandler::HandleHarnessEquipNewCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PlayerBotEntry const* pEntry = pTarget->GetSession()->GetBot();
+    CombatBotBaseAI* pAI = pEntry ? dynamic_cast<CombatBotBaseAI*>(pEntry->ai.get()) : nullptr;
+    if (!pAI)
+    {
+        PSendSysMessage("Harness: '%s' is not running a combat bot AI.", pTarget->GetName());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    pAI->EquipOrUseNewItem();
+
+    PSendSysMessage("equipnew character=%s", pTarget->GetName());
     return true;
 }
 

@@ -104,6 +104,13 @@ class RaidGuildMgr
         // did not earn by walking through a door with the group.
         uint32 CountMemberBinds(RaidGuildMember const& member) const;
 
+        // Puts a member on the leader's level before it is summoned. Level is a free
+        // parameter for a roster and gear is the progression: the human levels alone and
+        // calls the guild in for the hard parts, so bots can never earn enough experience
+        // to keep pace and are simply set to whatever the human is. Returns whether it
+        // changed anything.
+        bool MatchMemberLevel(RaidGuildMember const& member, uint32 level) const;
+
         // Gives a member every quest and item an instance doorway asks for that the leader
         // already has. Entry conditions are evaluated against each entering player, so a
         // chain the human ran once would otherwise have to be run forty more times.
