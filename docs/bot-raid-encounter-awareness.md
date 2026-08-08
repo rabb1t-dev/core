@@ -37,6 +37,12 @@ Status key: **not started** / **in progress** / **done**.
 | `7bbba792a` | Bots report every area trigger they stand in, not the lowest numbered |
 | `caf3f2494` | Spell slots that name matching never reached, and `.harness spells` |
 | `677a9cc14` | Totems and blessings chosen by role and group rather than at random |
+| `9b9fd9ee6` | Ghost run speed applied to the ghost rather than to the corpse |
+| `410e4a1e1` | Corpse runs judged by ground covered, and walked into the door |
+| `25a44417d` | Two live party bots can no longer be given the same name |
+| `f2514c6a8` | Every instance and every raid proving its own corpse run |
+| `ec47f1e2a` | A corpse's faction derived from its race rather than dereferenced unset |
+| `a23a5ac39` | Death, drinking and ammo made costly by default, and visible to the harness |
 
 ### Findings that changed the plan
 
@@ -177,6 +183,35 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   reports success, and each bot has to be told to remove itself. The reset in
   `test_raid_group.py` was never doing anything; it only passed because it happened to run
   against an empty roster.
+- **Two of the four free-resource cheats this document catalogued were not what it said, and
+  one of them was not a cheat at all.** Both claims were reasoned from upstream MaNGOS rather
+  than read here. Environmental death was said to charge the ten percent durability loss
+  twice, once in `DealDamage` and again in `Player::EnvironmentalDamage`. It does not:
+  `EnvironmentalDamage` passes `durabilityLoss = false` down, `Unit::Kill` is handed the same
+  flag and skips its own charge, and the comment at the call site says exactly that. Nothing
+  to fix. The weapon buff was said to be free because a triggered spell skips the mana cost;
+  in this fork `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not `m_IsTriggeredSpell`,
+  and the cost is calculated either way, so shaman imbues were always paid for. What the
+  triggered flag really skipped was the global cooldown, range and line of sight, and the
+  silence and school lockouts, which is worth having and is what the fix bought.
+- **Rogue poisons are free for a reason no flag controls.** A rogue never learns the poison
+  enchant; it learns the trade spell that makes the vial, and the vial applies the enchant
+  when used. The bot skips the vial and casts the enchant by name, so it is not that the
+  consumption is being waived, it is that nothing is ever consumed and no poison need exist.
+  Making the cast non-triggered changes nothing here. The fix is to hold the item and apply it
+  by use, and it belongs with poison selection rather than with the cast path.
+- **Free full health and mana out of range was load-bearing, so removing it alone hangs the
+  bot.** The out-of-combat block tests for food and drink before it tests for distance, and a
+  bot that needs either never falls through, so the only way one could ever reach the teleport
+  back to the leader was to stop needing them: which is what the free restore did. Deleted on
+  its own, a straggler sits and drinks forever and never rejoins. Distance is now dealt with
+  first, so the bot is brought back and drinks with everyone else, at the same cost in time.
+- **A corpse never had a faction, and the getter dereferenced it anyway.** `m_faction` is
+  assigned in exactly one place in the tree, in `Map::RemoveCorpses` and only when the owner is
+  still on the map, so every corpse loaded from the database and every set of bones left by a
+  player who has gone elsewhere carried a null pointer into `Corpse::GetFactionTemplateId`.
+  The race is on the corpse in all three cases and is what set the owner's faction to begin
+  with, so it is derived from that rather than left to a caller to remember.
 
 ### Build and test loop
 
@@ -460,9 +495,23 @@ Forty ghosts on one road is also the load case the single-bot suite cannot produ
 holds up: releases land within two seconds of the wipe and the run back is no slower per bot
 than it is alone.
 
-Still open in this phase: the remaining free-resource defaults (out-of-combat full restore,
-hunter ammo, triggered weapon buffs); and the two engine bugs (double durability loss on
-environmental death, `Corpse::GetFactionTemplateId` dereferencing an unset faction).
+The free-resource defaults are done, and the death penalty is now the default rather than a
+setting the dev server happens to carry: `PartyBot.AutoRevive` is off, the out-of-combat full
+restore is gone, the spawn-time restore no longer reaches characters loaded from the database,
+hunters are stocked once when they spawn instead of whenever a shot finds an empty quiver, and
+weapon buffs go through the normal cast path. Two of the four turned out to be different
+bugs than this document described, both recorded under findings. `.harness info` reports
+health, power, ammo and the main hand's temporary enchant now, because none of this could be
+seen from outside otherwise. Both suites were re-run against it: 26 of 26 and 7 of 7, clean.
+
+What is left in this phase is one item, and it is smaller than it was: rogue poisons cost
+nothing, because the bot applies the enchant directly rather than using a poison item, so no
+vial is ever consumed. That is not the triggered-cast flag and was not fixed by changing it.
+It belongs with whoever owns poison selection, since the fix is to craft or stock the item and
+apply it by use.
+
+`Corpse::GetFactionTemplateId` is fixed. The claimed double durability loss on environmental
+death was not real; see findings.
 
 Note that the spirit-healer fallback is not scaffolding to be deleted once the corpse run
 lands. It stays as the outer deadline, since a corpse in a spot the bot cannot path to would
@@ -484,18 +533,18 @@ those may stay.
 
 Erasing time or risk, therefore off by default:
 
-- **Full health and mana out of combat.** Set when the bot is more than 100 yards **from the party
+- **Full health and mana out of combat.** [done] Set when the bot is more than 100 yards **from the party
   leader** - not from enemies - and gated behind `DrinkAndEat` returning true
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 792-805). It exists so
   a bot left out of range does not sit drinking forever. With it off, bots sit and drink like players do,
   and mana burnout across a spread-out raid becomes visible.
-- **Ammo refilled on a failed shot.** `AddHunterAmmo` grants a full stack whenever auto-shot fails with
+- **Ammo refilled on a failed shot.** [done] `AddHunterAmmo` grants a full stack whenever auto-shot fails with
   `SPELL_FAILED_NO_AMMO` or `SPELL_FAILED_NEED_AMMO`
   ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line 2908, called
   from [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1566-1572), so a
   hunter can never run dry. Turning this off has a real cost worth accepting deliberately: roster
   provisioning must stock ammo and restock it between runs, otherwise hunters silently stop contributing.
-- **Auto-resurrection between pulls.** `ShouldAutoRevive`
+- **Auto-resurrection between pulls.** [done] `ShouldAutoRevive`
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 237) plus the
   resurrect at its call site (lines 731-748) erase the death penalty entirely. Off by default means the
   corpse run below is the only recovery path, which makes it load-bearing rather than optional.
@@ -508,11 +557,20 @@ There is also a rule bypass that is not a config at all, and it directly inflate
 Spell* spell = new Spell(me, pSpellEntry, true, ObjectGuid(), nullptr, nullptr, nullptr);
 ```
 
-A triggered spell skips the mana cost, the global cooldown, the range and line-of-sight checks, the
-silence and school-lockout checks, and **reagent consumption**. That path is how shaman weapon imbues and
-rogue poisons are applied, so both are free and instant: poisons never consume vials and imbues never cost
-mana. Any measurement of rogue or enhancement shaman throughput is inflated until this uses the normal cast
-path. Bot mount copying does something similar and worse, setting `PLAYER_CHEAT_NO_CAST_TIME` and
+[done, and it was two thirds wrong] A triggered spell skips the global cooldown, the range and
+line-of-sight checks, and the silence and school-lockout checks. It does **not** skip the mana cost
+here, whatever it does upstream: `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not
+`m_IsTriggeredSpell`, and `m_powerCost` is calculated regardless, so shaman imbues were always
+paid for. Reagent consumption is skipped, but these spells have no reagents, so that changed
+nothing either. The cast is normal now, which buys the cooldown and the two checks and is worth
+having, and enhancement throughput was never inflated the way this said.
+
+Poisons are a separate problem that the flag never touched, and they really are free: a rogue
+knows the trade spell that makes the vial, not the enchant the vial applies, and the bot casts
+the enchant by name without ever holding a poison. Fixing that means stocking the item and
+applying it by use, which belongs with poison selection.
+
+Bot mount copying does something similar and worse, setting `PLAYER_CHEAT_NO_CAST_TIME` and
 `PLAYER_CHEAT_NO_POWER` around a triggered cast, though that one only affects travel.
 
 Related and worth knowing when interpreting failures: `CanTryToCastSpell` checks cooldown, global cooldown,
@@ -531,11 +589,12 @@ Erasing only gold, therefore acceptable to keep:
 
 Two consequences of turning auto-resurrection off are easy to miss:
 
-- **Spawn-time full restore is a corpse-run bypass.** Bot initialization sets health and power to 100
-  percent ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 665-669), so
-  despawning and re-summoning a wiped roster resurrects it at full strength and skips the corpse run
-  completely. Roster bots must restore the health and mana stored on their `characters` row instead, or the
-  death penalty is one command away from being optional.
+- **Spawn-time full restore is a corpse-run bypass.** [done] Bot initialization set health and power to
+  100 percent for both kinds of bot, so despawning and re-summoning a wiped roster resurrected it at full
+  strength and skipped the corpse run completely. A character conjured seconds ago still starts whole,
+  since it has no history to keep, but one loaded from the database now keeps what it logged out with.
+  This landed the same afternoon `.raidguild summon` did, which is the command it would otherwise have
+  made free.
 - **A stuck corpse run deadlocks the whole roster.** With no auto-revive, a bot whose corpse is unreachable
   or whose pathing stalls stays dead forever and the harness waits on it indefinitely. The spirit-healer
   fallback is therefore not a nicety: it is the timeout that keeps the system live, and it needs to fire on
