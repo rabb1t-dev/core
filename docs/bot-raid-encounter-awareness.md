@@ -35,6 +35,8 @@ Status key: **not started** / **in progress** / **done**.
 | `8b21ca2b6` | `.harness rewardquest`, the only way to attune a bot to anything |
 | `45ae0768d` | Ghost entrance height read from the trigger rather than the terrain |
 | `7bbba792a` | Bots report every area trigger they stand in, not the lowest numbered |
+| `caf3f2494` | Spell slots that name matching never reached, and `.harness spells` |
+| `677a9cc14` | Totems and blessings chosen by role and group rather than at random |
 
 ### Findings that changed the plan
 
@@ -111,6 +113,14 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   presents as "the bot never casts X", which is what a deliberate rotation decision also looks like, so
   they survived a nine-class audit of the rotations themselves. `.harness spells` exists to end that class
   of confusion: it names every slot and reports what is in it.
+- **A spell name is a prefix of other spell names, and `find()` does not know that.** Three separate bugs
+  now share this shape. The rogue poison lookup matched `"Deadly Poison"` and so could only ever find rank
+  1. The blessing matchers matched `"Blessing of Kings"`, which is a substring of *Greater* Blessing of
+  Kings — the reagent-consuming version that buffs a whole class at once — so a paladin could end up with
+  one filed as its ordinary single-target blessing. And `"Disease Resistance Totem"` matched nothing at all
+  because no spell is named that. Two of the three were only found because a *different* change made the
+  output deterministic enough to read. The rule going in: when matching a spell by name, decide explicitly
+  what the longer names containing it are and rule them out.
 - **Attunement cannot be granted by `.quest complete`.** It stops at `QUEST_STATUS_COMPLETE`,
   and only quests flagged `AUTO_REWARDED` go further, whereas the gates are checked with
   `GetQuestRewardStatus`. Blackhand's Command is flagged `RAID`, not auto-rewarded. Hence
@@ -766,10 +776,11 @@ skipped before name matching entirely, so any slot mapped to a passive talent st
 Repopulation is wired correctly for party bots, which set `m_resetSpellData` on learn, supersede, and remove
 packets; BattleBot has no equivalent and keeps stale pointers for its whole session.
 
-One consequence of the Disease Cleansing Totem fix belongs to the next piece of work rather than this one.
-That slot feeds a pool from which the water totem is picked **at random**, alongside Fire Resistance Totem,
-so making it reachable means a raid shaman now sometimes drops it instead of Mana Spring. The pool was
-already wrong in exactly that way before the fix; see the random-totem item under
+One consequence of the Disease Cleansing Totem fix belonged to the next piece of work rather than this one,
+and has since been closed by `677a9cc14`. That slot fed a pool from which the water totem was picked **at
+random**, alongside Fire Resistance Totem, so making it reachable meant a raid shaman sometimes dropped it
+instead of Mana Spring. The pool was already wrong in exactly that way before the fix; see the random-totem
+item under
 [Behaviors that are actively harmful](#behaviors-that-are-actively-harmful-not-merely-suboptimal).
 
 ### Behaviors that are actively harmful, not merely suboptimal
@@ -785,11 +796,36 @@ between a weak raider and a self-sabotaging one:
 - **Warrior Overpower is dead code.** It is attempted, but combat stance logic only ever selects
   Defensive or Berserker, and Overpower requires Battle Stance.
 - **Healer priests and healer shamans never deal damage**, even with nothing to heal.
-- **Totems, paladin auras, non-tank blessings, and caster weapon imbues are chosen at random once** at
-  spell-populate time and never revisited, so Windfury Totem is one entry in a random pool. The pools are
-  not merely unordered, they contain choices no raider would make: Fire Resistance Totem sits in the water
+- **Totems, paladin auras, non-tank blessings, and caster weapon imbues were chosen at random once** at
+  spell-populate time and never revisited, so Windfury Totem was one entry in a random pool. The pools were
+  not merely unordered, they contained choices no raider would make: Fire Resistance Totem sat in the water
   pool next to Mana Spring, and Disease Cleansing Totem joined it once the population fix made that slot
-  reachable at all. Role should pick these, not `SelectRandomContainerElement`.
+  reachable at all. [fixed] **The original prescription here — "role should pick these" — was too weak, and
+  the correction is the useful part.** Role is the right input for the aura and the weapon imbue, which are
+  facts about the shaman or paladin itself. It is the wrong input for the other two.
+
+  A totem is a question about the group. It reaches the party within
+  `TOTEM_AURA_RADIUS` of where it is planted, so the right air totem depends on whether anyone in range
+  swings a weapon, and two shamans running the same totem in one group does not stack and wastes one of
+  them. Deciding that at spawn cannot work. `SummonShamanTotems` already ran per school on a live tick and
+  re-dropped whenever a slot came up empty, so the place to make the decision already existed; only the
+  choice was frozen. It now surveys who is in range and which schools the other shamans already cover. The
+  four slots keep the resting choice, which is what `.harness spells` reports, and the totem on the ground
+  is allowed to differ from it.
+
+  A blessing is a question about the *target*: `effectImplicitTargetA1` is 21, single-target friendly, and
+  the bot picked one blessing at spawn and gave that same one to everybody through `SelectBuffTarget`. That
+  is how a paladin came to put Blessing of Wisdom on the warriors. Choosing per target is shaped like the
+  existing `SelectBuffTarget` overload that decides between Arcane Intellect and Arcane Brilliance.
+
+  Counting composition by class rather than by role does not work, and this is worth remembering before the
+  duty roster in Phase 1a repeats it: by class every shaman counts *itself* as a melee weapon user, so
+  every group looks like a melee group and the answer never changes.
+
+  Not done, and the obvious next step: reacting to what the fight is doing rather than to who is in it.
+  Tremor Totem for a fear, the cleansing totems for a poison or a disease, and the resistance totems for
+  the fight that calls for them. All four are matched and recorded; none is a default, which is the part
+  that was actively harmful.
 - **Trinkets fire on cooldown unconditionally** whenever the bot has a victim.
 - **Hunter is missing roughly half the class** — no Rapid Fire, Bestial Wrath, traps, or stings beyond
   Serpent — and has zero pet handling in combat, so a pet dies unnoticed.
@@ -1567,8 +1603,18 @@ are not started.
   the rogue poison bug looked. `contrib/harness/test_spell_population.py` drives it across
   all nine classes and asserts both, and its per-class filled-slot counts are the baseline
   the rotation work should be measured against. Current counts, whose empties are almost all
-  untaken talents: hunter 16/16, druid 41/45, warrior 28/34, priest 20/25, warlock 21/25,
+  untaken talents: hunter 16/16, druid 41/45, warrior 29/34, priest 20/25, warlock 21/25,
   rogue 21/27, mage 19/24, shaman 16/18, paladin 16/20.
+
+  It also lists the totems actually on the ground, which the slots cannot tell you now that a
+  totem is chosen where it is planted rather than at spawn. A slot holds the resting choice and
+  the ground holds the real one, and the two are meant to disagree.
+  `contrib/harness/test_totem_and_blessing_choice.py` covers the choosing itself: that a bot
+  makes the same choice on every spawn, that the choice moves when the group composition moves,
+  and that each group member ends up holding the blessing suited to it. Two of its assertions
+  are membership rather than equality, because a premade talent spec is rolled per spawn and
+  decides whether Sanctuary and Sanctity were learned at all — the choice is settled, the set
+  it chooses from is not.
 - Debug commands to visualize the hazard list, dump current directives, and inspect encounter phase.
 - Attempt logging so wipes can be analyzed: which bot died to what, whether avoidance fired, whether
   a directive was published but ignored.
