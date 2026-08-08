@@ -55,7 +55,9 @@ public:
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
-    Player* SelectResurrectionTarget() const;
+    Player* SelectResurrectionTarget(SpellEntry const* pSpellEntry) const;
+    bool UseSelfResurrection();
+    void AddSelfResurrectionReagent();
     Player* SelectShieldTarget() const;
     Unit* GetMarkedTarget(RaidTargetIcon mark) const;
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;

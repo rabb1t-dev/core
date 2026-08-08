@@ -873,12 +873,23 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
     uint32 const ammoId = pTarget->GetUInt32Value(PLAYER_AMMO_ID);
     Item const* pMainHand = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
     Item const* pOffHand = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-    PSendSysMessage("health=%u maxhealth=%u power=%u maxpower=%u powertype=%u ammo=%u ammocount=%u mhenchant=%u ohenchant=%u",
+    // incombat and selfres are what tell a resurrection during a fight apart from one after it.
+    // The two are worth a great deal more together than separately: a bot that stood back up is
+    // only interesting if something was still attacking at the time, and selfres names the
+    // charge the engine is holding for this death, so a soulstone that was never applied and an
+    // Ankh that was never carried stop looking like an ability that failed to fire.
+    // form gates more of a druid's spell list than any other single piece of state, and it is
+    // invisible from outside: a druid in bear form declining to cast and a druid missing the
+    // spell entirely produce the same silence.
+    PSendSysMessage("health=%u maxhealth=%u power=%u maxpower=%u powertype=%u ammo=%u ammocount=%u mhenchant=%u ohenchant=%u incombat=%u selfres=%u form=%u",
         pTarget->GetHealth(), pTarget->GetMaxHealth(),
         pTarget->GetPower(powerType), pTarget->GetMaxPower(powerType), uint32(powerType),
         ammoId, ammoId ? pTarget->GetItemCount(ammoId) : 0,
         pMainHand ? pMainHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0,
-        pOffHand ? pOffHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0);
+        pOffHand ? pOffHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0,
+        pTarget->IsInCombat() ? 1 : 0,
+        pTarget->GetUInt32Value(PLAYER_SELF_RES_SPELL),
+        uint32(pTarget->GetShapeshiftForm()));
 
     // What the bot is carrying, which nothing outside the server could see at all. A consumable
     // that is supposed to be spent looks exactly like one that is not until the stack is counted,
@@ -904,11 +915,12 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
-            PSendSysMessage("member name=%s class=%u level=%u subgroup=%u alive=%u deathstate=%u map=%u zone=%u",
+            PSendSysMessage("member name=%s class=%u level=%u subgroup=%u alive=%u deathstate=%u map=%u zone=%u incombat=%u",
                 pMember->GetName(), pMember->GetClass(), pMember->GetLevel(),
                 pGroup->GetMemberGroup(pMember->GetObjectGuid()),
                 pMember->IsAlive() ? 1 : 0, uint32(pMember->GetDeathState()),
-                pMember->GetMapId(), pMember->GetZoneId());
+                pMember->GetMapId(), pMember->GetZoneId(),
+                pMember->IsInCombat() ? 1 : 0);
     }
 
     return true;

@@ -555,6 +555,11 @@ void PartyBotAI::UpdateDeadAI()
         if (IsGroupInCombat())
         {
             m_corpseSince = 0;
+
+            // A soulstone and an Ankh are for this exact moment and no other. Both are held
+            // against a death during the pull, and spending one after the fight is over buys
+            // nothing that walking back would not, at a cooldown of half an hour or more.
+            UseSelfResurrection();
             return;
         }
 
@@ -582,6 +587,13 @@ void PartyBotAI::UpdateDeadAI()
             me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
             return;
         }
+
+        // Last call for a stone held through a wipe where nobody survived to spend it on. It is
+        // reached only after the healer window above has expired, so a living healer is still
+        // preferred: their resurrection costs mana that regenerates, and this one does not
+        // come back for half an hour.
+        if (UseSelfResurrection())
+            return;
 
         // Nothing is coming, so release rather than lying here. The engine stopped
         // auto-releasing inside instances in 1.11, so this has to be explicit.
@@ -817,15 +829,16 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
     return nullptr;
 }
 
-Player* PartyBotAI::SelectResurrectionTarget() const
+Player* PartyBotAI::SelectResurrectionTarget(SpellEntry const* pSpellEntry) const
 {
-    if (IsInDuel())
+    if (IsInDuel() || !pSpellEntry)
         return nullptr;
 
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return nullptr;
 
+    Player* pBest = nullptr;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -843,12 +856,74 @@ Player* PartyBotAI::SelectResurrectionTarget() const
             if (!me->IsWithinLOSInMap(pMember))
                 continue;
 
-            if (m_resurrectionSpell->IsTargetInRange(me, pMember))
-                return pMember;
+            if (!pSpellEntry->IsTargetInRange(me, pMember))
+                continue;
+
+            // Order matters when the resurrection is rationed. A battle res is one per fight
+            // and the fight is lost without healing long before it is lost without a rogue, so
+            // a healer is taken over whoever the group happens to be iterated in front of.
+            // Out of combat this only decides who stands up first.
+            if (!pBest || (IsHealerClass(pMember->GetClass()) && !IsHealerClass(pBest->GetClass())))
+                pBest = pMember;
         }
     }
 
-    return nullptr;
+    return pBest;
+}
+
+void PartyBotAI::AddSelfResurrectionReagent()
+{
+    // Reincarnation is the one reagent AddAllSpellReagents cannot reach, because it walks the
+    // named spell slots and Reincarnation has never been one. It also cannot be discovered by
+    // asking Player::SelectResurrectionSpellId, which reports the shaman has no self
+    // resurrection available until the Ankh is already in the bag. So the pairing is named
+    // here, the same pairing the engine keeps in Player.cpp: the talent the shaman learns, and
+    // the spell that does the work and charges an Ankh for it.
+    uint32 const REINCARNATION_PASSIVE = 20608;
+    uint32 const REINCARNATION_EFFECT = 21169;
+
+    if (!me->HasSpell(REINCARNATION_PASSIVE))
+        return;
+
+    SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(REINCARNATION_EFFECT);
+    if (!pSpellEntry)
+        return;
+
+    for (uint32 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+    {
+        if (pSpellEntry->Reagent[i] <= 0)
+            continue;
+
+        uint32 const itemId = uint32(pSpellEntry->Reagent[i]);
+        if (!me->HasItemCount(itemId, pSpellEntry->ReagentCount[i]))
+            AddItemToInventory(itemId, pSpellEntry->ReagentCount[i]);
+    }
+}
+
+bool PartyBotAI::UseSelfResurrection()
+{
+    // The engine works out which self resurrection applies at the moment of death and leaves
+    // the answer here, so a soulstone, an Ankh and Twisting Nether are all one branch and none
+    // of them has to be recognised by name. This mirrors HandleSelfResOpcode, which is what a
+    // client sends when the player takes the offer on the release dialog.
+    uint32 const spellId = me->GetUInt32Value(PLAYER_SELF_RES_SPELL);
+    if (!spellId)
+        return false;
+
+    SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(spellId);
+    if (!pSpellEntry)
+        return false;
+
+    // Cleared only once the cast is away, which is where this has to differ from the opcode.
+    // A player clicks the button once and clearing it unconditionally costs them nothing; a
+    // bot arrives here every tick, so clearing first would spend the charge on the first
+    // attempt whatever came of it, and a single transient refusal would look ever after like a
+    // shaman that simply does not reincarnate.
+    if (me->CastSpell(me, pSpellEntry, false) != SPELL_CAST_OK)
+        return false;
+
+    me->SetUInt32Value(PLAYER_SELF_RES_SPELL, 0);
+    return true;
 }
 
 Player* PartyBotAI::SelectShieldTarget() const
@@ -1077,6 +1152,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         // to a vendor, which is gold and tedium rather than any part of the game being measured.
         // What it no longer does is refill a quiver that empties mid-fight.
         AddHunterAmmo();
+        AddSelfResurrectionReagent();
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
         SummonPetIfNeeded();
 
@@ -1335,7 +1411,7 @@ void PartyBotAI::UpdateOutOfCombatAI()
     if (!IsInDuel())
     {
         if (m_resurrectionSpell)
-            if (Player* pTarget = SelectResurrectionTarget())
+            if (Player* pTarget = SelectResurrectionTarget(m_resurrectionSpell))
                 if (CanTryToCastSpell(pTarget, m_resurrectionSpell))
                     if (DoCastSpell(pTarget, m_resurrectionSpell) == SPELL_CAST_OK)
                         return;
@@ -3460,6 +3536,32 @@ void PartyBotAI::UpdateInCombatAI_Druid()
     {
         if (DoCastSpell(me, m_spells.druid.pBarkskin) == SPELL_CAST_OK)
             return;
+    }
+
+    // The only resurrection in the game that can be cast during a fight, and until now the one
+    // spell in the druid's list that was read at spawn and never cast. Anyone else who dies
+    // mid-encounter is out of it until the pull ends, so this is the difference between losing
+    // a healer and losing the attempt, and it is checked before the rotation because a
+    // cooldown measured in minutes cannot wait for a quiet moment the way a heal can.
+    //
+    // Rebirth cannot be cast in any form, and a druid that spends the fight in one is the
+    // common case rather than the exception, so the form goes. It costs a global cooldown and
+    // is paid back by EnterCombatDruidForm further down on a later tick. Not for a tank: a bear
+    // that stands up in the middle of a pull hands the boss to whoever is next on the list.
+    if (m_spells.druid.pRebirth && m_role != ROLE_TANK)
+    {
+        if (Player* pTarget = SelectResurrectionTarget(m_spells.druid.pRebirth))
+        {
+            if (form != FORM_NONE && me->HasAuraType(SPELL_AURA_MOD_SHAPESHIFT))
+            {
+                me->RemoveSpellsCausingAura(SPELL_AURA_MOD_SHAPESHIFT);
+                return;
+            }
+
+            if (CanTryToCastSpell(pTarget, m_spells.druid.pRebirth))
+                if (DoCastSpell(pTarget, m_spells.druid.pRebirth) == SPELL_CAST_OK)
+                    return;
+        }
     }
 
     if (form == FORM_NONE)
