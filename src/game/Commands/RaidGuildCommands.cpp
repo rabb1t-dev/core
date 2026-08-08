@@ -17,6 +17,8 @@
 #include "Common.h"
 #include "Chat.h"
 #include "Group.h"
+#include "Guild.h"
+#include "GuildMgr.h"
 #include "Player.h"
 #include "World.h"
 #include "ObjectAccessor.h"
@@ -380,13 +382,71 @@ bool ChatHandler::HandleRaidGuildStatusCommand(char* /*args*/)
                 subGroup = uint32(slot) + 1;
         }
 
-        PSendSysMessage("summoned name=%s guid=%u inworld=%u group=%u raid=%u subgroup=%u wanted=%u",
+        // The guild is reported from the character rather than from the guild tables,
+        // because the question it answers is whether an offline bulk add actually reaches
+        // a member when it next logs in, which is a different claim from the row existing.
+        PSendSysMessage("summoned name=%s guid=%u inworld=%u group=%u raid=%u subgroup=%u wanted=%u guild=%u",
             member.name.c_str(), member.guid, pPlayer->IsInWorld() ? 1 : 0,
             pGroup ? 1 : 0, (pGroup && pGroup->isRaidGroup()) ? 1 : 0,
-            subGroup, uint32(member.subGroup));
+            subGroup, uint32(member.subGroup), pPlayer->GetGuildId());
     }
 
     PSendSysMessage("status online=%u grouped=%u", online, grouped);
+    return true;
+}
+
+// .raidguild guild <name> [founder]
+// Finds or founds the guild and puts the whole provisioned roster in it. Idempotent, so it
+// is the way to bring a guild up to date after adding members rather than something to run
+// once. A guild name with spaces has to be quoted.
+bool ChatHandler::HandleRaidGuildGuildCommand(char* args)
+{
+    char* guildStr = ExtractQuotedOrLiteralArg(&args);
+    if (!guildStr)
+    {
+        SendSysMessage("Syntax: .raidguild guild <name> [founder]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string guildName = guildStr;
+
+    // Only needed when the guild does not exist yet, so a missing or offline founder is
+    // not refused here: adding to a guild that is already there needs nobody in the world.
+    Player* pFounder = nullptr;
+    if (char* founderStr = ExtractArg(&args))
+    {
+        std::string founderName = founderStr;
+        normalizePlayerName(founderName);
+        pFounder = ObjectAccessor::FindPlayerByName(founderName.c_str());
+    }
+    else
+    {
+        for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+        {
+            Player* pSummoned = sRaidGuildMgr.FindSummonedMember(member);
+            if (pSummoned && pSummoned->IsInWorld() && !pSummoned->GetGuildId())
+            {
+                pFounder = pSummoned;
+                break;
+            }
+        }
+    }
+
+    uint32 added = 0;
+    uint32 failed = 0;
+    std::string error;
+    if (!sRaidGuildMgr.FormGuild(guildName, pFounder, added, failed, error))
+    {
+        PSendSysMessage("RaidGuild: cannot form guild '%s', %s.", guildName.c_str(), error.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Guild* pGuild = sGuildMgr.GetGuildByName(guildName);
+    PSendSysMessage("guild name=%s id=%u added=%u failed=%u members=%u", guildName.c_str(),
+        pGuild ? pGuild->GetId() : 0, added, failed,
+        pGuild ? uint32(pGuild->GetMemberSize()) : 0);
     return true;
 }
 

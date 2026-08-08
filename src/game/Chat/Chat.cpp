@@ -114,6 +114,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "summon",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildSummonCommand,     "", nullptr },
         { "dismiss",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildDismissCommand,    "", nullptr },
         { "status",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildStatusCommand,     "", nullptr },
+        { "guild",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildGuildCommand,      "", nullptr },
         { "reload",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildReloadCommand,     "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };

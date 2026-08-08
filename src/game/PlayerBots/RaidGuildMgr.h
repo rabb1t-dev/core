@@ -84,6 +84,12 @@ class RaidGuildMgr
         // whether it is provisioned.
         Player* FindSummonedMember(RaidGuildMember const& member) const;
 
+        // Finds or founds the named guild and puts every provisioned member in it. Members
+        // that are not in the world are added straight to the guild tables, which is the
+        // point: a roster of forty should not have to be summoned to be guilded.
+        bool FormGuild(std::string const& guildName, Player* pMaster, uint32& added,
+            uint32& failed, std::string& error);
+
         void Update(uint32 diff);
 
     private:

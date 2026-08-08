@@ -20,6 +20,8 @@
 #include "Database/DatabaseEnv.h"
 #include "Database/DBCStores.h"
 #include "Group.h"
+#include "Guild.h"
+#include "GuildMgr.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -418,6 +420,76 @@ bool RaidGuildMgr::DismissMember(std::string const& name, std::string& error)
     {
         error = "the bot session could not be stopped";
         return false;
+    }
+
+    return true;
+}
+
+bool RaidGuildMgr::FormGuild(std::string const& guildName, Player* pMaster, uint32& added,
+    uint32& failed, std::string& error)
+{
+    added = 0;
+    failed = 0;
+
+    Guild* pGuild = sGuildMgr.GetGuildByName(guildName);
+    if (!pGuild)
+    {
+        // Founding needs a character in the world, because Guild::Create reads the locale
+        // off its session to name the default ranks. Filling the tables by hand instead
+        // would skip that and leave a guild with no ranks, so the requirement is kept and
+        // stated rather than worked around.
+        if (!pMaster)
+        {
+            error = "no guild of that name exists, and no character was given to found one";
+            return false;
+        }
+
+        if (pMaster->GetGuildId())
+        {
+            error = "the founder is already in a guild";
+            return false;
+        }
+
+        pGuild = new Guild;
+        if (!pGuild->Create(pMaster, guildName))
+        {
+            delete pGuild;
+            error = "the guild could not be created";
+            return false;
+        }
+
+        sGuildMgr.AddGuild(pGuild);
+    }
+
+    for (RaidGuildMember const& member : m_roster)
+    {
+        if (!member.IsProvisioned())
+            continue;
+
+        ObjectGuid const guid(HIGHGUID_PLAYER, member.guid);
+        if (pGuild->GetRank(guid) != -1)
+            continue;
+
+        // Guild::AddMember reads an offline character's name, level and class out of the
+        // player cache and refuses it outright if there is no entry. A provisioned member
+        // normally has one, but an adopted character need not: adoption reads the
+        // `characters` table precisely because the cache can be missing a row that exists.
+        // So the cache is filled from the table first rather than the add failing for a
+        // character that is demonstrably there.
+        if (!sObjectMgr.GetPlayerDataByGUID(member.guid))
+            sObjectMgr.LoadPlayerCacheData(member.guid);
+
+        // Member rather than the lowest rank. Initiate is what a guild gives someone it is
+        // still deciding about, and every one of these was written down on purpose.
+        if (pGuild->AddMember(guid, GR_MEMBER) == GuildAddStatus::OK)
+        {
+            added++;
+            continue;
+        }
+
+        failed++;
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "[RaidGuild] '%s' could not be added to guild '%s'.",
+            member.name.c_str(), guildName.c_str());
     }
 
     return true;

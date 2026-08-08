@@ -296,6 +296,7 @@ class ChatHandler
         bool HandleRaidGuildSummonCommand(char* args);
         bool HandleRaidGuildDismissCommand(char* args);
         bool HandleRaidGuildStatusCommand(char* args);
+        bool HandleRaidGuildGuildCommand(char* args);
         bool HandleRaidGuildReloadCommand(char* args);
         Player* RaidGuildResolveLeader(char** args);
 

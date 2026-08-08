@@ -35,6 +35,7 @@ MEMBERS = [
 ]
 
 LEADER = MEMBERS[0][0]
+GUILD = "Rgsumguild"
 
 
 def parse_status(harness):
@@ -77,6 +78,10 @@ def cleanup(harness):
     erasing one that is still on its way out of the world can miss and leave the row
     behind, and the next run then provisions a second character under the same name.
     """
+    # Disbanded first, and before the characters go. A guild outliving the roster would
+    # make the next run's "added" count meaningless, since the members would already be in.
+    harness.run(f'guild delete "{GUILD}"', allow_failure=True)
+
     for name, *_ in MEMBERS:
         harness.run(f"raidguild remove {name}", allow_failure=True)
         harness.logout(name)
@@ -105,6 +110,28 @@ def main():
     # which is what a human player is to a real raid: the thing the group is formed on.
     harness.login(LEADER, timeout=60)
 
+    # Guilding happens with only the founder in the world, which is the whole point of
+    # doing it through the guild tables: a roster of forty should not have to be summoned
+    # to be guilded. Whether the other six really got in is not settled here, only claimed;
+    # it is checked against the characters themselves once they are summoned below.
+    guild = dict(re.findall(r"(\w+)=(\S+)", harness.run(f"raidguild guild {GUILD} {LEADER}")))
+
+    # Everyone but the founder, who joined by founding it. What matters is the total.
+    if guild.get("added") != str(len(MEMBERS) - 1):
+        failures.append(f"the guild took {guild.get('added')} of {len(MEMBERS) - 1} offline members")
+    if guild.get("failed") != "0":
+        failures.append(f"{guild.get('failed')} members were refused by the guild")
+    if guild.get("members") != str(len(MEMBERS)):
+        failures.append(f"the new guild holds {guild.get('members')} members, not {len(MEMBERS)}")
+
+    # Running it again must add nobody rather than fail or duplicate, since this is how a
+    # guild is brought up to date after the roster grows.
+    again = dict(re.findall(r"(\w+)=(\S+)", harness.run(f"raidguild guild {GUILD}")))
+    if again.get("added") != "0":
+        failures.append(f"re-forming the guild added {again.get('added')} members again")
+    if again.get("members") != str(len(MEMBERS)):
+        failures.append(f"the guild holds {again.get('members')} members, not {len(MEMBERS)}")
+
     harness.run(f"raidguild summon {LEADER}")
 
     expected = len(MEMBERS)
@@ -126,6 +153,11 @@ def main():
 
         if fields.get("raid") != "1":
             failures.append(f"{name} is in a party rather than a raid")
+
+        # Read off the character, not the guild tables. A guild_member row that the
+        # character never picks up on login would be a guild on paper only.
+        if fields.get("guild", "0") == "0":
+            failures.append(f"{name} came into the world with no guild")
 
     # Placement is reconciled on a timer rather than commanded at summon time, because a
     # member is not in the group yet when it is summoned. So it is worth waiting for
