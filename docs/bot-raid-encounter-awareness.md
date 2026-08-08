@@ -24,9 +24,9 @@ Status key: **not started** / **in progress** / **done**.
 | --- | --- |
 | `5e77b066d` | Bots no longer wait on movement acks that can never arrive |
 | `e04904be4` | Test harness for driving the server without a game client |
-
-Uncommitted at time of writing: two corpse-path bug fixes in `Player.cpp`, described under
-Phase 0 below.
+| `700a41239` | Two corpse-path bugs that strand a dead player |
+| `2c28cd731` | Wipe recovery: release, healer window, spirit-healer fallback |
+| `203d9e1a9` | Wipe recovery test, and the death state `.harness info` needed to see it |
 
 ### Findings that changed the plan
 
@@ -60,6 +60,17 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   `.instance groupunbind` both exist, so a boss can be killed and re-tested. The
   smallest-content-first ordering in Phase 4 still holds, but for the reason that 5-man bosses
   are almost all static rather than because raid binds are a hard ceiling.
+- **Waiting for a resurrection needs a deadline, not just a condition.** The obvious rule —
+  hold the corpse while a healer is alive and in range — deadlocks on a healer who survived
+  the wipe but is out of mana, which is a common way to lose. The same applies to the ghost
+  stage. Both waits are bounded by `PartyBot.DeathRecoveryTimeout`. The healer window resets
+  while they are mid-cast, because Resurrection is a ten second cast and a healer working
+  down a pile of corpses would otherwise blow the budget for everyone further down the pile.
+- **`partybot remove` removes the selected player only, and a character with nothing selected
+  counts as selecting itself.** So the natural "clear the roster" call is a silent no-op that
+  reports success, and each bot has to be told to remove itself. The reset in
+  `test_raid_group.py` was never doing anything; it only passed because it happened to run
+  against an empty roster.
 
 ### Build and test loop
 
@@ -287,13 +298,24 @@ on the `creature` row, three to seven days by default, and can be shortened for 
 
 ## Phase 0 - Death and wipe recovery [in progress]
 
-**Status.** The blocking unknown about `IsConnected` is resolved and fixed, so the design
-below stands as written. Landed: the movement-ack fix (`5e77b066d`). Uncommitted: the two
-corpse-path bugs listed further down, namely the resurrect request that is never cleared and
-the `BuildPlayerRepop` early return that strands a ghost with no corpse. Not started: gating
-`ShouldAutoRevive`, explicit release, the `MovePoint` corpse-run chain, the spirit-healer
-timeout, the free-resource defaults, and the two remaining engine bugs (double durability loss
-on environmental death, `Corpse::GetFactionTemplateId` dereferencing an unset faction).
+**Status.** The deadlock is gone: a wiped group now recovers on its own, verified end to end
+by `contrib/harness/test_wipe_recovery.py`. Landed are the movement-ack fix (`5e77b066d`),
+the two corpse-path bugs (`700a41239`), and recovery itself (`2c28cd731`) — gating
+`ShouldAutoRevive`, explicit release, a budgeted healer window, and the spirit-healer
+fallback, with `PartyBot.AutoRevive` off and `PartyBot.DeathRecoveryTimeout` at 60 on the dev
+server. Observed sequence for a full wipe in Durotar: dead in place, released and at the
+graveyard two seconds later, ghost until the timeout, spirit resurrection at 58 seconds, then
+walking back to the group.
+
+Still open in this phase: the `MovePoint` corpse-run chain and instance re-entry, which is
+what makes recovery cost distance rather than a flat timeout; the remaining free-resource
+defaults (out-of-combat full restore, hunter ammo, triggered weapon buffs); and the two engine
+bugs (double durability loss on environmental death, `Corpse::GetFactionTemplateId`
+dereferencing an unset faction).
+
+Note that the spirit-healer fallback is not scaffolding to be deleted once the corpse run
+lands. It stays as the outer deadline, since a corpse in a spot the bot cannot path to would
+otherwise stall the whole roster.
 
 Do this first. Nothing else is testable without it, and every later phase will be exercised through
 repeated wipes.
@@ -421,15 +443,17 @@ therefore ends at the instance entrance, not at the body. That is acceptable and
 means run-to-corpse pathing inside the instance would be dead code, and `CMSG_RECLAIM_CORPSE` will
 rarely be the resurrection path in practice.
 
-The state machine:
+The state machine. Release, the `ShouldAutoRevive` gate, ghost-targeted resurrection and the
+spirit-healer deadline landed in `2c28cd731`; the run back and re-entry have not. The analysis
+below is kept because it is what the implementation was built from.
 
-- **Release.** Send the equivalent of `CMSG_REPOP_REQUEST`, or call `BuildPlayerRepop()` followed by
+- **Release.** [done] Send the equivalent of `CMSG_REPOP_REQUEST`, or call `BuildPlayerRepop()` followed by
   `ScheduleRepopAtGraveyard()` directly, mirroring what battleground bots already do at
   [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 731-751. Since
   patch 1.11 the engine does not auto-release inside instances
   ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 1286-1303), so release must be
   explicit.
-- **Gate `ShouldAutoRevive` first.** It returns true unconditionally once a bot reaches the `DEAD`
+- **Gate `ShouldAutoRevive` first.** [done] It returns true unconditionally once a bot reaches the `DEAD`
   ghost state ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
   237-240), which would resurrect the bot on the spot and defeat the corpse run entirely. Its other
   heuristics — blocking revival while any member is in combat or any healer lives — are reasonable for
@@ -437,7 +461,7 @@ The state machine:
   bots freeze in `CORPSE` forever because `ShouldAutoRevive` finds no living ally, and the moment
   release is added they immediately resurrect on the spot and destroy their own corpses. Both halves
   must land together.
-- **`SelectResurrectionTarget` will not res a released ghost.** It skips any member whose death state
+- **`SelectResurrectionTarget` will not res a released ghost.** [done] It skips any member whose death state
   is not `CORPSE` ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
   451-452), even though the spell engine accepts any non-alive target since resurrection spells are
   death-only and both `CORPSE` and `DEAD` satisfy that. So a surviving healer silently stops being able
@@ -459,7 +483,7 @@ The state machine:
   both have `ghostEntranceMap = 0` with valid coordinates, as does Deadmines. Naxxramas has
   `ghostEntranceMap = -1` and relies on an explicit `game_graveyard_zone` row for zone 3456, so it
   needs a special case. If no graveyard resolves at all, the ghost simply stays where it died.
-- **Run back.** A `MovePoint` chain from the graveyard to the instance portal. `BattleBotWaypoints`
+- **Run back.** [not started] A `MovePoint` chain from the graveyard to the instance portal. `BattleBotWaypoints`
   is the right shape for this — it moves with `MovePoint(..., MOVE_PATHFINDING | MOVE_EXCLUDE_STEEP_SLOPES)`
   and calls `ActivateNearbyAreaTrigger()` at each point — but it aborts when the bot is not alive and
   its path selection is hardcoded per battleground, so it needs generalizing rather than reusing.
