@@ -8599,7 +8599,12 @@ std::string ObjectMgr::GenerateFreePlayerName()
     do
     {
         name = GeneratePlayerName();
-    } while (sObjectMgr.GetPlayerGuidByName(name));
+        // Stored characters are not the whole population. Party bots are never written to the
+        // character table, so asking it alone will happily hand the same name to two of them
+        // spawning at once, and from then on anything that addresses a player by name reaches
+        // whichever the lookup finds first.
+    } while (sObjectMgr.GetPlayerGuidByName(name) ||
+             ObjectAccessor::FindPlayerByNameNotInWorld(name.c_str()));
     return name;
 }
 
