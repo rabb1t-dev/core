@@ -3223,6 +3223,11 @@ void Player::GiveLevel(uint32 level)
     SetLevel(level);
     UpdateSkillsForLevel();
 
+    // The rest bonus cap scales with the xp needed for the new level, so refill it now
+    // rather than leaving the player short until their next kill.
+    if (sWorld.getConfig(CONFIG_BOOL_REST_ALWAYS_FULL))
+        SetRestBonus(GetRestBonus());
+
     // save base values (bonuses already included in stored stats
     for (int i = STAT_STRENGTH; i < MAX_STATS; ++i)
         SetCreateStat(Stats(i), info.stats[i]);
@@ -15048,7 +15053,7 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     // rest bonus can only be calculated after InitStatsForLevel()
     m_restBonus = fields[24].GetFloat();
 
-    if (timeDiff > 0)
+    if (timeDiff > 0 || sWorld.getConfig(CONFIG_BOOL_REST_ALWAYS_FULL))
         SetRestBonus(GetRestBonus() + ComputeRest(timeDiff, true, HasCharacterFlag(CHARACTER_FLAG_RESTING)));
 
     // load skills after InitStatsForLevel because it triggering aura apply also
@@ -17914,6 +17919,11 @@ void Player::SetRestBonus(float rest_bonus_new)
         rest_bonus_new = 0;
 
     float rest_bonus_max = (float)GetUInt32Value(PLAYER_NEXT_LEVEL_XP) * 1.5f / 2.0f;
+
+    // Topping the pool back up here also covers the drain done by GetXPRestBonus.
+    if (sWorld.getConfig(CONFIG_BOOL_REST_ALWAYS_FULL) &&
+        GetLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+        rest_bonus_new = rest_bonus_max;
 
     if (rest_bonus_new > rest_bonus_max)
         m_restBonus = rest_bonus_max;

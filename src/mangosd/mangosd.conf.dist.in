@@ -2450,6 +2450,12 @@ Visibility.ForceActiveObjects = 1
 #    Rate.Rest.Offline.InWilderness
 #        Resting points accumulation rates (1 - normal, 2 - double rate, 0.5 - half rate, etc)
 #
+#    Rest.AlwaysFull
+#        Keep every player's rest bonus pinned at its maximum, so kill xp is always doubled
+#        and the bonus never drains. Characters at max level are unaffected.
+#        Default: 0 (off)
+#                 1 (on)
+#
 #    Rate.Damage.Fall
 #        Damage after fall rate (1 - standard, 2 - double damage, 0.5 - half damage, etc)
 #
@@ -2605,6 +2611,7 @@ Rate.XP.Personal.Max = 1
 Rate.Rest.InGame = 1
 Rate.Rest.Offline.InTavernOrCity = 1
 Rate.Rest.Offline.InWilderness = 1
+Rest.AlwaysFull = 0
 Rate.Damage.Fall = 1
 Rate.Auction.Time = 1
 Rate.Auction.Deposit = 1
