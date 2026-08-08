@@ -19,6 +19,7 @@ Status key: **not started** / **in progress** / **done**.
 | --- | --- |
 | `a19dc86dc` | Party bots can fill a raid group instead of silently capping at five |
 | `e04904be4` | Test harness, which is how roster work gets verified without a client |
+| `09bae86c1` | The roster table, `RaidGuildMgr`, and `.raidguild` provisioning |
 
 `a19dc86dc` closes the "Joining the group" section of Phase 0 below in full: the group is
 promoted to a raid when it fills, `AddMember`'s return value is checked, a bot that fails to
@@ -37,15 +38,49 @@ The concurrent-creation race is also still open. It is currently avoided only by
 adding bots one at a time with a gap between them; roster spawning must create the group once,
 up front.
 
+### Findings that changed the plan
+
+- **A roster character's account needs no `realmd` row, and this is now tested rather than
+  reasoned.** The claim was read out of `AccountMgr::GetSecurity` falling back to
+  `SEC_PLAYER` and `LoadFromDB` skipping the ownership check for bots, but nothing had ever
+  logged one in. A character whose account number exists in no table anywhere reaches the
+  world through `.harness login` normally. What the account is still needed for is
+  distinctness: `PlayerBotMgr::AddBot` refuses a bot whose account already has a session, so
+  a roster sharing one account would spawn its first member and silently stop.
+- **The player name cache and the `characters` table can disagree, and provisioning against
+  the cache turns that into two characters with one name.** `GetPlayerGuidByName` answers
+  from `m_playerNameToGuid`, `Player::SaveNewPlayer` is a `REPLACE` keyed on guid, and
+  `Player::DeleteFromDB` is the only thing that clears the cache entry. So any path that
+  drops a cache entry while leaving the row makes the name look free, and the next provision
+  writes a second character under it. Observed for real: three test runs produced a duplicate
+  `Rgtesttwo`. Provisioning now asks the table.
+- **Erasing a character that is still leaving the world misses it.** `.character erase`
+  resolves the name through the same cache, and a character part way out of the world is not
+  reliably found, so the erase reports "Player not found!" and the row survives. This is what
+  produced the duplicate above. Anything that dismisses a roster member has to wait for it to
+  be gone before deleting it, not merely ask it to log out.
+
 ### Next
 
-Phase 0 roster work, in order: the `raidguild_member` table as a characters migration,
-`.raidguild provision` via `Player::SaveNewPlayer`, `.raidguild summon` through the persistent
-load path, then creating the guild and bulk-adding members offline.
+Phase 0 roster work. The `raidguild_member` table and provisioning are done: `.raidguild
+add`, `remove`, `list`, `provision` and `reload`, backed by `RaidGuildMgr`, with
+`contrib/harness/test_raid_guild_roster.py` covering authoring, provisioning, idempotence,
+account distinctness, adoption of an existing character, and that a provisioned member logs
+in. Still to do, in order: `.raidguild summon` through the persistent load path, creating the
+guild and bulk-adding members offline, then level matching and bind reconciliation.
 
 Note the sequencing dependency in Phase 4: wipe recovery lives in the companion document but
 gates raid use of this one, since without it a single wipe ends the night. It is in progress
 there.
+
+**There is a third world, `~/bin/server3`,** built the same way as server2 and for the same
+reason: realm 3 on world port 8087 and SOAP 7880, with its own `characters3` database,
+sharing the world database and map data. Drive it with
+`VMANGOS_SOAP_URL=http://127.0.0.1:7880/`. One thing was wrong in the script it was copied
+from and is worth fixing in server2 as well: `stop` waits for the SOAP port to be released,
+but a graceful shutdown closes that socket early and keeps the port until the process
+actually exits, so the next `start` races it and comes up with a working game port and no
+SOAP at all. server3 waits for the process to go first.
 
 ## Architecture
 
@@ -96,11 +131,23 @@ flowchart TD
 
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
-**Status.** Group joining is fixed and verified (`a19dc86dc`). Everything else here is not
-started: the roster table, provisioning, the summon path, guild creation, level matching,
-attunement mirroring, and bind reconciliation.
+**Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table and
+provisioning are done and verified live. Still not started: the summon path, guild creation,
+level matching, attunement mirroring, and bind reconciliation.
 
-### Roster
+### Roster [done]
+
+Landed as `RaidGuildMgr` with a `raidguild_member` characters migration and the `.raidguild`
+command group. A row describes a character that should exist; `guid` and `account` are filled
+in when it does, so an unprovisioned member is the one state the roster and the `characters`
+table are allowed to disagree in. Provisioning is idempotent and adopts a character that
+already carries the name, which is what a rebuilt roster table needs.
+
+Accounts are allocated from a base of 5,000,000, clear of the range `GenBotAccountId` draws
+from, which starts at the highest real account plus ten thousand and rises by one per bot
+spawned.
+
+The original design notes follow.
 
 - New `RaidGuildMgr` alongside
   [src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp), owning a
