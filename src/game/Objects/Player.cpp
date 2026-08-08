@@ -5043,7 +5043,9 @@ uint32 Player::DurabilityRepair(uint16 pos, bool cost, float discountMod)
 
 void Player::ScheduleRepopAtGraveyard()
 {
-    if (IsInWorld() && GetSession()->IsConnected())
+    // A bot session reports connected but has no client behind it, so deferring would
+    // only stall release until the pending movement change times out.
+    if (IsInWorld() && !IsBot() && GetSession()->IsConnected())
         m_repopAtGraveyardPending = true;
     else
         RepopAtGraveyard();

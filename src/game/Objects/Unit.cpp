@@ -6850,8 +6850,11 @@ void Unit::CheckPendingMovementChanges()
         return;
 
     Player* pController = GetPlayerMovingMe();
-    if (!pController || !pController->IsInWorld() || !pController->GetSession()->IsConnected())
+    if (!pController || !pController->IsInWorld() || !pController->GetSession()->IsConnected() ||
+        pController->IsBot())
     {
+        // Nothing will ever ack for a bot. Waiting out the timeout instead would charge it
+        // a CHEAT_TYPE_PENDING_ACK_DELAY violation for every movement change.
         ResolvePendingMovementChanges(true, pPlayer != nullptr);
         return;
     }
