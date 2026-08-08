@@ -17,8 +17,10 @@
 #include "RaidGuildMgr.h"
 
 #include "AccountMgr.h"
+#include "Conditions.h"
 #include "Database/DatabaseEnv.h"
 #include "Database/DBCStores.h"
+#include "Database/SQLStorages.h"
 #include "Group.h"
 #include "Guild.h"
 #include "GuildMgr.h"
@@ -500,6 +502,127 @@ bool RaidGuildMgr::FormGuild(std::string const& guildName, Player* pMaster, uint
     }
 
     return true;
+}
+
+namespace
+{
+    // How deep a condition tree is followed. Composites nest a level or two in practice and
+    // the storage is hand written, so this exists to make a loop terminate rather than to
+    // express a real limit.
+    uint32 const RAIDGUILD_CONDITION_MAX_DEPTH = 8;
+
+    // Collects the quest and item leaves of a condition tree. Whether a composite is an AND
+    // or an OR is deliberately not considered: what gets granted is decided by what the
+    // leader already satisfies, and a member holding everything the leader holds satisfies
+    // whatever the leader satisfies, whichever way the tree is wired.
+    void CollectAttunementLeaves(uint32 conditionId, std::vector<ConditionEntry const*>& leaves, uint32 depth = 0)
+    {
+        if (!conditionId || depth > RAIDGUILD_CONDITION_MAX_DEPTH)
+            return;
+
+        ConditionEntry const* pCondition = sConditionStorage.LookupEntry<ConditionEntry>(conditionId);
+        if (!pCondition)
+            return;
+
+        switch (pCondition->GetType())
+        {
+            case CONDITION_QUESTREWARDED:
+            case CONDITION_ITEM:
+                leaves.push_back(pCondition);
+                return;
+            case CONDITION_AND:
+            case CONDITION_OR:
+            case CONDITION_NOT:
+                CollectAttunementLeaves(pCondition->GetValue1(), leaves, depth + 1);
+                CollectAttunementLeaves(pCondition->GetValue2(), leaves, depth + 1);
+                CollectAttunementLeaves(pCondition->GetValue3(), leaves, depth + 1);
+                CollectAttunementLeaves(pCondition->GetValue4(), leaves, depth + 1);
+                return;
+            default:
+                // Everything else describes the world or the character rather than
+                // something earned: the patch, a race and class mask, whether a game event
+                // is running. None of it is transferable, and the Ahn'Qiraj gates are the
+                // notable case, being server wide state with nothing to mirror.
+                return;
+        }
+    }
+}
+
+uint32 RaidGuildMgr::MirrorAttunements(Player* pLeader, Player* pMember) const
+{
+    if (!pLeader || !pMember || pLeader == pMember)
+        return 0;
+
+    uint32 granted = 0;
+
+    // Read out of the doorways rather than from a list kept here, because a list here would
+    // be wrong. The one in the plan had Naxxramas gated on quests 9121 to 9123 when this
+    // server's own trigger asks for 9378, and a hand written manifest has no way to notice.
+    for (auto const& itr : sObjectMgr.GetAreaTriggerTeleports())
+    {
+        AreaTriggerTeleport const& trigger = itr.second;
+        if (!trigger.requiredCondition)
+            continue;
+
+        MapEntry const* pMapEntry = sMapStorage.LookupEntry<MapEntry>(trigger.destination.mapId);
+        if (!pMapEntry || !pMapEntry->IsDungeon())
+            continue;
+
+        std::vector<ConditionEntry const*> leaves;
+        CollectAttunementLeaves(trigger.requiredCondition, leaves);
+
+        for (ConditionEntry const* pLeaf : leaves)
+        {
+            if (pLeaf->GetType() == CONDITION_QUESTREWARDED)
+            {
+                uint32 const questId = uint32(pLeaf->GetValue1());
+                if (!pLeader->GetQuestRewardStatus(questId) || pMember->GetQuestRewardStatus(questId))
+                    continue;
+
+                Quest const* pQuest = sObjectMgr.GetQuestTemplate(questId);
+                if (!pQuest)
+                    continue;
+
+                if (pMember->GetQuestStatus(questId) == QUEST_STATUS_NONE)
+                {
+                    // AddQuest asserts on a full log rather than refusing, and taking the
+                    // server down over an attunement would be a poor trade.
+                    if (!pMember->CanAddQuest(pQuest, false))
+                        continue;
+
+                    pMember->AddQuest(pQuest, nullptr);
+                }
+
+                // Objectives before the reward, since RewardQuest takes the required items
+                // back off the player.
+                pMember->FullQuestComplete(questId);
+                pMember->RewardQuest(pQuest, 0, pMember, false);
+                granted++;
+            }
+            else if (pLeaf->GetType() == CONDITION_ITEM)
+            {
+                uint32 const itemId = uint32(pLeaf->GetValue1());
+                uint32 const wanted = std::max(uint32(pLeaf->GetValue2()), uint32(1));
+                if (!pLeader->HasItemCount(itemId, wanted) || pMember->HasItemCount(itemId, wanted))
+                    continue;
+
+                uint32 const missing = wanted - pMember->GetItemCount(itemId);
+
+                ItemPosCountVec dest;
+                if (pMember->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, missing) != EQUIP_ERR_OK)
+                    continue;
+
+                pMember->StoreNewItem(dest, itemId, true);
+                granted++;
+            }
+        }
+    }
+
+    if (granted)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[RaidGuild] mirrored %u attunements from '%s' onto '%s'.",
+            granted, pLeader->GetName(), pMember->GetName());
+
+    return granted;
 }
 
 uint32 RaidGuildMgr::CountMemberBinds(RaidGuildMember const& member) const

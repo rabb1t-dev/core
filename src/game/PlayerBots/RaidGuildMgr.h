@@ -104,6 +104,11 @@ class RaidGuildMgr
         // did not earn by walking through a door with the group.
         uint32 CountMemberBinds(RaidGuildMember const& member) const;
 
+        // Gives a member every quest and item an instance doorway asks for that the leader
+        // already has. Entry conditions are evaluated against each entering player, so a
+        // chain the human ran once would otherwise have to be run forty more times.
+        uint32 MirrorAttunements(Player* pLeader, Player* pMember) const;
+
         void Update(uint32 diff);
 
     private:

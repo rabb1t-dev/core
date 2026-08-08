@@ -331,6 +331,15 @@ class ConditionEntry
         {
             return m_condition == CONDITION_TEAM ? Team(m_value1) : TEAM_CROSSFACTION;
         }
+
+        // For callers that need to read what a condition asks for rather than whether it is
+        // met. Walking a tree to find the quests and items behind an instance doorway is the
+        // case this exists for; Meets cannot answer that, since it only says yes or no.
+        ConditionType GetType() const { return m_condition; }
+        int32 GetValue1() const { return m_value1; }
+        int32 GetValue2() const { return m_value2; }
+        int32 GetValue3() const { return m_value3; }
+        int32 GetValue4() const { return m_value4; }
     private:
         void DisableCondition() { m_condition = CONDITION_NONE; m_flags ^= CONDITION_FLAG_REVERSE_RESULT; }
         bool CheckParamRequirements(WorldObject const* target, Map const* map, WorldObject const* source) const;

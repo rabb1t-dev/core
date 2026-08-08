@@ -789,6 +789,11 @@ class ObjectMgr
         AreaTriggerTeleport const* GetGoBackTrigger(uint32 Map) const;
         AreaTriggerTeleport const* GetMapEntranceTrigger(uint32 Map) const;
 
+        // Every teleport trigger, for callers that need to ask what a map gates on rather
+        // than where one leads. GetMapEntranceTrigger answers with a single trigger, and a
+        // map can have several with different conditions: Molten Core has two.
+        AreaTriggerTeleportMap const& GetAreaTriggerTeleports() const { return m_AreaTriggerTeleportMap; }
+
         void LoadAreaTriggers();
 
         AreaTriggerEntry const* GetAreaTrigger(uint32 id) const

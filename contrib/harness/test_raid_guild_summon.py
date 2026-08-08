@@ -47,6 +47,13 @@ INSTANCE_POS = (-11916.7, -1207.9, 92.3)
 # Open ground in the Barrens, well away from any instance door.
 STAGING = (-600.0, -2515.0, 92.0, 1)
 
+# Two gates of different shapes, so mirroring is tested on both kinds of leaf: Attunement to
+# the Core is a rewarded quest behind the Molten Core doorway, and the Drakefire Amulet is an
+# item the Onyxia doorway wants in the bags. Neither is named in the code being tested, which
+# reads them out of the doorways instead.
+ATTUNE_QUEST = 7848
+ATTUNE_ITEM = 16309
+
 
 def query(sql):
     """The characters database directly, for the one thing SOAP cannot say.
@@ -227,6 +234,31 @@ def main():
 
     for name, fields in sorted(summoned.items()):
         print(f"summoned name={name} raid={fields.get('raid')} subgroup={fields.get('subgroup')}")
+
+    # Attunement chains are checked against each entering player, so what the human earned
+    # once has to be copied onto everyone else. Sixty first, because the grant goes through
+    # CanAddQuest and a level one character cannot take a level sixty attunement.
+    for name, *_ in MEMBERS:
+        harness.run(f"character level {name} 60")
+
+    harness.run(f"harness rewardquest {LEADER} {ATTUNE_QUEST}")
+    harness.run(f"harness exec {LEADER} additem {ATTUNE_ITEM}")
+
+    first = dict(re.findall(r"(\w+)=(\S+)", harness.run(f"raidguild attune {LEADER}")))
+    if first.get("granted", "0") == "0":
+        failures.append("attuning the roster granted nothing, so nothing was mirrored")
+    if first.get("offline") != "0":
+        failures.append(f"{first.get('offline')} members were offline during attunement")
+
+    # The real assertion. Mirroring only grants what the leader has and the member lacks, so
+    # a second pass granting nothing means no member is missing anything the leader holds.
+    # That is the property that matters, and it does not depend on knowing which quests and
+    # items this server's doorways happen to ask for.
+    second = dict(re.findall(r"(\w+)=(\S+)", harness.run(f"raidguild attune {LEADER}")))
+    if second.get("granted") != "0":
+        failures.append(f"a second attunement pass still had {second.get('granted')} to grant")
+
+    print(f"attune granted={first.get('granted')} again={second.get('granted')}")
 
     # And the raid enters as one. The failure this guards against is not a refusal at the
     # door, it is a raid that silently splits across two copies of the same map, which looks

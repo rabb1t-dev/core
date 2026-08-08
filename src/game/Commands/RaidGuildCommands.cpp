@@ -452,6 +452,52 @@ bool ChatHandler::HandleRaidGuildGuildCommand(char* args)
     return true;
 }
 
+// .raidguild attune <leader> [name]
+// Gives the summoned roster every quest and item an instance doorway asks for that the named
+// character already has. Entry conditions are checked against each entering player, so the
+// human earns access once and the guild inherits it rather than running the chain forty more
+// times. Members have to be in the world, since what is being copied is character state.
+bool ChatHandler::HandleRaidGuildAttuneCommand(char* args)
+{
+    Player* pLeader = RaidGuildResolveLeader(&args);
+    if (!pLeader)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string only;
+    if (char* nameStr = ExtractArg(&args))
+    {
+        only = nameStr;
+        normalizePlayerName(only);
+    }
+
+    uint32 granted = 0;
+    uint32 touched = 0;
+    uint32 offline = 0;
+    for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+    {
+        if (!only.empty() && member.name != only)
+            continue;
+
+        Player* pPlayer = sRaidGuildMgr.FindSummonedMember(member);
+        if (!pPlayer || !pPlayer->IsInWorld())
+        {
+            if (member.IsProvisioned())
+                offline++;
+            continue;
+        }
+
+        touched++;
+        granted += sRaidGuildMgr.MirrorAttunements(pLeader, pPlayer);
+    }
+
+    PSendSysMessage("attune leader=%s members=%u granted=%u offline=%u",
+        pLeader->GetName(), touched, granted, offline);
+    return true;
+}
+
 // .raidguild resetbinds [name]
 // Drops the roster's personal instance binds. Weekly resets and experimentation leave stale
 // ones behind, and a stale bind is not a cosmetic problem: a member carrying one for the map
