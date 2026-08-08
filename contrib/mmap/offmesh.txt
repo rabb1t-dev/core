@@ -5,3 +5,14 @@
 // endpoints resolve to the same poly is a dead self-loop A* never uses.
 189 29,28 (1827.839478 1315.610962 17.235508) (1830.25244 1315.189697 19.016930) 2.5  // Scarlet Monastery Graveyard - path out of spawn position
 0 31,59 (-14425.5 448.4 15.1) (-14426.576 450.133 15.529) 2.5                         // Booty Bay: dock stairs top -> boardwalk (mesh gap between stair poly and boardwalk poly)
+1 36,33 (-787.700012 -2225.300049 108.335373) (-767.972351 -2217.835693 16.701607) 2.5 // Wailing Caverns: crater rim -> entrance shaft floor. The descent is too steep to be meshed as walkable, so the portal sits in an island the outdoor mesh cannot reach and a corpse run strands on the rim.
+1 28,47 (-8192.000000 1968.799927 128.955994) (-8203.489258 1990.415405 132.204880) 2.5 // Ahn'Qiraj: approach ramp -> gate threshold. Twenty five yards of the causeway are missing from the mesh, cutting both raid portals off from the only graveyard in Silithus.
+
+// Dungeon entrances reached by a drop the mesh does not describe. In each case both ends are
+// meshed and simply unconnected, so a ghost paths to the lip above its dungeon and stops there
+// for good. Falling is free for a ghost, which is why a link is the right description of the
+// route rather than a cheat around a missing one.
+0 33,45 (-7182.600098 -958.599976 254.942932) (-7176.629883 -937.669983 165.536469) 2.5   // Blackrock Depths: chasm ledge -> entrance floor, ninety yards below and almost straight down.
+0 34,46 (-7561.299805 -1301.300049 370.170746) (-7518.189941 -1239.130005 287.488129) 2.5 // Blackrock Spire: upper cavern shelf -> spire doorway, across and down the open interior of the mountain.
+0 39,51 (-10165.900391 -4016.800049 17.784042) (-10162.700195 -3998.649902 -113.415169) 2.5 // Sunken Temple: flooded surface -> temple floor a hundred and thirty yards down. The way in is a dive, and the water column between the two is not walkable by any definition the generator recognises.
+1 30,24 (4212.000000 758.400024 106.093857) (4252.370117 756.969971 -22.627460) 2.5       // Blackfathom Deeps: lake shore -> submerged entrance. Same dive, in Ashenvale.
