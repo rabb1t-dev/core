@@ -59,15 +59,27 @@ up front.
   reliably found, so the erase reports "Player not found!" and the row survives. This is what
   produced the duplicate above. Anything that dismisses a roster member has to wait for it to
   be gone before deleting it, not merely ask it to log out.
+- **A subgroup cannot be assigned when a member is summoned, because it is not in the group
+  yet.** The bot joins on its own first update tick, a couple of seconds after the session
+  loads, so anything that tries to place it at the point of spawning is placing a player the
+  group has never heard of. Placement is reconciled from a world-update timer instead. The
+  same gap is why the group is promoted to a raid before anyone is summoned rather than when
+  the sixth member is turned away.
+- **Persistence is now demonstrated rather than argued.** The whole reason for the load path
+  is that `Player::Create` sets `m_saveDisabled` and nothing clears it, which was read out of
+  the source. It is now a test: a level set on a summoned member is still there after the
+  member is dismissed and summoned again.
 
 ### Next
 
-Phase 0 roster work. The `raidguild_member` table and provisioning are done: `.raidguild
-add`, `remove`, `list`, `provision` and `reload`, backed by `RaidGuildMgr`, with
-`contrib/harness/test_raid_guild_roster.py` covering authoring, provisioning, idempotence,
-account distinctness, adoption of an existing character, and that a provisioned member logs
-in. Still to do, in order: `.raidguild summon` through the persistent load path, creating the
-guild and bulk-adding members offline, then level matching and bind reconciliation.
+Phase 0 roster work. The `raidguild_member` table, provisioning and summoning are done:
+`.raidguild add`, `remove`, `list`, `provision`, `summon`, `dismiss`, `status` and `reload`,
+backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
+provisioning, idempotence, account distinctness, adoption of an existing character, and that
+a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
+member roster reaching the world as a raid, landing in its rostered subgroups, leaving on
+dismissal, and keeping what it earned across the round trip. Still to do, in order: creating
+the guild and bulk-adding members offline, then level matching and bind reconciliation.
 
 Note the sequencing dependency in Phase 4: wipe recovery lives in the companion document but
 gates raid use of this one, since without it a single wipe ends the night. It is in progress
@@ -131,8 +143,8 @@ flowchart TD
 
 The goal is a set of stable, named, guilded characters that spawn identically every time.
 
-**Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table and
-provisioning are done and verified live. Still not started: the summon path, guild creation,
+**Status.** Group joining is fixed and verified (`a19dc86dc`), and the roster table,
+provisioning and summoning are done and verified live. Still not started: guild creation,
 level matching, attunement mirroring, and bind reconciliation.
 
 ### Roster [done]
@@ -146,6 +158,36 @@ already carries the name, which is what a rebuilt roster table needs.
 Accounts are allocated from a base of 5,000,000, clear of the range `GenBotAccountId` draws
 from, which starts at the highest real account plus ten thousand and rises by one per bot
 spawned.
+
+### Summoning [done]
+
+`.raidguild summon <leader> [name]` brings the roster, or one member of it, into the world
+around a named character, and `.raidguild dismiss [name]` sends it home. The leader is named
+rather than taken from the session because the harness drives all of this over SOAP, where
+there is no session player to take it from; an in-game caller may leave it off and mean
+itself.
+
+The three things left over from the group-joining fix land here, and all three are about
+doing the work before the members arrive rather than as they do:
+
+- The group is created once, up front, by the summon command. No member ever creates it, so
+  the concurrent-creation race cannot happen however many arrive on one tick.
+- It is promoted to a raid up front too, sized for what the group is about to hold rather
+  than for what is being added now, so summoning the second half of a raid one member at a
+  time does not leave a party to be promoted partway through.
+- The loot method, looter and threshold are stated rather than inherited from
+  `Group::Create`, which hardcodes them.
+
+Subgroup placement is the exception, and cannot be done up front: the bot joins the group on
+its own first update tick, seconds after the session loads, so at summon time there is no
+membership to place. `RaidGuildMgr::Update` reconciles it once a second instead, and declines
+silently when the wanted subgroup is full, which is the right answer to a roster that asks
+for nine people in one of them.
+
+`.raidguild status` reports who is in the world, whether the group is a raid, and the
+subgroup each member is in against the one it is rostered for. It exists because nothing here
+happens on the tick the command returns: summoning takes a session load then a group join,
+and dismissal takes a logout, so anything waiting on either has to be able to ask.
 
 The original design notes follow.
 
