@@ -50,6 +50,11 @@ static constexpr float PB_CORPSE_RUN_PROGRESS_STEP = 5.0f;
 // sixteen yards from its centre at Maraudon.
 static constexpr float PB_PORTAL_SCAN_RANGE = 60.0f;
 
+// How far from a map's ghost entrance an area trigger may sit and still be taken to be the
+// doorway those coordinates are naming. The two describe the same spot, so this only has to
+// absorb rounding.
+static constexpr float PB_GHOST_ENTRANCE_MATCH = 10.0f;
+
 #define PB_UPDATE_INTERVAL 1000
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
@@ -348,11 +353,42 @@ bool PartyBotAI::FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, 
         uint32(pMapEntry->ghostEntranceMap) != me->GetMapId())
         return false;
 
-    x = pMapEntry->ghostEntranceX;
-    y = pMapEntry->ghostEntranceY;
+    float const entranceX = pMapEntry->ghostEntranceX;
+    float const entranceY = pMapEntry->ghostEntranceY;
 
-    // The entrance carries no height, so take the ground under it the same way the corpse
-    // query does when it points a dead client at this spot.
+    // Those two coordinates carry no height, and taking the ground beneath them is only right
+    // where the way in is on top of the world. The Orb of Command is a hundred and forty yards
+    // inside Blackrock Mountain, with a walkable summit above it, so a ghost sent to the terrain
+    // height arrives at the correct spot on the map and nowhere near the trigger. What the
+    // entrance is really naming is that trigger, and a trigger knows how high it is.
+    AreaTriggerEntry const* pClosest = nullptr;
+    float bestDistanceSq = PB_GHOST_ENTRANCE_MATCH * PB_GHOST_ENTRANCE_MATCH;
+    for (auto const& itr : sObjectMgr.GetAreaTriggersMap())
+    {
+        AreaTriggerEntry const* pTrigger = &itr.second;
+        if (pTrigger->map_id != me->GetMapId())
+            continue;
+
+        float const dx = pTrigger->x - entranceX;
+        float const dy = pTrigger->y - entranceY;
+        float const distanceSq = dx * dx + dy * dy;
+        if (distanceSq > bestDistanceSq)
+            continue;
+
+        bestDistanceSq = distanceSq;
+        pClosest = pTrigger;
+    }
+
+    if (pClosest)
+    {
+        x = pClosest->x;
+        y = pClosest->y;
+        z = pClosest->z;
+        return true;
+    }
+
+    x = entranceX;
+    y = entranceY;
     z = me->GetMap()->GetHeight(x, y, MAX_HEIGHT);
     return true;
 }
