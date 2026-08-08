@@ -3217,7 +3217,20 @@ void CombatBotBaseAI::AddHunterAmmo()
 
                 if (pAmmoProto)
                 {
-                    if (Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START))
+                    // Already carrying the right thing, so leave it alone. This is called once
+                    // when a bot spawns now instead of every time a shot runs dry, and a
+                    // summoned roster member arrives with a quiver it has been saving.
+                    if (me->HasItemCount(pAmmoProto->ItemId, 1))
+                    {
+                        me->SetAmmo(pAmmoProto->ItemId);
+                        return;
+                    }
+
+                    // Only ever clears out ammo it is replacing. Emptying the first bag slot
+                    // whatever sits in it is survivable for a bot conjured seconds ago and is
+                    // not for one that keeps what it earns.
+                    Item* pFirstSlot = me->GetItemByPos(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START);
+                    if (pFirstSlot && pFirstSlot->GetProto()->Class == ITEM_CLASS_PROJECTILE)
                         me->DestroyItem(INVENTORY_SLOT_BAG_0, INVENTORY_SLOT_ITEM_START, true);
 
                     AddItemToInventory(pAmmoProto->ItemId, pAmmoProto->GetMaxStackSize());
@@ -3508,7 +3521,11 @@ SpellCastResult CombatBotBaseAI::CastWeaponBuff(SpellEntry const* pSpellEntry, E
     if (pWeapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
         return SPELL_FAILED_ITEM_ALREADY_ENCHANTED;
 
-    Spell* spell = new Spell(me, pSpellEntry, true, ObjectGuid(), nullptr, nullptr, nullptr);
+    // Cast for real rather than triggered. Triggered skips the mana cost, the global cooldown,
+    // range and line of sight, silence and school lockouts, and reagent consumption, so a shaman
+    // imbued its weapon for nothing and instantly. Enhancement throughput measured against that
+    // is measured against a shaman with a mana cost fewer than it has.
+    Spell* spell = new Spell(me, pSpellEntry, false, ObjectGuid(), nullptr, nullptr, nullptr);
     SpellCastTargets targets;
     targets.setItemTarget(pWeapon);
     return spell->prepare(std::move(targets), nullptr);

@@ -1072,10 +1072,28 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         ResetSpellData();
         PopulateSpellData();
         AddAllSpellReagents();
+
+        // Stocked here alongside the reagents, and for the same reason: what it saves is a trip
+        // to a vendor, which is gold and tedium rather than any part of the game being measured.
+        // What it no longer does is refill a quiver that empties mid-fight.
+        AddHunterAmmo();
         me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_SPAWNING);
         SummonPetIfNeeded();
-        me->SetHealthPercent(100.0f);
-        me->SetPowerPercent(me->GetPowerType(), 100.0f);
+
+        // A character conjured a moment ago has no history worth keeping, so it starts whole.
+        // One loaded from the database keeps the health and mana it logged out with, because
+        // otherwise dismissing a wiped roster and summoning it straight back is a free full
+        // heal, and the corpse run that recovery rests on is one command away from optional.
+        if (m_race && m_class)
+        {
+            me->SetHealthPercent(100.0f);
+            me->SetPowerPercent(me->GetPowerType(), 100.0f);
+        }
+        else if (me->IsAlive() && !me->GetHealth())
+        {
+            // Alive at no health is not a state anything recovers from on its own.
+            me->SetHealthPercent(100.0f);
+        }
 
         uint32 newzone, newarea;
         me->GetZoneAndAreaId(newzone, newarea);
@@ -1190,20 +1208,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (!me->IsInCombat())
     {
-        if (DrinkAndEat())
-        {
-            if (!me->IsWithinDistInMap(pLeader, 100.0f))
-            {
-                me->SetHealth(me->GetMaxHealth());
-                if (me->GetPowerType() == POWER_MANA)
-                    me->SetPower(POWER_MANA, me->GetMaxPower(POWER_MANA));
-            }
-            else if (me->IsMounted())
-                me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
-            return;
-        }
-
-        // Teleport to leader if too far away.
+        // Catching up is dealt with before sitting down, and it has to be. These two were the
+        // other way around, and since a bot that needs food or water never falls through the
+        // drink branch, the only way one could ever reach the teleport was to stop needing
+        // either: hence the full health and mana handed to anyone further than this from the
+        // leader. A raid spends much of its time spread wider than a hundred yards, so that
+        // covered most of the roster most of the time, and mana pressure across a strung-out
+        // group could never be seen. Bring the straggler back and let it drink with everyone
+        // else, at the same cost in time.
         if (!me->IsWithinDistInMap(pLeader, 100.0f) && !IsInDuel())
         {
             if (!me->IsStopped())
@@ -1213,6 +1225,13 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             char name[128] = {};
             snprintf(name, sizeof(name), "%s", pLeader->GetName());
             ChatHandler(me).HandleGonameCommand(name);
+            return;
+        }
+
+        if (DrinkAndEat())
+        {
+            if (me->IsMounted())
+                me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
             return;
         }
     }
@@ -1960,15 +1979,12 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             (me->GetCombatDistance(pVictim) > 8.0f) &&
             !me->IsNonMeleeSpellCasted())
         {
-            switch (me->CastSpell(pVictim, PB_SPELL_AUTO_SHOT, false))
-            {
-                case SPELL_FAILED_NEED_AMMO:
-                case SPELL_FAILED_NO_AMMO:
-                {
-                    AddHunterAmmo();
-                    break;
-                }
-            }
+            // An empty quiver is allowed to mean something. A fresh stack used to be handed
+            // over the instant a shot failed for want of ammo, so a hunter could never stop
+            // shooting and never having restocked cost nothing. Bots are stocked when they
+            // spawn instead, and one that empties its quiver mid-raid stays empty until it
+            // is summoned again.
+            me->CastSpell(pVictim, PB_SPELL_AUTO_SHOT, false);
         }
 
         if (m_spells.hunter.pConcussiveShot &&

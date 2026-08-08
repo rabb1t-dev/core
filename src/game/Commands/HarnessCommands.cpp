@@ -581,6 +581,20 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
         uint32(pTarget->GetMotionMaster()->GetCurrentMovementGeneratorType()),
         pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
 
+    // The resources a bot is not supposed to be given for free, none of which could be seen
+    // from outside. Without these, a bot handed a full bar and a bot that sat and drank for
+    // thirty seconds are the same observation, and so are a hunter with a quiver and one that
+    // silently stopped shooting an hour ago. mhenchant covers the weapon imbues and poisons,
+    // which are applied as a temporary enchant and otherwise leave no trace at all.
+    Powers const powerType = pTarget->GetPowerType();
+    uint32 const ammoId = pTarget->GetUInt32Value(PLAYER_AMMO_ID);
+    Item const* pMainHand = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    PSendSysMessage("health=%u maxhealth=%u power=%u maxpower=%u powertype=%u ammo=%u ammocount=%u mhenchant=%u",
+        pTarget->GetHealth(), pTarget->GetMaxHealth(),
+        pTarget->GetPower(powerType), pTarget->GetMaxPower(powerType), uint32(powerType),
+        ammoId, ammoId ? pTarget->GetItemCount(ammoId) : 0,
+        pMainHand ? pMainHand->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT) : 0);
+
     Group* pGroup = pTarget->GetGroup();
     if (!pGroup)
     {
