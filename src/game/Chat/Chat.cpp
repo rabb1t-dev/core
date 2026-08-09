@@ -107,6 +107,8 @@ ChatCommand * ChatHandler::getCommandTable()
         { "despawn",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessDespawnCommand,      "", nullptr },
         { "items",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessItemsCommand,        "", nullptr },
         { "equipnew",   SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessEquipNewCommand,     "", nullptr },
+        { "itemstats",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessItemStatsCommand,    "", nullptr },
+        { "spellstats", SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessSpellStatsCommand,   "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 

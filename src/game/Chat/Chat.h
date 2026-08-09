@@ -292,6 +292,8 @@ class ChatHandler
         bool HandleHarnessDespawnCommand(char* args);
         bool HandleHarnessItemsCommand(char* args);
         bool HandleHarnessEquipNewCommand(char* args);
+        bool HandleHarnessItemStatsCommand(char* args);
+        bool HandleHarnessSpellStatsCommand(char* args);
 
         // Persistent bot raid guild
         bool HandleRaidGuildAddCommand(char* args);

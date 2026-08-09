@@ -32,6 +32,7 @@
 #include "Totem.h"
 #include "MasterPlayer.h"
 #include "Mail/Mail.h"
+#include "ItemEvaluator.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
@@ -738,6 +739,108 @@ bool ChatHandler::HandleHarnessEquipNewCommand(char* args)
     pAI->EquipOrUseNewItem();
 
     PSendSysMessage("equipnew character=%s", pTarget->GetName());
+    return true;
+}
+
+// .harness itemstats <entry>
+// What the item evaluation engine thinks an item contributes, collapsed into one flat vector.
+//
+// The differential test asks this for every entry in the Classic Gear Ranker oracle. The
+// answer has to come from the live ResolveItem path rather than from the bags of a bot,
+// because the oracle is about prototypes: an item that has never been rolled cannot have
+// random-property enchantments, and comparing against an instance would silently credit them.
+bool ChatHandler::HandleHarnessItemStatsCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Harness: expected an item entry.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(entry);
+    if (!pProto)
+    {
+        PSendSysMessage("Harness: item entry %u does not exist.", entry);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ResolvedStats const s = sItemEvaluator.ResolveItem(pProto);
+
+    // The equip spells, in the order the evaluator applies them, so a differential test can
+    // attribute a stat the engine credits to the exact spell it came from.
+    std::string equipSpells;
+    for (uint32 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+    {
+        if (pProto->Spells[i].SpellTrigger != ITEM_SPELLTRIGGER_ON_EQUIP || !pProto->Spells[i].SpellId)
+            continue;
+        if (!equipSpells.empty())
+            equipSpells += ",";
+        equipSpells += std::to_string(pProto->Spells[i].SpellId);
+    }
+    if (equipSpells.empty())
+        equipSpells = "-";
+
+    PSendSysMessage(
+        "itemstats entry=%u class=%u subclass=%u base_block=%u equip_spells=%s "
+        "armor=%d stam=%d spi=%d int=%d str=%d agi=%d "
+        "ap=%d hit=%d crit=%d weapon_skill=%d defense=%d dodge=%d parry=%d "
+        "block=%d block_value=%d ranged_ap=%d "
+        "spdmg=%d sppen=%d sphit=%d spcrit=%d spheal=%d mp5=%d "
+        "fire_res=%d nat_res=%d frost_res=%d "
+        "avg_hit=%.4f dps=%.4f speed=%.4f name=%s",
+        entry, pProto->Class, pProto->SubClass, pProto->Block, equipSpells.c_str(),
+        s.armor, s.stam, s.spi, s.intellect, s.str, s.agi,
+        s.ap, s.hit, s.crit, s.weapon_skill, s.defense, s.dodge, s.parry,
+        s.block, s.block_value, s.ranged_ap,
+        s.spdmg, s.sppen, s.sphit, s.spcrit, s.spheal, s.mp5,
+        s.fire_res, s.nat_res, s.frost_res,
+        s.avg_hit, s.dps, s.speed, pProto->Name1 ? pProto->Name1 : "");
+    return true;
+}
+
+// .harness spellstats <spell>
+// The same resolution for a bare equip-trigger spell, which is what the 498-row oracle
+// checks independently of any item that happens to carry it.
+bool ChatHandler::HandleHarnessSpellStatsCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 spellId = 0;
+    if (!ExtractUInt32(&args, spellId))
+    {
+        SendSysMessage("Harness: expected a spell id.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ResolvedStats const s = sItemEvaluator.ResolveSpell(spellId);
+
+    PSendSysMessage(
+        "spellstats spell=%u armor=%d stam=%d spi=%d int=%d str=%d agi=%d "
+        "ap=%d hit=%d crit=%d weapon_skill=%d defense=%d dodge=%d parry=%d "
+        "block=%d block_value=%d ranged_ap=%d "
+        "spdmg=%d sppen=%d sphit=%d spcrit=%d spheal=%d mp5=%d "
+        "fire_res=%d nat_res=%d frost_res=%d",
+        spellId, s.armor, s.stam, s.spi, s.intellect, s.str, s.agi,
+        s.ap, s.hit, s.crit, s.weapon_skill, s.defense, s.dodge, s.parry,
+        s.block, s.block_value, s.ranged_ap,
+        s.spdmg, s.sppen, s.sphit, s.spcrit, s.spheal, s.mp5,
+        s.fire_res, s.nat_res, s.frost_res);
     return true;
 }
 
