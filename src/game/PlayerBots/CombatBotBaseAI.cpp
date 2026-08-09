@@ -2842,6 +2842,15 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
         sObjectMgr.ApplyPremadeSpecTemplateToPlayer(pSpec->entry, me);
         if (m_role == ROLE_INVALID)
             m_role = pSpec->role;
+
+        // A spec is written at a level and lists what a character had at that level, so applying
+        // one to a character of a different level leaves the spellbook describing somebody else.
+        // The only warrior specs below sixty are twink builds at 19, 29, 39 and 49, so a level 20
+        // tank was handed the level 19 arms twink and finished with two of its thirty-six ability
+        // slots filled: no Defensive Stance, no Taunt, no Sunder Armor, none of them a talent and
+        // all of them things a real level 20 warrior simply has.
+        if (me->GetLevel() != pSpec->level)
+            LearnClassSpellsForLevel();
     }
     else
     {
@@ -2851,6 +2860,47 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
         char itemArgs[] = "";
         ChatHandler(me).HandleLearnAllTrainerCommand(trainerArgs);
         ChatHandler(me).HandleLearnAllItemsCommand(itemArgs);
+    }
+}
+
+// Every non-talent spell of the bot's class that a character its level would already have. This
+// is `.learn all_myspells` with the one thing that command is missing, which is any regard for
+// level: run unfiltered it hands a level 20 warrior rank 6 Revenge. Talents are skipped because
+// they are the spec's business, and the spec is what this is filling the gaps around.
+void CombatBotBaseAI::LearnClassSpellsForLevel()
+{
+    ChrClassesEntry const* pClass = sChrClassesStore.LookupEntry(me->GetClass());
+    if (!pClass)
+        return;
+
+    for (uint32 i = 0; i < sObjectMgr.GetMaxSkillLineAbilityId(); ++i)
+    {
+        SkillLineAbilityEntry const* pAbility = sObjectMgr.GetSkillLineAbility(i);
+        if (!pAbility)
+            continue;
+
+        SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(pAbility->spellId);
+        if (!pSpellEntry)
+            continue;
+
+        // A spell level of zero marks the server-side and triggered entries rather than a spell
+        // available from the first level, so this drops them rather than taking them all.
+        if (!pSpellEntry->spellLevel || pSpellEntry->spellLevel > me->GetLevel())
+            continue;
+
+        if (pSpellEntry->SpellFamilyName != pClass->spellfamily)
+            continue;
+
+        if (!me->IsSpellFitByClassAndRace(pSpellEntry->Id))
+            continue;
+
+        if (GetTalentSpellCost(sSpellMgr.GetFirstSpellInChain(pSpellEntry->Id)) > 0)
+            continue;
+
+        if (!SpellMgr::IsSpellValid(pSpellEntry, me, false))
+            continue;
+
+        me->LearnSpell(pSpellEntry->Id, false);
     }
 }
 

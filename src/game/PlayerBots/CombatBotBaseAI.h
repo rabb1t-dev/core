@@ -109,6 +109,7 @@ public:
     void EquipPremadeGearTemplate();
     void EquipRandomGearInEmptySlots();
     void AutoEquipGear(uint32 option);
+    void LearnClassSpellsForLevel();
     void LearnRandomTalents();
     
     uint8 GetAttackersInRangeCount(float range) const;
