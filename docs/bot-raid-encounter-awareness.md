@@ -44,10 +44,33 @@ Status key: **not started** / **in progress** / **done**.
 | `ec47f1e2a` | A corpse's faction derived from its race rather than dereferenced unset |
 | `a23a5ac39` | Death, drinking and ammo made costly by default, and visible to the harness |
 | `8ac59f148` | Rogue poisons applied from a vial that is then gone, rather than cast for free |
+| `a79512778` | Rebirth, soulstones and Ankhs, so a death mid-pull need not end the pull |
 
 ### Findings that changed the plan
 
 Recorded because each one cost real investigation and would otherwise be re-derived.
+
+- **The 110 and 130 percent pull thresholds are real here, and the melee test is the
+  creature's reach rather than the attacker's class.** `ThreatContainer::selectNextVictim`
+  ([src/game/Threat/ThreatManager.cpp](../src/game/Threat/ThreatManager.cpp) lines 340-357)
+  keeps the current victim while the best candidate is within 110 percent of it, and switches
+  above 130 percent outright or above 110 percent when `CanReachWithMeleeAutoAttack` says the
+  creature can hit the candidate. So a hunter that has crept into melee is on the melee rule
+  regardless of being a ranged class, and a rooted caster's reach decides it rather than
+  anyone's role.
+- **A per-cast threat gate cannot hold a warlock, because the threat it is throttling has
+  already been committed.** Ten bots on one target overshot their ceiling by six to sixteen
+  points of the tank's threat, which is one cast's worth and was expected. The warlock kept
+  climbing after it stopped casting: damage over time goes on arriving for another fifteen
+  seconds, so the quantity to leave room for is everything in flight, not the next spell. This
+  is why the headroom is thirty points rather than the ten a single cast would suggest, and it
+  is the argument for a real threat estimate rather than a bigger constant.
+- **Threat is invisible from outside and the two failures look identical.** A damage dealer
+  holding station below the tank and one that has run out of things to cast produce the same
+  observation, as do a raid whose tank is holding and one whose boss is a second from turning
+  round. `.harness threat` exists for that, and the first thing it showed was that peaks
+  measured from the opening seconds are arithmetic rather than behaviour: the tank's threat
+  starts near zero and every ratio against it is enormous.
 
 - **Bot sessions report connected, and the consequence is a third outcome this document did
   not consider.** Phase 0 asked whether `GetSession()->IsConnected()` is true for a bot,
@@ -722,11 +745,19 @@ spirit-healer deadline landed in `2c28cd731`, and the run back and re-entry foll
 Supporting work:
 
 - Wire up the resurrection tools that already exist but are unused: druid Rebirth, warlock soulstones,
-  shaman Reincarnation. `m_resurrectionSpell` is already populated from `SPELL_EFFECT_RESURRECT` and
-  used out of combat via `SelectResurrectionTarget`
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 437-463), so
-  healer bots can already res corpses in range. The gap is combat res and the full-wipe case. A
-  surviving healer resurrecting the raid should always be preferred over a corpse run.
+  shaman Reincarnation. [mostly done, `a79512778`] Rebirth is cast during the fight, above the healing
+  rotation, and drops shapeshift to do it, which is most of the value: it cannot be cast in any form
+  and a feral or balance druid is the ordinary case. Self resurrection reads `PLAYER_SELF_RES_SPELL`,
+  which the engine has already resolved into whichever of soulstone, Ankh or Twisting Nether applies,
+  so all three are one branch; it is spent during combat and otherwise only once the window for a
+  living healer has closed, since a healer's mana comes back and these do not for half an hour.
+  Reincarnation also needed its Ankh stocked, being the one reagent the spawn-time pass cannot reach.
+  `contrib/harness/test_combat_resurrection.py` covers both, three runs each.
+
+  What is left is the soulstone's other half. Consuming one works, but nothing applies one, and
+  nothing can until the warlock spell struct has a slot for it — that is `PopulateSpellData`, which
+  another agent is in the middle of. A surviving healer resurrecting the raid is already preferred
+  over a corpse run: `UpdateDeadAI` holds a bot in `CORPSE` while a healer is alive and casting.
 - Offer spirit healer resurrection as a configurable fallback. `SendSpiritResurrect`
   ([src/game/Handlers/NPCHandler.cpp](../src/game/Handlers/NPCHandler.cpp) lines 416-477) is far
   simpler to drive than a corpse run, at the cost of 25 percent durability across all items plus
@@ -753,12 +784,45 @@ Supporting work:
 
 No boss knowledge required. These fix behavior that is wrong in every raid encounter.
 
-- **Threat throttling.** Currently the only threat logic anywhere in the bot code is AoE pull
-  prevention at [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
-  268-313. Add real throttling using `boss->GetThreatManager().getThreat(unit)` from
-  [src/game/Threat/ThreatManager.cpp](../src/game/Threat/ThreatManager.cpp) lines 468-477. There is
-  no built-in percentage API, so compute the ratio against `getCurrentVictim()->getThreat()` manually
-  and hold below the vanilla pull thresholds of 110 percent in melee and 130 percent at range.
+- **Threat throttling.** [done] `PartyBotAI::IsOverThreatCeiling` gates every harmful cast in
+  `CanTryToCastSpell`, comparing the bot's threat against `getCurrentVictim()->getThreat()` and
+  refusing while the ratio is within thirty points of the flip. Healing is deliberately exempt:
+  refusing to heal because healing makes threat trades one lost raid for another. Tanks are exempt
+  outright, and so is the case where the mob is already on this bot or on something that is not a
+  group member, since there is then no ceiling worth deferring to.
+
+  The opening is handled separately, because the ratio cannot handle it. A share of the tank's
+  threat means nothing while the tank has almost none, and a single nuke crosses any ceiling drawn
+  from near zero, so damage dealers hold outright for the first eight seconds of a fight and do not
+  open on a mob that is not yet fighting at all — casting into one is not merely early, it *is* the
+  pull. This is the discipline a real raid keeps for the same reason, and it sits ahead of every
+  question about who is currently holding the mob, including whether the mob is on this bot: a stray
+  opening pull comes back to the tank soonest if whoever it landed on stops feeding it. The ramp
+  applies only to targets carrying at least five times the bot's health, since eight seconds of
+  silence is discipline in a boss fight and most of the fight against a trash mob.
+
+  `contrib/harness/test_threat_throttling.py` watches a real fight and asserts three things: that
+  the tank leads the threat list at the moment damage is released, that no member crosses its own
+  pull threshold, and that the target never leaves the tank once the pull has settled. Before any
+  of this, damage dealers ran to 143 percent of the tank and took the mob off it. With the ceiling
+  alone a warlock still pulled at 127 percent, because it had opened before the tank had anything
+  to be a percentage of. With the ramp as well, eight seconds of holding leaves the tank at roughly
+  double the next best — 966 against 454 at ten bots, 1301 against 674 at twenty-five — and it keeps
+  the target for the whole fight at both sizes.
+
+  The remaining margin is thin at range. Ranged damage is allowed to 100 percent of the tank and
+  overshoots to about 128 by the time a cast in flight and its lingering periodic damage have all
+  landed, against a flip at 130. Melee, allowed 80 and reaching 95 against a flip at 110, has twice
+  the room. Nothing has pulled at twenty-five bots, but a forty-bot raid is the test that matters
+  and the number to move if it does is the ranged share of `PB_THREAT_HEADROOM`.
+
+  Three limits worth knowing. Melee auto-attack is not gated, because only spellcasts pass through
+  `CanTryToCastSpell`; during the ramp this is visible as damage dealers accruing a hundred or so
+  threat while holding, against the tank's thousand, so it has not mattered. The ceiling is a flat
+  constant rather than an estimate of the threat about to be generated, which is why it has to be
+  as wide as the worst case rather than as wide as the case in hand. And the ramp is a fixed eight
+  seconds rather than a wait for the tank to have enough, which is the honest version of the same
+  idea and needs a definition of enough.
 - **Tick responsiveness.** Either lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so
   a hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
   39 bots polling at high frequency is the main CPU risk in this project.
@@ -1146,11 +1210,11 @@ Combined with target selection having no hysteresis and re-evaluating every tick
 whenever the leader tab-targets. The rogue Blind branch also calls `AttackStop` and `AttackStart` on the
 same victim, which is a gratuitous reset.
 
-**Nobody can be resurrected during an encounter.** `pRebirth` is populated and never referenced anywhere in
-the AI, `m_resurrectionSpell` is only consumed from the out-of-combat path, and `ShouldAutoRevive` returns
-false while any party member is in combat. Soulstone does not appear in the bot code at all, nor does
-Divine Intervention. So a bot that dies is inert for the rest of the fight, when mid-fight Rebirth and a
-pre-applied Soulstone are both standard vanilla raid practice.
+**Nobody can be resurrected during an encounter.** [fixed in `a79512778`] `pRebirth` was populated and
+never referenced anywhere in the AI, `m_resurrectionSpell` was only consumed from the out-of-combat path,
+and `ShouldAutoRevive` returns false while any party member is in combat, so a bot that died was inert for
+the rest of the fight. Rebirth and self resurrection now both fire mid-fight. Applying a soulstone ahead
+of the pull is still missing, and Divine Intervention still does not appear in the bot code at all.
 
 **No potions, healthstones, or bandages exist.** `UseItemEffect` handles trinket slots only, and
 out-of-combat regeneration uses the fake `PB_SPELL_FOOD` and `PB_SPELL_DRINK` auras rather than real items.

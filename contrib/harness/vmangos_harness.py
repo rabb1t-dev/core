@@ -240,6 +240,57 @@ class Harness:
 
     # -- world queries -----------------------------------------------------
 
+    def despawn(self, character, entry, range_yards=500.0):
+        """Remove every creature of one entry near a character, returning how many went.
+
+        Summoned test targets outlive the suite that made them, and one still in combat with
+        an unkillable harness character never resets. Clearing them is what makes a combat
+        test repeatable rather than only correct the first time after a restart.
+        """
+        text = self.run(f"harness despawn {character} {entry} {range_yards:.0f}")
+        match = re.search(r"removed=(\d+)", text)
+        return int(match.group(1)) if match else 0
+
+    def threat(self, character):
+        """The threat list of whatever this character is fighting, highest first.
+
+        None when the character is not in a fight, or is fighting something that keeps no
+        threat list. Percentages are of the current victim's threat, since the rule that
+        decides who a boss hits is written as a ratio rather than an amount.
+        """
+        text = self.run(f"harness threat {character}")
+        if "threat none" in text:
+            return None
+
+        summary = {}
+        hostiles = []
+        for line in text.splitlines():
+            line = line.strip()
+
+            match = re.match(
+                r"^hostile threat=(\S+) percent=(\S+) top=(\d+) name=(.*)$", line)
+            if match:
+                hostiles.append({
+                    "threat": float(match.group(1)),
+                    "percent": float(match.group(2)),
+                    "top": match.group(3) == "1",
+                    "name": match.group(4),
+                })
+                continue
+
+            match = re.match(
+                r"^threat entries=(\d+) topthreat=(\S+) combat=(\S+) victim=(.*)$", line)
+            if match:
+                summary = {
+                    "entries": int(match.group(1)),
+                    "topthreat": float(match.group(2)),
+                    "combat": int(match.group(3)),
+                    "victim": match.group(4),
+                }
+
+        return {"summary": summary,
+                "hostiles": sorted(hostiles, key=lambda h: -h["threat"])}
+
     def graveyard(self, map_id, x, y, z, team=HORDE):
         """Where a ghost dying at this spot releases to, as (map, x, y, z)."""
         text = self.run(f"harness graveyard {map_id} {x:.2f} {y:.2f} {z:.2f} {team}")

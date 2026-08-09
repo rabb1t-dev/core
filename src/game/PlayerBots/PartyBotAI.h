@@ -51,6 +51,7 @@ public:
     bool AddToPlayerGroup();
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
+    bool IsOverThreatCeiling(Unit const* pTarget) const;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;

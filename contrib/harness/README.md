@@ -1,8 +1,8 @@
 # The test harness
 
 Reference for whoever is driving this next, which is usually an agent with no game client and no
-memory of the last session. It covers the ten `.harness` chat commands, the Python client that
-wraps them, the suites built on top, and the traps that have each cost an afternoon at least once.
+memory of the last session. It covers the `.harness` chat commands, the Python client that wraps
+them, the suites built on top, and the traps that have each cost an afternoon at least once.
 
 The purpose of the whole thing is to make the game observable and drivable from a script. A bot
 does not report what it is doing, and almost every bug in this project has presented as "the bot
@@ -36,7 +36,7 @@ command through `.harness exec`.
 
 ## The commands
 
-All ten are administrator-only and console-enabled. Those that address a character take its
+All are administrator-only and console-enabled. Those that address a character take its
 *name*, never a GUID; `graveyard` and `loadmmaps` are world queries and take a map instead. The
 output is `key=value` throughout, one space-separated line per fact, and **a value containing
 spaces is always last on its line** so nothing has to be quoted. Parse accordingly.
@@ -58,9 +58,9 @@ The state of a character and its group. Four kinds of line:
 | Line | Fields |
 | --- | --- |
 | position | `name guid level map instance zone alive deathstate corpse teleporting motion x y z` |
-| resources | `health maxhealth power maxpower powertype ammo ammocount mhenchant ohenchant` |
+| resources | `health maxhealth power maxpower powertype ammo ammocount mhenchant ohenchant incombat selfres form` |
 | `item` (one per backpack slot) | `entry count slot name` |
-| group, then one `member` each | `group members raid leader`, then `name class level subgroup alive deathstate map zone` |
+| group, then one `member` each | `group members raid leader`, then `name class level subgroup alive deathstate map zone incombat` |
 
 Fields worth knowing rather than guessing:
 
@@ -72,6 +72,50 @@ Fields worth knowing rather than guessing:
   and rogue poisons are applied. They leave no other trace.
 - The `item` lines exist because a consumable that is spent looks exactly like one that is not
   until the stack is counted. This is how poison consumption is verified.
+- `incombat` is what separates a resurrection during the fight from one after it, which is the
+  whole distinction combat resurrection is about. It appears on the `member` lines too, so the
+  state of a forty-man raid is one call rather than forty.
+- `selfres` is the charge the engine is holding for this death, already resolved into whichever
+  of soulstone, Ankh or Twisting Nether applies. Still set on a bot that is still dead means
+  nothing tried to spend it; cleared on one that is still dead means it was spent on a cast that
+  failed, and the two want opposite fixes.
+- `form` gates more of a druid's spell list than any other single piece of state. A druid in bear
+  form declining to cast and a druid missing the spell entirely are the same silence otherwise,
+  and this is what identified a flaky Rebirth test as a Moonkin.
+
+### `.harness threat <character>`
+
+The threat list of whatever this character is currently attacking, highest first: a summary line
+of `entries topthreat combat victim`, then one `hostile` line each of `threat percent top name`.
+
+Threat decides who a boss hits and is invisible from every other angle. Percentages are of the
+current victim's threat rather than absolute, because the rule that decides the target is written
+as a ratio: `ThreatContainer::selectNextVictim` switches above 130 percent, or above 110 percent
+when the creature can reach the candidate with a melee swing.
+
+Note the character has to be *attacking* something, not merely in combat with it. The leader is
+the usual mistake here: nothing drives it, so it never has a victim and the whole group reads as
+having never engaged. Ask through a bot instead.
+
+Read peaks with the clock in mind, which is what `combat` is for: it is how many seconds the mob
+has been fighting, and in the first few of them the tank's threat is near zero and every ratio
+against it is enormous, so anything measured there describes arithmetic rather than behaviour.
+
+`combat` also tells you whether you are watching the fight you started. A test target left over
+from an earlier run reads in the hundreds, and a group that latched onto one is not measuring its
+own pull at all. Clear the field with `.harness despawn` before summoning.
+
+### `.harness despawn <character> <entry> [range]`
+
+Remove every creature of one entry within range of this character, default 500 yards. Reports
+`despawn entry range removed`.
+
+This exists because `.npc despawn` works on the caller's selection and a command arriving over
+SOAP has selected nothing, so a suite that summons a target has no way to take it away again.
+Summoned targets are worse than untidy: one left in combat with an unkillable harness character
+never resets, and the next run's bots assist against it rather than against the mob that run
+summoned. Call it before summoning, not after, so a suite that crashed still leaves a clean field
+for the next one.
 
 ### `.harness spells <character>`
 
@@ -178,6 +222,8 @@ Run from the repo root on the server host. Times are for the dev box.
 | `test_corpse_runs_live.py` | A bot dies inside each of the 26 instances and gets back in unaided | ~4 min. `--only`, `--raids`, `--dungeons`, `--workers`, `--trace` |
 | `test_raid_wipe_recovery.py` | Each raid, filled to its player cap, wipes with nobody left standing and walks back | ~11 min. `--only`, `--size` |
 | `test_wipe_recovery.py` | The single-group version of the same thing | |
+| `test_combat_resurrection.py` | A bot killed mid-fight is raised before the fight ends, by a druid or by its own Ankh | ~5 min. `--only rebirth\|reincarnation` |
+| `test_threat_throttling.py` | Damage dealers let the tank open, then hold below the pull threshold while it keeps the target | ~5 min. `--size`, `--duration` |
 | `test_spell_population.py` | The bot spell struct is filled, class by class | `--only`, `--empty` |
 | `test_premade_specs.py` | A talent build is deliberate and legal | `--only authored\|determinism\|fallback` |
 | `test_totem_and_blessing_choice.py` | Totems and blessings are chosen rather than drawn at random | `--skip` |
@@ -201,6 +247,16 @@ tail -n +1 -f --pid=$(pgrep -f '[t]est_corpse_runs_live' | head -1) /tmp/run.log
 Bracket the first character of the pattern so `pgrep` cannot match its own command line, which
 otherwise leaves you tailing a process that already exited. The same trap applies to `pkill`, which
 will happily kill the shell that invoked it.
+
+**To watch a fight you need a fight that lasts and kills nobody.** These two pull opposite ways,
+because health and damage both scale with level, so a mob tough enough to last is usually lethal
+and a harmless one dies in seconds. Creature 11080, `[PH[ Combat Tester`, is a level 60 with a
+hundred times the usual health and entirely ordinary damage, which is the combination and almost
+nothing else in the game has it. Summon it with `.npc summon`, not `.npc add`: add writes a
+permanent row to the creature table, summon does not.
+
+A real raid boss was tried first and was worse in the way that matters. It killed the druid under
+test, and the suite reported that as the druid declining to resurrect anyone.
 
 **One leader per account.** `PlayerBotMgr` allows one session per account, so a second and third
 concurrent leader silently fail to log in. The live corpse-run suite creates `harnesslead0`,

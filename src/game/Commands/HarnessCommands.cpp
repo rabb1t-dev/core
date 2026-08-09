@@ -485,6 +485,97 @@ bool ChatHandler::HandleHarnessGraveyardCommand(char* args)
     return true;
 }
 
+// .harness despawn <character> <entry> [range]
+// Remove every creature of one entry near this character, and say how many went.
+//
+// A suite that summons a target has no way to take it away again: `.npc despawn` works on
+// whatever the caller has selected, and a command arriving over SOAP has selected nothing.
+// So test mobs accumulate, and because they stay in combat with an unkillable harness
+// character they never reset. The next run's bots then assist against a mob that has been
+// fighting for several minutes, which is a different fight from the one the suite meant to
+// start and silently invalidates anything measured from the pull.
+bool ChatHandler::HandleHarnessDespawnCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Syntax: .harness despawn <character> <entry> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 500.0f;
+    ExtractFloat(&args, range);
+
+    PSendSysMessage("despawn entry=%u range=%.0f removed=%u",
+        entry, range, pTarget->DespawnNearCreaturesByEntry(entry, range));
+    return true;
+}
+
+// .harness threat <character>
+// The threat list of whatever this character is fighting, in order, as a share of the top.
+//
+// Threat is the quantity that decides who a boss hits and it is invisible from every side: a
+// damage dealer holding station below the tank and one that has simply run out of things to
+// cast look the same from outside, and so do a raid whose tank is holding and a raid whose
+// boss is about to turn round. Reported as a percentage of the current victim's threat because
+// that ratio, not the absolute number, is what the pull rule is written in.
+bool ChatHandler::HandleHarnessThreatCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Unit* pEnemy = pTarget->GetVictim();
+    if (!pEnemy)
+    {
+        SendSysMessage("threat none reason=not_fighting");
+        return true;
+    }
+
+    if (!pEnemy->CanHaveThreatList())
+    {
+        PSendSysMessage("threat none reason=no_threat_list target=%s", pEnemy->GetName());
+        return true;
+    }
+
+    ThreatManager const& manager = pEnemy->GetThreatManager();
+    HostileReference const* pTop = manager.getCurrentVictim();
+    float const topThreat = pTop ? pTop->getThreat() : 0.0f;
+
+    // How long the mob has been fighting, which is what the opening hold is measured against.
+    Creature const* pCreature = pEnemy->ToCreature();
+
+    PSendSysMessage("threat entries=%u topthreat=%.0f combat=%d victim=%s",
+        uint32(manager.getThreatList().size()), topThreat,
+        pCreature ? int32(pCreature->GetCombatTime(false)) : -1,
+        pTop && pTop->getTarget() ? pTop->getTarget()->GetName() : "none");
+
+    for (auto const& pRef : manager.getThreatList())
+    {
+        Unit const* pUnit = pRef->getTarget();
+        if (!pUnit)
+            continue;
+
+        PSendSysMessage("hostile threat=%.0f percent=%.0f top=%u name=%s",
+            pRef->getThreat(),
+            topThreat > 0.0f ? (pRef->getThreat() * 100.0f / topThreat) : 0.0f,
+            pRef == pTop ? 1 : 0, pUnit->GetName());
+    }
+
+    return true;
+}
+
 // .harness spells <character>
 // What the bot's spell population actually produced, slot by slot.
 //

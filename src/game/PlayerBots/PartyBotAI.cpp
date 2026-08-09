@@ -62,6 +62,32 @@ static constexpr float PB_PORTAL_STEP_IN_RANGE = 25.0f;
 // absorb rounding.
 static constexpr float PB_GHOST_ENTRANCE_MATCH = 10.0f;
 
+// The share of the current target's threat at which a mob changes its mind about who to hit.
+// ThreatContainer::selectNextVictim flips at 110 percent for someone the creature can reach
+// with a melee swing and 130 percent for anyone else, so the pair below are facts about the
+// server rather than a policy.
+static constexpr float PB_THREAT_PULL_RATIO_MELEE = 1.10f;
+static constexpr float PB_THREAT_PULL_RATIO_RANGED = 1.30f;
+// How far below the flip to hold, which is a tuning choice and was measured rather than
+// guessed. The ceiling is tested before a cast and crossed by the threat that cast then makes,
+// so aiming at the line steps over it every time. Ten bots on one target overshot by six to
+// sixteen points of the tank's threat at a fifth, and a warlock pulled anyway: damage over
+// time keeps arriving for another fifteen seconds after the decision to stop casting, so the
+// worst case is not one cast but everything already in flight.
+static constexpr float PB_THREAT_HEADROOM = 0.30f;
+// How long a damage dealer leaves the tank alone at the start of a fight. The ratio test above
+// cannot govern the opening, because at the moment of the pull the tank's threat is near zero
+// and any share of near zero is a number a single spell steps straight over. Real raids solve
+// this the same way, by holding damage for the first few seconds, and the number wanted is
+// however long it takes the tank to out-threat one opener by the pull margin.
+static constexpr time_t PB_THREAT_PULL_HOLD_SECONDS = 8;
+// How much bigger than the bot the target has to be before any of that ramp applies. A raid
+// target carries tens of times a player's health and an ordinary one carries less than its
+// own, so this separates the fights worth ramping into from the ones the ramp would consume.
+// Dungeon bosses sit near the line and may fall either side of it, which costs them the ramp
+// rather than breaking them.
+static constexpr float PB_THREAT_RAMP_HEALTH_RATIO = 5.0f;
+
 #define PB_UPDATE_INTERVAL 1000
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
@@ -650,9 +676,69 @@ void PartyBotAI::UpdateDeadAI()
     }
 }
 
+bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
+{
+    // The tank is the one meant to be at the top of the list, and a group with nobody tanking
+    // has no ceiling to speak of: whoever is being hit is holding it by default.
+    if (m_role == ROLE_TANK || IsInDuel() || !pTarget->CanHaveThreatList())
+        return false;
+
+    // Leave the opening to whoever is tanking it. The ratio below cannot govern the first
+    // seconds of a fight, because it is a share of the tank's threat and the tank has almost
+    // none yet, so a single nuke steps over any ceiling drawn from it; and casting into a mob
+    // that is not yet fighting is not merely early but is itself the pull. Both are answered
+    // the way a raid answers them, by not starting for a few seconds. This is deliberately
+    // ahead of every question about who currently holds the mob, including whether it is on
+    // this bot: a stray opening pull is taken back by the tank soonest if the bot it landed
+    // on stops adding to it.
+    //
+    // Only against something big enough to be worth the wait. Eight seconds is discipline in
+    // a boss fight and most of the fight against a trash mob, and the health bar separates
+    // the two without needing to know which encounter this is.
+    if (Creature const* pCreature = pTarget->ToCreature())
+    {
+        if (pTarget->GetMaxHealth() >= me->GetMaxHealth() * PB_THREAT_RAMP_HEALTH_RATIO &&
+            (!pCreature->IsInCombat() ||
+             pCreature->GetCombatTime(false) < PB_THREAT_PULL_HOLD_SECONDS))
+            return true;
+    }
+
+    // Read-only, but neither the threat lookup nor the container beneath it is marked const.
+    ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
+
+    HostileReference const* pTop = threat.getCurrentVictim();
+    if (!pTop || pTop->getTarget() == me)
+        return false;
+
+    // Only defer to someone the group is actually relying on. Deferring to a pet, or to a
+    // second mob that has wandered into the fight, would have damage dealers throttling
+    // themselves against a threat pool that nobody is trying to hold.
+    Player const* pHolder = pTop->getTarget() ? pTop->getTarget()->ToPlayer() : nullptr;
+    if (!pHolder || !me->IsInSameGroupWith(pHolder))
+        return false;
+
+    float const topThreat = pTop->getThreat();
+    if (topThreat <= 0.0f)
+        return false;
+
+    float const ceiling = (m_role == ROLE_MELEE_DPS ? PB_THREAT_PULL_RATIO_MELEE
+                                                    : PB_THREAT_PULL_RATIO_RANGED)
+                          - PB_THREAT_HEADROOM;
+
+    return threat.getThreat(me) >= (topThreat * ceiling);
+}
+
 bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
 {
     if (!CombatBotBaseAI::CanTryToCastSpell(pTarget, pSpellEntry))
+        return false;
+
+    // Hold below the threshold at which this target would turn round. Nothing in the bot code
+    // has ever done this, so a damage dealer simply cast until it took the boss off the tank,
+    // which in a raid loses the attempt outright and does so for a reason that has nothing to
+    // do with whichever encounter is being tested. Only damage is throttled: refusing to heal
+    // because healing makes threat would trade one lost raid for another.
+    if (!pSpellEntry->IsPositiveSpell() && pTarget && IsOverThreatCeiling(pTarget))
         return false;
 
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
