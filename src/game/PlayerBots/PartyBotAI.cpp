@@ -96,6 +96,22 @@ static constexpr time_t PB_THREAT_PULL_HOLD_SECONDS = 8;
 // Dungeon bosses sit near the line and may fall either side of it, which costs them the ramp
 // rather than breaking them.
 static constexpr float PB_THREAT_RAMP_HEALTH_RATIO = 5.0f;
+// What share of the distance still left to the flip one cast may spend, once a damage dealer is
+// held back and is choosing a lower rank to keep working with. It is not the whole distance
+// because a cast is never the only thing in flight: damage over time laid down earlier keeps
+// ticking, and at a one second decision interval two more casts may land before the next look.
+// Half leaves room for those without leaving the caster idle, which is the entire point of
+// downranking and is how a real caster opens a fight rather than watching the first ten seconds
+// of it.
+static constexpr float PB_THREAT_RANK_SHARE = 0.5f;
+// Rage, in the tenths the field is stored in. Below the first a tank has too little to run its
+// list at all and reaches for Bloodrage. The other two are floors under the abilities that cost
+// rage without using the global cooldown, and they exist so that spending on those can never be
+// what leaves Shield Slam short: Shield Slam is twenty, so anything taken outside the cooldown
+// has to leave that behind it.
+static constexpr uint32 PB_TANK_RAGE_LOW = 200;
+static constexpr uint32 PB_TANK_RAGE_BLOCK = 300;
+static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 
 #define PB_UPDATE_INTERVAL 1000
 #define PB_MIN_FOLLOW_DIST 3.0f
@@ -685,6 +701,51 @@ void PartyBotAI::UpdateDeadAI()
     }
 }
 
+bool PartyBotAI::IsInOpeningRamp(Unit const* pTarget) const
+{
+    Creature const* pCreature = pTarget->ToCreature();
+    if (!pCreature)
+        return false;
+
+    // Only against something big enough to be worth the wait. Eight seconds is discipline in a
+    // boss fight and most of the fight against a trash mob, and the health bar separates the two
+    // without needing to know which encounter this is.
+    if (pTarget->GetMaxHealth() < me->GetMaxHealth() * PB_THREAT_RAMP_HEALTH_RATIO)
+        return false;
+
+    return !pCreature->IsInCombat() ||
+            pCreature->GetCombatTime(false) < PB_THREAT_PULL_HOLD_SECONDS;
+}
+
+void PartyBotAI::HoldOpeningSwings(Unit const* pTarget)
+{
+    if (m_role == ROLE_TANK || IsInDuel() || !IsInOpeningRamp(pTarget))
+        return;
+
+    // Only spellcasts pass through CanTryToCastSpell, so the opening hold was silence for a
+    // caster and nothing whatever for a rogue. At full raid size that was the whole of what was
+    // left wrong with the opening: melee swinging through the hold finished it level with the
+    // tank, having cast nothing and so having passed no gate.
+    //
+    // Pushing the swing timer out is the least invasive way to stop it. The bot goes on
+    // attacking, chasing and running its rotation, and everything that reads what it is fighting
+    // still reads the same answer; the swings simply land after the tank has its lead, which is
+    // what a melee damage dealer in a real raid is doing while it waits.
+    Creature const* pCreature = pTarget->ToCreature();
+    time_t const elapsed = pCreature->IsInCombat() ? pCreature->GetCombatTime(false) : 0;
+    if (elapsed >= PB_THREAT_PULL_HOLD_SECONDS)
+        return;
+
+    uint32 const remaining = uint32(PB_THREAT_PULL_HOLD_SECONDS - elapsed) * IN_MILLISECONDS;
+
+    for (uint8 att = BASE_ATTACK; att < MAX_ATTACK; ++att)
+    {
+        WeaponAttackType const type = WeaponAttackType(att);
+        if (me->GetAttackTimer(type) < remaining)
+            me->SetAttackTimer(type, remaining);
+    }
+}
+
 bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
 {
     // The tank is the one meant to be at the top of the list, and a group with nobody tanking
@@ -704,13 +765,8 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
     // Only against something big enough to be worth the wait. Eight seconds is discipline in
     // a boss fight and most of the fight against a trash mob, and the health bar separates
     // the two without needing to know which encounter this is.
-    if (Creature const* pCreature = pTarget->ToCreature())
-    {
-        if (pTarget->GetMaxHealth() >= me->GetMaxHealth() * PB_THREAT_RAMP_HEALTH_RATIO &&
-            (!pCreature->IsInCombat() ||
-             pCreature->GetCombatTime(false) < PB_THREAT_PULL_HOLD_SECONDS))
-            return true;
-    }
+    if (IsInOpeningRamp(pTarget))
+        return true;
 
     // Read-only, but neither the threat lookup nor the container beneath it is marked const.
     ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
@@ -730,11 +786,103 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
     if (topThreat <= 0.0f)
         return false;
 
-    float const ceiling = m_role == ROLE_MELEE_DPS
-        ? PB_THREAT_PULL_RATIO_MELEE - PB_THREAT_HEADROOM_MELEE
-        : PB_THREAT_PULL_RATIO_RANGED - PB_THREAT_HEADROOM_RANGED;
+    float const ceiling = GetThreatPullRatio(pTarget) - (m_role == ROLE_MELEE_DPS
+        ? PB_THREAT_HEADROOM_MELEE
+        : PB_THREAT_HEADROOM_RANGED);
 
     return threat.getThreat(me) >= (topThreat * ceiling);
+}
+
+float PartyBotAI::GetThreatPullRatio(Unit const* pTarget) const
+{
+    // Which of the two flips applies is a question about where this bot is standing, not about
+    // what it does for the group: ThreatContainer::selectNextVictim asks whether the creature
+    // can reach the candidate with a melee swing and uses 110 percent if it can. A caster parked
+    // inside a boss's reach is on the melee rule with a caster's threat, which is the worst
+    // combination available, and reading the role instead of the geometry granted it a fifth
+    // more threat than it actually had. Two mages took a boss off the tank at 124 percent that
+    // way, below the 130 they were being measured against and above the 110 that governed them.
+    return pTarget->CanReachWithMeleeAutoAttack(me)
+        ? PB_THREAT_PULL_RATIO_MELEE
+        : PB_THREAT_PULL_RATIO_RANGED;
+}
+
+float PartyBotAI::GetThreatHeadroom(Unit const* pTarget) const
+{
+    // Casting into something that is not fighting anyone yet is not an early cast, it is the
+    // pull, and no rank is small enough to make that acceptable.
+    Creature const* pCreature = pTarget->ToCreature();
+    if (!pCreature || !pCreature->IsInCombat())
+        return 0.0f;
+
+    ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
+    HostileReference const* pTop = threat.getCurrentVictim();
+    if (!pTop || !pTop->getTarget())
+        return 0.0f;
+
+    // Already holding it. Whatever is added here is threat the tank has to climb over to take
+    // the target back, so the answer is none of it.
+    if (pTop->getTarget() == me)
+        return 0.0f;
+
+    Player const* pHolder = pTop->getTarget()->ToPlayer();
+    if (!pHolder || !me->IsInSameGroupWith(pHolder))
+        return 0.0f;
+
+    float const room = pTop->getThreat() * GetThreatPullRatio(pTarget) - threat.getThreat(me);
+    return room > 0.0f ? room * PB_THREAT_RANK_SHARE : 0.0f;
+}
+
+float PartyBotAI::EstimateSpellThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    // Threat for a damage spell is the damage: SpellEffects hands the number it just dealt
+    // straight to AddThreat. So the question of how much threat a rank is worth is the question
+    // of how hard it hits, which the caster can answer about itself before casting anything.
+    float const base = me->CalculateSpellEffectValue(pTarget, pSpellEntry, EFFECT_INDEX_0);
+    return me->SpellDamageBonusDone(pTarget, pSpellEntry, EFFECT_INDEX_0, base,
+                                    SPELL_DIRECT_DAMAGE);
+}
+
+SpellEntry const* PartyBotAI::PickRankForThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!pTarget || !pSpellEntry || pSpellEntry->IsPositiveSpell())
+        return pSpellEntry;
+
+    if (!IsOverThreatCeiling(pTarget))
+        return pSpellEntry;
+
+    // Held back, so the question changes from whether to cast to what to cast. Only a direct
+    // nuke can answer it: a lower rank of one is the same spell for less of everything, where a
+    // lower rank of a damage over time effect occupies the same slot on the target for the same
+    // duration and would lock the good version out, and melee abilities barely differ by rank.
+    if (pSpellEntry->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_SCHOOL_DAMAGE)
+        return nullptr;
+
+    float const budget = GetThreatHeadroom(pTarget);
+    if (budget <= 0.0f)
+        return nullptr;
+
+    for (SpellEntry const* pRank = pSpellEntry; pRank;)
+    {
+        if (EstimateSpellThreat(pTarget, pRank) <= budget)
+            return pRank;
+
+        uint32 const prev = sSpellMgr.GetPrevSpellInChain(pRank->Id);
+        pRank = prev ? sSpellMgr.GetSpellEntry(prev) : nullptr;
+    }
+
+    // Even the first rank is too big for the room available, which is the ordinary state of
+    // affairs in the first second of a pull.
+    return nullptr;
+}
+
+SpellCastResult PartyBotAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry)
+{
+    SpellEntry const* pRank = PickRankForThreat(pTarget, pSpellEntry);
+    if (!pRank)
+        return SPELL_FAILED_DONT_REPORT;
+
+    return CombatBotBaseAI::DoCastSpell(pTarget, pRank);
 }
 
 bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
@@ -747,7 +895,11 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     // which in a raid loses the attempt outright and does so for a reason that has nothing to
     // do with whichever encounter is being tested. Only damage is throttled: refusing to heal
     // because healing makes threat would trade one lost raid for another.
-    if (!pSpellEntry->IsPositiveSpell() && pTarget && IsOverThreatCeiling(pTarget))
+    //
+    // Being over the ceiling is not by itself a refusal, because a smaller version of the same
+    // spell may still fit underneath it. PickRankForThreat answers both questions at once and
+    // gives back nothing only when no rank fits; DoCastSpell asks it again to find out which.
+    if (!pSpellEntry->IsPositiveSpell() && pTarget && !PickRankForThreat(pTarget, pSpellEntry))
         return false;
 
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
@@ -1552,6 +1704,11 @@ void PartyBotAI::UpdateOutOfCombatAI()
 
 void PartyBotAI::UpdateInCombatAI()
 {
+    // Ahead of every early return below, because a damage dealer that took a different branch
+    // this tick is still swinging.
+    if (Unit* pVictim = me->GetVictim())
+        HoldOpeningSwings(pVictim);
+
     if (!IsInDuel())
     {
         if (m_role == ROLE_TANK)
@@ -1568,15 +1725,22 @@ void PartyBotAI::UpdateInCombatAI()
                 }
             }
 
-            // Taunt target if its attacking someone else.
-            if (pVictim && pVictim->GetVictim() != me)
+            // Take the target back off whoever has it. The test used to be that the mob was
+            // simply looking at someone else, which taunts it off the other tank as readily as
+            // off a mage, and two tanks then spend the encounter trading it between them while
+            // neither has a taunt left when a damage dealer actually needs saving.
+            //
+            // Nor does this return any more. Taunt carries StartRecoveryTime 0, so it is free of
+            // the global cooldown and returning here gave up the tank's cast for the tick on top
+            // of the target it had just lost, which is the worst moment to be doing nothing.
+            if (pVictim && ShouldTauntTarget(pVictim))
             {
                 for (const auto& pSpellEntry : m_spellListTaunt)
                 {
                     if (CanTryToCastSpell(pVictim, pSpellEntry))
                     {
                         if (DoCastSpell(pVictim, pSpellEntry) == SPELL_CAST_OK)
-                            return;
+                            break;
                     }
                 }
             }
@@ -2990,6 +3154,167 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
     }
 }
 
+bool PartyBotAI::ShouldTauntTarget(Unit const* pVictim) const
+{
+    Unit const* pHolder = pVictim->GetVictim();
+    if (!pHolder || pHolder == me)
+        return false;
+
+    // Only take it back off someone who is not supposed to have it. Pulling a target off the
+    // other tank is how two tanks spend an encounter trading it between them, and a taunt spent
+    // there is a taunt not available ten seconds later when a damage dealer actually needs
+    // saving.
+    Player const* pPlayer = pHolder->ToPlayer();
+    if (!pPlayer || !me->IsInSameGroupWith(pPlayer))
+        return false;
+
+    PlayerBotEntry const* pEntry = pPlayer->GetSession() ? pPlayer->GetSession()->GetBot() : nullptr;
+    if (PartyBotAI const* pAI = pEntry ? dynamic_cast<PartyBotAI const*>(pEntry->ai.get()) : nullptr)
+        if (pAI->m_role == ROLE_TANK)
+            return false;
+
+    return true;
+}
+
+void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
+{
+    // Defensive Stance first and before anything else is attempted, because most of what
+    // follows cannot be cast outside it: Taunt, Revenge and Shield Block are all stance locked,
+    // and the stance itself is worth a third again on every point of threat made in it. A
+    // warrior that opens with Charge is in Battle Stance when the fight starts and has to be
+    // moved across at once rather than eleven checks later, which is where the shared list did
+    // it and is why the opening was being fought in the wrong stance.
+    if (m_spells.warrior.pDefensiveStance &&
+        me->GetShapeshiftForm() != FORM_DEFENSIVESTANCE &&
+        CanTryToCastSpell(me, m_spells.warrior.pDefensiveStance))
+    {
+        if (DoCastSpell(me, m_spells.warrior.pDefensiveStance) == SPELL_CAST_OK)
+            return;
+    }
+
+    // Staying alive outranks holding the target, since a dead tank holds nothing.
+    if (me->GetHealthPercent() < 35.0f)
+    {
+        if (m_spells.warrior.pShieldWall && IsWearingShield(me) &&
+            CanTryToCastSpell(me, m_spells.warrior.pShieldWall))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pShieldWall) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (m_spells.warrior.pLastStand &&
+            CanTryToCastSpell(me, m_spells.warrior.pLastStand))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pLastStand) == SPELL_CAST_OK)
+                return;
+        }
+    }
+
+    // Everything from here to the global cooldown block is off the global cooldown, which the
+    // spell data is explicit about: Taunt, Bloodrage, Shield Block, Heroic Strike and Cleave all
+    // carry StartRecoveryTime 0. So none of them is an alternative to the ability that fills the
+    // cooldown, and none of them returns. Treating them as alternatives is the single most
+    // expensive thing a warrior rotation can do, because the cooldown is the scarce resource and
+    // a free ability spent in place of one is a whole cast of threat given up for nothing.
+
+    // Taunt is not here. It is handled once in UpdateInCombatAI for every tank class off the
+    // list of everything carrying SPELL_EFFECT_ATTACK_ME, which covers a druid's Growl as well
+    // as this, and a second copy here would only be a second way to get the guard wrong.
+
+    // Rage is the whole constraint on a tank's opening. It starts a fight with almost none,
+    // earns it only by being hit, and everything that makes threat costs some, so the first
+    // seconds are spent waiting unless this is used. It is free and it was previously cast only
+    // out of combat, and then only when Battle Shout happened to be up already, which is to say
+    // almost never.
+    if (m_spells.warrior.pBloodrage &&
+        me->GetPower(POWER_RAGE) < PB_TANK_RAGE_LOW &&
+        CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
+    {
+        DoCastSpell(me, m_spells.warrior.pBloodrage);
+    }
+
+    // Mitigation, and also the supply of Revenge below, which only unlocks off a block, dodge or
+    // parry: a guaranteed block is the only one of those a tank can arrange for itself. Held
+    // above a rage floor so that the ten it costs is never the ten Shield Slam needed.
+    if (m_spells.warrior.pShieldBlock && IsWearingShield(me) &&
+       !me->GetAttackers().empty() &&
+        me->GetPower(POWER_RAGE) >= PB_TANK_RAGE_BLOCK &&
+        CanTryToCastSpell(me, m_spells.warrior.pShieldBlock))
+    {
+        DoCastSpell(me, m_spells.warrior.pShieldBlock);
+    }
+
+    // Spend the surplus. These land on the next swing instead of costing a cast, so the only
+    // thing they compete for is rage, and rage a tank is sitting on is threat it has decided not
+    // to make. The floor is set high enough that what is spent here is genuinely spare. The test
+    // for this used to be inverted, dumping only below thirty rage and pooling in silence above
+    // it, so a tank being hit hard enough to be flush was also the one doing least with it.
+    if (me->GetPower(POWER_RAGE) >= PB_TANK_RAGE_DUMP)
+    {
+        if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
+            CanTryToCastSpell(pVictim, m_spells.warrior.pCleave))
+        {
+            DoCastSpell(pVictim, m_spells.warrior.pCleave);
+        }
+        else if (m_spells.warrior.pHeroicStrike &&
+            CanTryToCastSpell(pVictim, m_spells.warrior.pHeroicStrike))
+        {
+            DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike);
+        }
+    }
+
+    // The global cooldown, best threat per rage first. Shield Slam leads it and works in any
+    // stance despite reading like a Defensive ability; Revenge is nearly free and its own
+    // cooldown means it is never what gets crowded out.
+    if (m_spells.warrior.pShieldSlam && IsWearingShield(me) &&
+        CanTryToCastSpell(pVictim, m_spells.warrior.pShieldSlam))
+    {
+        if (DoCastSpell(pVictim, m_spells.warrior.pShieldSlam) == SPELL_CAST_OK)
+            return;
+    }
+
+    if (m_spells.warrior.pRevenge &&
+        CanTryToCastSpell(pVictim, m_spells.warrior.pRevenge))
+    {
+        if (DoCastSpell(pVictim, m_spells.warrior.pRevenge) == SPELL_CAST_OK)
+            return;
+    }
+
+    // Both shouts sit above Sunder Armor rather than below it, and only because Sunder has no
+    // cooldown and never fails. Anything placed under it is unreachable, which is what happened
+    // to Demoralizing Shout in the shared list. Each is held behind its own aura, so being
+    // higher costs a cast only on the tick the effect is actually missing.
+    if (m_spells.warrior.pDemoralizingShout &&
+       !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
+        CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
+    {
+        if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
+            return;
+    }
+
+    if (m_spells.warrior.pBattleShout &&
+       !me->HasAura(m_spells.warrior.pBattleShout->Id) &&
+        CanTryToCastSpell(me, m_spells.warrior.pBattleShout))
+    {
+        if (DoCastSpell(me, m_spells.warrior.pBattleShout) == SPELL_CAST_OK)
+            return;
+    }
+
+    // The filler, and the floor of the list: no cooldown, so it runs whenever the two above are
+    // spent. Re-applying it at five stacks still makes its full threat, and it leaves the armor
+    // debuff that the rest of the raid's damage is scaling off.
+    if (m_spells.warrior.pSunderArmor &&
+        CanTryToCastSpell(pVictim, m_spells.warrior.pSunderArmor))
+    {
+        if (DoCastSpell(pVictim, m_spells.warrior.pSunderArmor) == SPELL_CAST_OK)
+            return;
+    }
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE &&
+       !me->CanReachWithMeleeAutoAttack(pVictim))
+        BeginChasing(pVictim);
+}
+
 void PartyBotAI::UpdateInCombatAI_Warrior()
 {
     if (Unit* pVictim = me->GetVictim())
@@ -3010,6 +3335,16 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 if (DoCastSpell(pVictim, m_spells.warrior.pShieldBash) == SPELL_CAST_OK)
                     return;
             }
+        }
+
+        // A tank wants a different list in a different order from a warrior who is there to do
+        // damage, and sharing one costs it most of what it has: the order below is priority,
+        // since the first thing that casts returns, and the shared version spends the early
+        // slots on Execute, Overpower and Rend while Sunder Armor waits behind them.
+        if (m_role == ROLE_TANK)
+        {
+            UpdateInCombatAI_WarriorTank(pVictim);
+            return;
         }
 
         if (m_spells.warrior.pExecute &&

@@ -1253,6 +1253,18 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.warrior.pSunderArmor))
                         m_spells.warrior.pSunderArmor = pSpellEntry;
                 }
+                // Exact names for both. "Revenge" would otherwise take the stun that it procs,
+                // and a tank that thinks its taunt is a stun has no way to take a boss back.
+                else if (pSpellEntry->SpellName[0] == "Revenge")
+                {
+                    if (IsHigherRankSpell(m_spells.warrior.pRevenge))
+                        m_spells.warrior.pRevenge = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0] == "Taunt")
+                {
+                    if (IsHigherRankSpell(m_spells.warrior.pTaunt))
+                        m_spells.warrior.pTaunt = pSpellEntry;
+                }
                 else if (pSpellEntry->SpellName[0].find("Concussion Blow") != std::string::npos)
                 {
                     if (IsHigherRankSpell(m_spells.warrior.pConcussionBlow))
@@ -1942,6 +1954,7 @@ std::vector<CombatBotBaseAI::SpellSlot> CombatBotBaseAI::GetSpellSlots() const
                      SLOT(warrior, pHamstring), SLOT(warrior, pThunderClap), SLOT(warrior, pSweepingStrikes),
                      SLOT(warrior, pLastStand), SLOT(warrior, pShieldBlock), SLOT(warrior, pShieldWall),
                      SLOT(warrior, pShieldBash), SLOT(warrior, pShieldSlam), SLOT(warrior, pSunderArmor),
+                     SLOT(warrior, pRevenge), SLOT(warrior, pTaunt),
                      SLOT(warrior, pConcussionBlow), SLOT(warrior, pPiercingHowl) };
         case CLASS_ROGUE:
             return { SLOT(rogue, pSliceAndDice), SLOT(rogue, pSinisterStrike), SLOT(rogue, pAdrenalineRush),

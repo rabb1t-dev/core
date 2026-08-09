@@ -784,6 +784,66 @@ Supporting work:
 
 No boss knowledge required. These fix behavior that is wrong in every raid encounter.
 
+- **Tank threat generation.** [done] Every ceiling below is a share of the tank's threat, so the
+  tank's own output sets what the whole raid is allowed to do, and it was the thing most wrong.
+  A bot tank finished the eight second hold on 251 threat at full raid size, which is not a
+  throttle problem but an empty rotation, and the numbers underneath it were all consequences.
+
+  Four separate faults, each worth stating because each looks like a working rotation from
+  outside. **Taunt and Revenge were absent from the warrior spell data** — not unused, never
+  populated. Taunt turned out to be covered anyway: `UpdateInCombatAI` taunts for every tank
+  class off `m_spellListTaunt`, which is built from anything carrying `SPELL_EFFECT_ATTACK_ME`
+  or `SPELL_AURA_MOD_TAUNT` and so catches a druid's Growl as readily as a warrior's Taunt. An
+  earlier revision of this document claimed nothing in the codebase could taunt, which was
+  wrong. **The tank shared the damage warrior's list**, which spends
+  its early slots on Execute, Overpower and Rend and reaches Sunder Armor eleventh. **Heroic
+  Strike's test was inverted**, dumping rage only below thirty and pooling in silence above it,
+  so the tank being hit hardest did least with what that earned. And **Sunder Armor has no
+  cooldown and never fails**, which makes it a floor: Demoralizing Shout sat under it and was
+  unreachable.
+
+  `UpdateInCombatAI_WarriorTank` splits the tank off and orders it by what the spell data says
+  rather than by habit. Defensive Stance first, since Taunt, Revenge and Shield Block are all
+  stance locked and the stance is worth a third again on every point of threat made in it. Then
+  the abilities carrying `StartRecoveryTime` 0 — Bloodrage, Shield Block, Heroic Strike and
+  Cleave — none of which returns, because they are free of the global cooldown and using one
+  *instead of* a cooldown ability rather than *as well as* it gives up a whole cast of threat.
+  Then the cooldown itself, best threat per rage first: Shield Slam, Revenge, the two shouts held
+  behind their own auras, and Sunder Armor as the floor.
+
+  Taunt stays in the shared path rather than being copied here, and that path gained the two
+  things it was missing. It fired whenever the mob was simply looking at someone else, which
+  taunts it off the *other tank* as readily as off a mage and leaves two tanks trading it all
+  encounter with no taunt left when a damage dealer genuinely needs saving; `ShouldTauntTarget`
+  now requires the holder to be a group member who is not another tank. And it returned on a
+  successful cast, giving up the tank's cast for that tick on top of the target it had just
+  lost, which is the worst possible moment to do nothing — Taunt is off the global cooldown, so
+  it now breaks out of the loop and carries on into the rotation.
+
+  Thunder Clap and Mocking Blow are deliberately not in it. Both carry stance mask 65536, which
+  is Battle Stance, so a Defensive tank calling them was calling something that always failed.
+
+  At twenty-five bots this moved every damage dealer's peak from 102-124 percent of the tank's
+  threat, with two mages taking the boss outright, to 16-86 percent with nobody above it. The
+  throttle is no longer what holds the raid together; the tank is simply ahead, and the throttle
+  is the safety net it was supposed to be.
+
+- **A bot below sixty barely knew its class.** [done] Found while checking that the tank above
+  degrades properly at Wailing Caverns levels, and much larger than the thing it was found
+  under. Premade specs exist at 60 and as twink builds at 19, 29, 39 and 49, and applying one
+  was the *only* thing that taught a bot spells. A level 20 tank was handed the level 19 arms
+  twink and ended with two of its thirty-six ability slots filled: no Defensive Stance, no Taunt,
+  no Sunder Armor, none of them talents and all of them things a real level 20 warrior has.
+
+  `LearnClassSpellsForLevel` fills the gap when the bot's level does not match the level its spec
+  was written for. It is `.learn all_myspells` with the one thing that command lacks, a level
+  test, since unfiltered it would hand a level 20 warrior rank 6 Revenge. Level 20 now fills 19
+  slots and level 45 fills 29, at the ranks each level would actually hold.
+
+  Still open: there is no low-level *tank* spec. A level 45 bot asked to tank gets a tank role
+  and now a correct spellbook, but its talents come from an arms twink build. Authoring tank
+  specs at 19, 29, 39 and 49 is data work rather than code.
+
 - **Threat throttling.** [done] `PartyBotAI::IsOverThreatCeiling` gates every harmful cast in
   `CanTryToCastSpell`, comparing the bot's threat against `getCurrentVictim()->getThreat()` and
   refusing while the ratio is within a role's headroom of the flip. Healing is deliberately exempt:
@@ -831,14 +891,63 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
   Releasing onto a tank that low is worse for damage as well as for safety, because every ceiling is
   a share of it and the whole raid stalls at once waiting for it to catch up.
 
-  Three limits worth knowing. Melee auto-attack is not gated, because only spellcasts pass through
-  `CanTryToCastSpell`; during the ramp this is visible as damage dealers accruing a couple of hundred
-  threat while holding, against the tank's thousand. The ceiling is a flat constant rather than an
-  estimate of the threat about to be generated, which is why it has to fit the worst case rather than
-  the case in hand — a real estimate is what would let the headroom shrink further. And the ramp is a
-  fixed eight seconds rather than a wait for the tank to have enough, which is the honest version of
-  the same idea and needs a definition of enough; the adaptive version would release early on a clean
-  pull and late on a messy one, and is the obvious next improvement if eight seconds ever grates.
+  **Being over the ceiling is no longer a reason to stop, only a reason to cast something smaller.**
+  `PickRankForThreat` answers "which rank" where the ceiling used to answer "whether", walking down
+  the chain from `GetPrevSpellInChain` and taking the highest rank whose threat fits the room left.
+  The estimate is exact enough to do this because threat for a damage spell *is* the damage:
+  `SpellEffects` hands the number it just dealt straight to `AddThreat`, so
+  `CalculateSpellEffectValue` through `SpellDamageBonusDone` answers the question before the cast.
+  Only direct damage is downranked. A lower rank of a damage over time effect would hold the target's
+  slot with the weak version for the full duration, and melee ranks barely differ.
+
+  What a cast may spend is half the distance still left to the flip, not the whole of it, because a
+  cast is never the only thing in flight: earlier damage over time keeps ticking and two more casts
+  may land before the next look at the list. Half is what leaves room for those without leaving the
+  caster idle. This is the same technique real casters use and it applies mid-fight as well as in the
+  opening, which is where nearly all of its value is — the opening has very little room to spend, and
+  a warlock beating the hold gets around fifty threat a cast where its full rank is worth eleven
+  hundred.
+
+  It changes the shape of the threat list, and the change is intended. Damage dealers used to stop
+  dead below the tank; now they close on the flip and sit slightly above it, peaking at 102 to 115
+  percent of the tank's threat at twenty-five bots. They cannot run away from there, since every cast
+  is sized against a gap that shrinks as they close it, and the tank held the target for the whole of
+  that fight.
+
+  **Melee auto-attack is gated too, and it was the whole of what was left at full raid size.**
+  Only spellcasts pass through `CanTryToCastSpell`, so the hold was silence for a caster and
+  nothing whatever for a rogue, which finished the eight seconds level with the tank having cast
+  nothing. `HoldOpeningSwings` pushes the swing timer out to the end of the hold instead of
+  stopping the attack, so the bot goes on attacking, chasing and running its rotation, and
+  everything that asks what it is fighting still gets the same answer — only the swings land
+  later. It runs ahead of every early return in `UpdateInCombatAI`, since a bot that took a
+  different branch this tick is still swinging. Ranged and off-hand timers go with it, because a
+  hunter's auto shot bypasses the cast gate for the same reason.
+
+  **All of the above is now measured against a deployed binary.** Everything before it was not:
+  the service runs an installed copy and the loop was only building, so several hours of numbers
+  described code that was never running. Redone at twenty-five bots, the tank ends the hold on
+  2069 threat against a next best of 781 and never loses the target, with the best damage dealer
+  at 86 percent. At thirty-nine, three consecutive runs — two of them back to back, which is the
+  condition the one failure appeared under — never lose the target either, peaking at 63 percent
+  with nobody within a tenth of the tank. Rogues, in melee reach for the whole fight, peak in the
+  twenties and thirties where they used to finish the opening level with the tank.
+
+  The single failure worth recording ran eight mages to 100-117 percent and handed the boss round
+  three of them for 28 seconds. It has not reproduced, and it began by reporting a punching bag
+  left standing by the previous run, so bots were already engaged on a second mob when the
+  measured fight started. Treat a leftover target in the output as invalidating the run.
+
+  One limit remains: the ramp is a fixed eight seconds rather than a wait for the tank to have
+  enough. Downranking takes most of the sting out of that, since the hold is quiet rather than
+  silent, but an adaptive release would still end it early on a clean pull and late on a messy
+  one.
+
+  **`.harness threat` reports `melee=` and `dist=` per hostile**, which is what settled the
+  question above. The 110 versus 130 percent rule follows position, not class:
+  `ThreatManager.cpp` line 351 asks `CanReachWithMeleeAutoAttack` about the pretender, so a
+  caster that has drifted into reach is judged at 110 like anything else and a percentage that
+  looks safe against 130 is not. Guessing the threshold from the class hid exactly that case.
 - **Tick responsiveness.** Either lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so
   a hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
   39 bots polling at high frequency is the main CPU risk in this project.

@@ -51,7 +51,17 @@ public:
     bool AddToPlayerGroup();
 
     bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const final;
+    // Deliberately hides the non-virtual base version rather than overriding it, so that every
+    // cast the party bot rotations make goes through the rank choice below while the casts the
+    // shared bot code makes for itself, which are buffs and heals, carry on unchanged.
+    SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     bool IsOverThreatCeiling(Unit const* pTarget) const;
+    bool IsInOpeningRamp(Unit const* pTarget) const;
+    void HoldOpeningSwings(Unit const* pTarget);
+    float GetThreatPullRatio(Unit const* pTarget) const;
+    float GetThreatHeadroom(Unit const* pTarget) const;
+    float EstimateSpellThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+    SpellEntry const* PickRankForThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     Player* GetPartyLeader() const;
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
@@ -93,6 +103,8 @@ public:
     void UpdateInCombatAI_Warlock() final;
     void UpdateOutOfCombatAI_Warlock() final;
     void UpdateInCombatAI_Warrior() final;
+    void UpdateInCombatAI_WarriorTank(Unit* pVictim);
+    bool ShouldTauntTarget(Unit const* pVictim) const;
     void UpdateOutOfCombatAI_Warrior() final;
     void UpdateInCombatAI_Rogue() final;
     void UpdateOutOfCombatAI_Rogue() final;
