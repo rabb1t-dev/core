@@ -41,7 +41,7 @@ loop.
 | `c31bdee0c` | `ItemEvaluator`: gear chosen by what the spec wants rather than by what fits |
 | `a31b06272` | `.harness itemstats` and `.harness spellstats`, the engine read back from outside the process |
 | `d73c9647c` | The engine checked against a published ranker, and the bot checked against the engine |
-| uncommitted | Phase 1 closed: loadout scoring with stat caps and set bonuses, bags walked, the roster's spec reaching the weight lookup, and `.raidguild spec` to author it |
+| `62a821ba7` | Phase 1 closed: loadout scoring with stat caps and set bonuses, bags walked, the roster's spec reaching the weight lookup, and `.raidguild spec` to author it |
 
 ### Next
 
