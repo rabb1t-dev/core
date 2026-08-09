@@ -30,12 +30,17 @@
 #include "PlayerBotAI.h"
 #include "CombatBotBaseAI.h"
 #include "Totem.h"
+#include "Bag.h"
 #include "MasterPlayer.h"
 #include "Mail/Mail.h"
 #include "ItemEvaluator.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
+
+#include <map>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -679,6 +684,16 @@ bool ChatHandler::HandleHarnessItemsCommand(char* args)
         if (pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             bag++;
 
+    for (uint32 container = INVENTORY_SLOT_BAG_START; container < INVENTORY_SLOT_BAG_END; ++container)
+    {
+        Item* pContainer = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, container);
+        if (!pContainer || !pContainer->IsBag())
+            continue;
+        for (uint32 i = 0; i < ((Bag*)pContainer)->GetBagSize(); ++i)
+            if (pTarget->GetItemByPos(uint8(container), uint8(i)))
+                bag++;
+    }
+
     // Mail lives on the MasterPlayer rather than the Player.
     MasterPlayer* pMaster = pTarget->GetSession()->GetMasterPlayer();
 
@@ -700,6 +715,24 @@ bool ChatHandler::HandleHarnessItemsCommand(char* args)
     {
         if (Item* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             PSendSysMessage("bag slot=%u entry=%u count=%u", i, pItem->GetEntry(), pItem->GetCount());
+    }
+
+    // Inside the equipped bags as well, reported as `bag` like the backpack because to every
+    // caller it is the same question: does the character still have the item. Leaving these
+    // out would have gear that moved into a bag read as gear that was destroyed.
+    for (uint32 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Item* pContainer = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
+        if (!pContainer || !pContainer->IsBag())
+            continue;
+
+        PSendSysMessage("container slot=%u entry=%u size=%u", bag, pContainer->GetEntry(),
+            ((Bag*)pContainer)->GetBagSize());
+
+        for (uint32 i = 0; i < ((Bag*)pContainer)->GetBagSize(); ++i)
+            if (Item* pItem = pTarget->GetItemByPos(uint8(bag), uint8(i)))
+                PSendSysMessage("bag slot=%u:%u entry=%u count=%u", bag, i,
+                    pItem->GetEntry(), pItem->GetCount());
     }
 
     if (pMaster)
@@ -739,6 +772,134 @@ bool ChatHandler::HandleHarnessEquipNewCommand(char* args)
     pAI->EquipOrUseNewItem();
 
     PSendSysMessage("equipnew character=%s", pTarget->GetName());
+    return true;
+}
+
+// .harness wear <character> <entry>
+// Creates an item and equips it, rather than leaving it in the bags for the bot to consider.
+//
+// `additem` cannot do this. It stores, and what happens next is the AI's decision, which is
+// fine when the decision is what is being tested and useless when it is the starting state.
+// Bags are the case that forced the command: a bag's equip slots are the four container slots,
+// nothing in the bot AI ever equips one, and without an equipped bag there is nowhere to put an
+// item that tests whether the evaluator looks inside bags at all.
+bool ChatHandler::HandleHarnessWearCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Harness: expected an item entry.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(entry);
+    if (!pProto)
+    {
+        PSendSysMessage("Harness: item entry %u does not exist.", entry);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint16 dest = 0;
+    InventoryResult const result = pTarget->CanEquipNewItem(NULL_SLOT, dest, entry, false);
+    if (result != EQUIP_ERR_OK)
+    {
+        PSendSysMessage("Harness: '%s' cannot equip %u (%u).", pTarget->GetName(), entry,
+            uint32(result));
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Item* pItem = pTarget->EquipNewItem(dest, entry, true);
+    if (!pItem)
+    {
+        PSendSysMessage("Harness: equipping %u on '%s' failed.", entry, pTarget->GetName());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    pTarget->AutoUnequipOffhandIfNeed();
+
+    PSendSysMessage("wear character=%s entry=%u slot=%u", pTarget->GetName(), entry,
+        uint32(dest & 255));
+    return true;
+}
+
+// .harness stow <character> <entry> <container>
+// Creates an item inside a named equipped bag rather than wherever there happens to be room.
+//
+// `additem` fills the backpack first, so with anything less than sixteen items already carried
+// it can never put one in a bag. Naming the container is the only way to set up "this item is
+// in a bag" without contriving a full backpack first.
+bool ChatHandler::HandleHarnessStowCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    uint32 container = 0;
+    if (!ExtractUInt32(&args, entry) || !ExtractUInt32(&args, container))
+    {
+        SendSysMessage("Harness: expected an item entry and a container slot (19 to 22).");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (container < INVENTORY_SLOT_BAG_START || container >= INVENTORY_SLOT_BAG_END)
+    {
+        PSendSysMessage("Harness: %u is not a container slot; expected %u to %u.", container,
+            uint32(INVENTORY_SLOT_BAG_START), uint32(INVENTORY_SLOT_BAG_END) - 1);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Item* pContainer = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, uint8(container));
+    if (!pContainer || !pContainer->IsBag())
+    {
+        PSendSysMessage("Harness: '%s' has no bag in slot %u.", pTarget->GetName(), container);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (!sObjectMgr.GetItemPrototype(entry))
+    {
+        PSendSysMessage("Harness: item entry %u does not exist.", entry);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ItemPosCountVec dest;
+    InventoryResult const result = pTarget->CanStoreNewItem(uint8(container), NULL_SLOT, dest, entry, 1);
+    if (result != EQUIP_ERR_OK)
+    {
+        PSendSysMessage("Harness: cannot store %u in slot %u (%u).", entry, container,
+            uint32(result));
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Item* pItem = pTarget->StoreNewItem(dest, entry, true);
+    if (!pItem)
+    {
+        PSendSysMessage("Harness: storing %u in slot %u failed.", entry, container);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PSendSysMessage("stow character=%s entry=%u container=%u slot=%u", pTarget->GetName(), entry,
+        container, uint32(pItem->GetSlot()));
     return true;
 }
 
@@ -841,6 +1002,135 @@ bool ChatHandler::HandleHarnessSpellStatsCommand(char* args)
         s.block, s.block_value, s.ranged_ap,
         s.spdmg, s.sppen, s.sphit, s.spcrit, s.spheal, s.mp5,
         s.fire_res, s.nat_res, s.frost_res);
+    return true;
+}
+
+// .harness loadout <class> <spec> <entry> [entry ...]
+// What a whole set of gear is worth to one spec, rather than what one piece is worth.
+//
+// The two things Phase 1 finished last cannot be seen from a single item. A stat cap is a
+// property of the total: whether the tenth point of hit is worth anything depends on the other
+// nine. A set bonus is a property of the combination: three pieces of a tier set are worth more
+// than three pieces. This is the only command that can observe either, and it works on
+// prototypes so a test can assert the arithmetic without dressing a bot in raid gear first.
+//
+// Nothing here checks that the loadout is wearable. Naming the same item eight times is a
+// legitimate way to ask what eight of a stat is worth, which is exactly how the cap is tested.
+bool ChatHandler::HandleHarnessLoadoutCommand(char* args)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_HARNESS_ENABLE))
+    {
+        SendSysMessage("Harness: disabled. Set Harness.Enable = 1 to use this command.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 classId = 0;
+    if (!ExtractUInt32(&args, classId))
+    {
+        SendSysMessage("Harness: expected a class id, a spec, and at least one item entry.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    char* specArg = ExtractLiteralArg(&args);
+    if (!specArg)
+    {
+        SendSysMessage("Harness: expected a spec name.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+    std::string const spec = specArg;
+
+    StatWeights const* pWeights = sItemEvaluator.GetWeights(uint8(classId), spec);
+    if (!pWeights)
+    {
+        PSendSysMessage("Harness: no stat weights for class %u spec '%s'.", classId, spec.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::vector<ItemPrototype const*> worn;
+    uint32 entry = 0;
+    while (ExtractUInt32(&args, entry))
+    {
+        ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(entry);
+        if (!pProto)
+        {
+            PSendSysMessage("Harness: item entry %u does not exist.", entry);
+            SetSentErrorMessage(true);
+            return false;
+        }
+        worn.push_back(pProto);
+    }
+
+    if (worn.empty())
+    {
+        SendSysMessage("Harness: expected at least one item entry.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    ResolvedStats const total = sItemEvaluator.ResolveLoadout(worn);
+
+    // Both scores, because the difference between them is the whole point: `linear` is the sum
+    // the old per-item scoring would have produced and `score` is what the loadout is actually
+    // worth once caps apply. A test asserting that hit stops paying needs to see both.
+    float const linear = sItemEvaluator.Score(total, *pWeights);
+    float const score = sItemEvaluator.ScoreLoadout(total, *pWeights);
+
+    // And the sum of the pieces judged alone, which is what the difference attributable to set
+    // bonuses is measured against.
+    float pieces = 0.0f;
+    for (ItemPrototype const* pProto : worn)
+        pieces += sItemEvaluator.Score(sItemEvaluator.ResolveItem(pProto), *pWeights);
+
+    PSendSysMessage(
+        "loadout class=%u spec=%s items=%u score=%.4f linear=%.4f pieces=%.4f "
+        "hit_cap=%.2f sphit_cap=%.2f weapon_skill_cap=%.2f "
+        "armor=%d stam=%d spi=%d int=%d str=%d agi=%d "
+        "ap=%d hit=%d crit=%d weapon_skill=%d defense=%d dodge=%d parry=%d "
+        "block=%d block_value=%d ranged_ap=%d "
+        "spdmg=%d sppen=%d sphit=%d spcrit=%d spheal=%d mp5=%d "
+        "fire_res=%d nat_res=%d frost_res=%d "
+        "avg_hit=%.4f dps=%.4f speed=%.4f",
+        classId, spec.c_str(), uint32(worn.size()), score, linear, pieces,
+        pWeights->hit_cap, pWeights->sphit_cap, pWeights->weapon_skill_cap,
+        total.armor, total.stam, total.spi, total.intellect, total.str, total.agi,
+        total.ap, total.hit, total.crit, total.weapon_skill, total.defense, total.dodge, total.parry,
+        total.block, total.block_value, total.ranged_ap,
+        total.spdmg, total.sppen, total.sphit, total.spcrit, total.spheal, total.mp5,
+        total.fire_res, total.nat_res, total.frost_res,
+        total.avg_hit, total.dps, total.speed);
+
+    // Per set, so a test can tell a bonus that fired from one whose threshold was not reached,
+    // and can name the spell that carried it rather than inferring it from a stat total.
+    std::map<uint32, uint32> counts;
+    for (ItemPrototype const* pProto : worn)
+        if (pProto->ItemSet)
+            ++counts[pProto->ItemSet];
+
+    for (auto const& kv : counts)
+    {
+        ItemSetEntry const* pSet = sItemSetStore.LookupEntry(kv.first);
+        if (!pSet)
+            continue;
+
+        std::string fired;
+        for (uint32 i = 0; i < 8; ++i)
+        {
+            if (!pSet->spells[i] || pSet->items_to_triggerspell[i] > kv.second)
+                continue;
+            if (!fired.empty())
+                fired += ",";
+            fired += std::to_string(pSet->spells[i]);
+        }
+        if (fired.empty())
+            fired = "-";
+
+        PSendSysMessage("set id=%u count=%u spells=%s", kv.first, kv.second, fired.c_str());
+    }
+
     return true;
 }
 
@@ -1094,6 +1384,17 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
         if (Item const* pItem = pTarget->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
             PSendSysMessage("item entry=%u count=%u slot=%d name=%s", pItem->GetEntry(),
                 pItem->GetCount(), i, pItem->GetProto()->Name1);
+    }
+
+    // Whether the roster's authored spec reached the AI at all. It decides which stat weight
+    // row scores this member's gear and which talent build it is rebuilt from after a level
+    // match, and an empty one is invisible from outside: the evaluator falls back to another
+    // row for the class and gears the member to weights nobody asked for.
+    if (PlayerBotEntry const* pEntry = pTarget->GetSession()->GetBot())
+    {
+        if (CombatBotBaseAI const* pAI = dynamic_cast<CombatBotBaseAI const*>(pEntry->ai.get()))
+            PSendSysMessage("bot role=%u spec=%s", uint32(pAI->m_role),
+                pAI->m_specName.empty() ? "-" : pAI->m_specName.c_str());
     }
 
     Group* pGroup = pTarget->GetGroup();

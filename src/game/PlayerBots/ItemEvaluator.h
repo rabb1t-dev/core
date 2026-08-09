@@ -115,6 +115,23 @@ struct StatWeights
     float fire_res = 0.0f;
     float nat_res = 0.0f;
     float frost_res = 0.0f;
+
+    // Hard caps, in the same gear-derived units the resolver accumulates: the total past
+    // which another point is worth nothing. Zero means uncapped.
+    //
+    // Hit is capped because a miss chance cannot go below zero, and weapon skill because
+    // its miss and dodge reduction stops at the target's defense. Both caps depend on
+    // talents and racials that gear knows nothing about — a rogue with Precision needs 5%
+    // less hit from gear than one without — so the authored number is the gear total for a
+    // member already carrying that spec's talents, which is what makes it a per-spec row
+    // rather than a constant.
+    //
+    // Defense deliberately has no cap. Past crit immunity it stops being decisive but keeps
+    // giving dodge and miss, so it diminishes rather than ending, and a hard cap would
+    // model it worse than the linear weight does.
+    float hit_cap = 0.0f;
+    float sphit_cap = 0.0f;
+    float weapon_skill_cap = 0.0f;
 };
 
 class ItemEvaluator
@@ -133,7 +150,32 @@ class ItemEvaluator
         ResolvedStats ResolveSpell(uint32 spellId) const;
 
         StatWeights const* GetWeights(uint8 classId, std::string const& spec) const;
+
+        // Exact, with no fallback, so a command that has just been handed a spec name can say
+        // whether it will be scored on its own weights or on somebody else's.
+        bool HasWeights(uint8 classId, std::string const& spec) const;
+
+        // One item against one weight row, linear and uncapped. Correct for comparing two
+        // candidates for the same slot in isolation, and the form the differential test
+        // checks, but it cannot see anything that belongs to a combination.
         float Score(ResolvedStats const& stats, StatWeights const& weights) const;
+
+        // A whole worn set: the sum of its pieces plus every set bonus the combination
+        // triggers. Set bonuses are why this cannot be derived from per-item scores — an
+        // individually worse piece can be the right answer when it completes a tier set.
+        ResolvedStats ResolveLoadout(std::vector<Item*> const& worn, Player const* pPlayer = nullptr) const;
+
+        // The same for a hypothetical loadout that nobody is wearing, which is what a test
+        // asking whether the arithmetic is right needs. Prototypes carry no random-property
+        // enchantments, so unlike the overload above this sees only what the item is before
+        // it is rolled.
+        ResolvedStats ResolveLoadout(std::vector<ItemPrototype const*> const& worn,
+            Player const* pPlayer = nullptr) const;
+
+        // Score a total with the weight row's caps applied. Only meaningful on a total: a
+        // cap is a property of everything worn at once, so asking whether one item is past
+        // the hit cap has no answer.
+        float ScoreLoadout(ResolvedStats const& total, StatWeights const& weights) const;
 
         // Candidate versus what currently occupies its target slot(s). Returns how much
         // better the candidate is (positive means wear it). Handles one-hand versus
@@ -142,15 +184,22 @@ class ItemEvaluator
         float UpgradeDelta(Player* pPlayer, ItemPrototype const* pProto,
             Item const* pItem, StatWeights const& weights) const;
 
-        // Assigns the best item available into each equipment slot, from everything the
-        // character is wearing or carrying. Displaced gear goes to bags or mail through
-        // AutoUnequipItemFromSlot; nothing is destroyed.
+        // Assigns the best combination available into the equipment slots, from everything
+        // the character is wearing or carrying, bags included. Judged on the loadout score,
+        // so set bonuses and caps decide swaps that per-slot scoring would get wrong.
+        // Never settles for a loadout worse than the one already worn. Displaced gear goes
+        // to bags or mail through AutoUnequipItemFromSlot; nothing is destroyed.
         uint32 OptimizeEquipment(Player* pPlayer, StatWeights const& weights) const;
 
     private:
         void ApplySpell(ResolvedStats& stats, SpellEntry const* pSpell) const;
         void ApplyEnchantment(ResolvedStats& stats, SpellItemEnchantmentEntry const* pEnchant) const;
         void ApplyWeaponShape(ResolvedStats& stats, ItemPrototype const* pProto) const;
+
+        // What holding `count` pieces of `setId` is worth. Every set spell whose threshold
+        // the count reaches, resolved the same way an equip-trigger spell is. The player is
+        // consulted only for the profession-set skill requirement, and may be null.
+        ResolvedStats SetBonus(uint32 setId, uint32 count, Player const* pPlayer) const;
 
         // classId << 8 | hash of Spec is overkill; keyed as "classId:spec".
         std::unordered_map<std::string, StatWeights> m_weights;

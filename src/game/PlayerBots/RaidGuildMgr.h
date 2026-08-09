@@ -68,6 +68,11 @@ class RaidGuildMgr
         bool AddMember(RaidGuildMember const& member, std::string& error);
         bool RemoveMember(std::string const& name, std::string& error);
 
+        // The spec decides which stat weight row scores a member's gear and which premade
+        // talent build it is rebuilt from, so it is worth changing without taking the member
+        // off the roster and losing everything it has earned.
+        bool SetMemberSpec(std::string const& name, std::string const& spec, std::string& error);
+
         // Creates the `characters` row for a member that has none, and records the guid and
         // account it was given. Provisioning an already provisioned member is a no-op rather
         // than an error, so the command can be run over the whole roster repeatedly.

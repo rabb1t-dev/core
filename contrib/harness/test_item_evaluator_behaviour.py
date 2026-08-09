@@ -44,7 +44,9 @@ def main():
     harness = Harness.from_env()
     failures = []
 
-    problem = summon_roster(harness, MEMBERS, LEADER, BOT)
+    # The spec is named rather than left to the role's default, because the verdict below is a
+    # protection warrior's: spirit is worth nothing to it and stamina is worth a great deal.
+    problem = summon_roster(harness, MEMBERS, LEADER, BOT, role="tank", spec="protection-pve")
     if problem:
         print(f"FAIL: {problem}", file=sys.stderr)
         cleanup(harness, MEMBERS)

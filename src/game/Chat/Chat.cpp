@@ -106,9 +106,12 @@ ChatCommand * ChatHandler::getCommandTable()
         { "threat",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessThreatCommand,       "", nullptr },
         { "despawn",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessDespawnCommand,      "", nullptr },
         { "items",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessItemsCommand,        "", nullptr },
+        { "wear",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessWearCommand,         "", nullptr },
+        { "stow",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessStowCommand,         "", nullptr },
         { "equipnew",   SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessEquipNewCommand,     "", nullptr },
         { "itemstats",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessItemStatsCommand,    "", nullptr },
         { "spellstats", SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessSpellStatsCommand,   "", nullptr },
+        { "loadout",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessLoadoutCommand,      "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 
@@ -116,6 +119,7 @@ ChatCommand * ChatHandler::getCommandTable()
     {
         { "add",        SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildAddCommand,        "", nullptr },
         { "remove",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildRemoveCommand,     "", nullptr },
+        { "spec",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildSpecCommand,       "", nullptr },
         { "list",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildListCommand,       "", nullptr },
         { "provision",  SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildProvisionCommand,  "", nullptr },
         { "summon",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildSummonCommand,     "", nullptr },

@@ -184,6 +184,35 @@ bool RaidGuildMgr::AddMember(RaidGuildMember const& member, std::string& error)
     return true;
 }
 
+bool RaidGuildMgr::SetMemberSpec(std::string const& name, std::string const& spec, std::string& error)
+{
+    RaidGuildMember* pMember = FindMemberInternal(name);
+    if (!pMember)
+    {
+        error = "not on the roster";
+        return false;
+    }
+
+    std::string escapedName = name;
+    std::string escapedSpec = spec;
+    CharacterDatabase.escape_string(escapedName);
+    CharacterDatabase.escape_string(escapedSpec);
+
+    if (!CharacterDatabase.PExecute("UPDATE `raidguild_member` SET `spec` = '%s' WHERE `name` = '%s'",
+        escapedSpec.c_str(), escapedName.c_str()))
+    {
+        error = "the roster row could not be written";
+        return false;
+    }
+
+    pMember->spec = spec;
+
+    // A member already in the world keeps its old spec until it is next summoned, because
+    // gear it is already wearing was chosen under the old weights and re-optimising here would
+    // make a roster edit reshuffle a raid mid-run.
+    return true;
+}
+
 bool RaidGuildMgr::RemoveMember(std::string const& name, std::string& error)
 {
     RaidGuildMember const* pMember = FindMemberInternal(name);
@@ -398,6 +427,12 @@ bool RaidGuildMgr::SummonMember(std::string const& name, Player* pLeader, std::s
     // which talents it happens to have, which is a reasonable guess and not a decision.
     if (pMember->role != ROLE_INVALID)
         pAI->m_role = pMember->role;
+
+    // The spec decides which stat weight row scores this member's gear, and which premade
+    // talent build it is rebuilt from after a level match. Without it the evaluator falls
+    // back to some other row for the class, so a roster that names 'protection-pve' would
+    // have its tank gearing to whatever weights happened to be first.
+    pAI->m_specName = pMember->spec;
 
     if (!sPlayerBotMgr.AddBot(pMember->guid, false, pAI))
     {

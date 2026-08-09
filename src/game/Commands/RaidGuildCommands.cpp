@@ -27,6 +27,7 @@
 #include "SharedDefines.h"
 #include "Util.h"
 #include "RaidGuildMgr.h"
+#include "ItemEvaluator.h"
 
 namespace
 {
@@ -61,12 +62,36 @@ namespace
             default:             return "auto";
         }
     }
+
+    // A spec with no weight row of its own is still usable: the evaluator scores it against
+    // another row for the class. That is a reasonable default and a poor surprise, so whoever
+    // just typed the name hears about it now rather than wondering later why a member is
+    // gearing like something else.
+    void WarnAboutMissingWeights(ChatHandler* handler, uint8 classId, std::string const& spec)
+    {
+        if (spec.empty())
+        {
+            handler->SendSysMessage("RaidGuild: no spec set, so gear will be scored against the "
+                "role's default weights.");
+            return;
+        }
+
+        if (!sItemEvaluator.HasWeights(classId, spec))
+            handler->PSendSysMessage("RaidGuild: no raidguild_stat_weight row for class %u spec "
+                "'%s'; gear will be scored against another row for the class.",
+                uint32(classId), spec.c_str());
+    }
 }
 
-// .raidguild add <name> <race> <class> [gender] [role] [subgroup]
+// .raidguild add <name> <race> <class> [gender] [role] [subgroup] [spec]
 // Authors a roster row. Creates no character; that is what provision is for, and keeping
 // the two apart means a roster can be written out in full before anything touches the
 // characters table.
+//
+// Role and spec are both here and are not the same thing. The role says what the member does in
+// a raid and drives the AI's behaviour. The spec names a talent build and a stat weight row, so
+// it is what decides how this member's gear is judged: two protection warriors have one role
+// and could still be authored against different weights.
 bool ChatHandler::HandleRaidGuildAddCommand(char* args)
 {
     char* nameStr = ExtractArg(&args);
@@ -75,7 +100,7 @@ bool ChatHandler::HandleRaidGuildAddCommand(char* args)
 
     if (!nameStr || !ExtractUInt32(&args, race) || !ExtractUInt32(&args, classId))
     {
-        SendSysMessage("Syntax: .raidguild add <name> <race> <class> [gender] [role] [subgroup]");
+        SendSysMessage("Syntax: .raidguild add <name> <race> <class> [gender] [role] [subgroup] [spec]");
         SetSentErrorMessage(true);
         return false;
     }
@@ -110,6 +135,9 @@ bool ChatHandler::HandleRaidGuildAddCommand(char* args)
     ExtractUInt32(&args, subGroup);
     member.subGroup = uint8(subGroup);
 
+    if (char* specStr = ExtractLiteralArg(&args))
+        member.spec = specStr;
+
     std::string error;
     if (!sRaidGuildMgr.AddMember(member, error))
     {
@@ -118,9 +146,48 @@ bool ChatHandler::HandleRaidGuildAddCommand(char* args)
         return false;
     }
 
-    PSendSysMessage("added name=%s race=%u class=%u gender=%u role=%s subgroup=%u",
+    PSendSysMessage("added name=%s race=%u class=%u gender=%u role=%s subgroup=%u spec=%s",
         member.name.c_str(), uint32(member.race), uint32(member.classId), uint32(member.gender),
-        GetRoleName(member.role), uint32(member.subGroup));
+        GetRoleName(member.role), uint32(member.subGroup),
+        member.spec.empty() ? "-" : member.spec.c_str());
+
+    WarnAboutMissingWeights(this, member.classId, member.spec);
+    return true;
+}
+
+// .raidguild spec <name> <spec>
+// Renames the talent build and stat weight row a member is judged against, without taking it
+// off the roster: removing a member to change one string would mean re-provisioning a character
+// that has earned gear.
+bool ChatHandler::HandleRaidGuildSpecCommand(char* args)
+{
+    char* nameStr = ExtractArg(&args);
+    char* specStr = ExtractLiteralArg(&args);
+    if (!nameStr || !specStr)
+    {
+        SendSysMessage("Syntax: .raidguild spec <name> <spec>");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string name = nameStr;
+    normalizePlayerName(name);
+
+    std::string error;
+    if (!sRaidGuildMgr.SetMemberSpec(name, specStr, error))
+    {
+        PSendSysMessage("RaidGuild: cannot set the spec for '%s', %s.", name.c_str(), error.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PSendSysMessage("spec name=%s spec=%s", name.c_str(), specStr);
+
+    if (RaidGuildMember const* pMember = sRaidGuildMgr.FindMember(name))
+        WarnAboutMissingWeights(this, pMember->classId, pMember->spec);
+
+    // Deliberately not applied to a member already in the world. Its gear was chosen under the
+    // old weights, and re-optimising here would let a roster edit reshuffle a raid mid-run.
     return true;
 }
 

@@ -196,6 +196,28 @@ Brings an existing character into the world with no client attached: `logging in
 It passes an explicit AI so the entry is flagged as a custom bot, which is what stops
 `PlayerBotMgr::Update` from skipping it while random bots are disabled.
 
+### The gear commands
+
+Seven commands exist only to make `ItemEvaluator` observable, since gear decisions otherwise happen
+inside a trade window that cannot be conducted over SOAP.
+
+| Command | What it does |
+| --- | --- |
+| `.harness items <character>` | A summary of `character equipped bag mailed`, then one `equipped slot=` line each, one `bag slot=` line per backpack slot, a `container slot=` line and `bag slot=<bag>:<index>` lines per equipped bag, and one `mailed entry=` line per item in the mail |
+| `.harness equipnew <character>` | Runs the equip pass directly, which is otherwise reachable only by completing a trade |
+| `.harness itemstats <entry>` | The resolved stat vector for an item prototype, including its equip-trigger spells |
+| `.harness spellstats <spell>` | The same for a bare spell, which is how a disagreement gets attributed to a spell rather than an item |
+| `.harness loadout <class> <spec> <entry>...` | Scores a hypothetical set of gear nobody is wearing, linear and capped, listing the set bonuses it triggered |
+| `.harness wear <character> <entry>` | Equips a new item into its natural slot, which is the only way to give a bot a bag |
+| `.harness stow <character> <entry> <container>` | Puts a new item *inside* an equipped bag, named by its container slot 19 to 22, which `.additem` cannot do because it fills the backpack first |
+
+The bag and mail lines are not cosmetic. Every gear test distinguishes an item displaced from one
+destroyed by asking where it went, and displaced gear goes to a bag or, when the bags are full, to
+the mail — so a report that stopped at the backpack would read "moved" as "gone".
+
+Naming the same item ten times in `loadout` is how twenty points of hit gets tested, which is the
+only way to ask a question about a cap without assembling the gear to reach it.
+
 ## The Python client
 
 `vmangos_harness.py`. `Harness.from_env()` reads the credentials and URL described above.
@@ -233,6 +255,8 @@ Run from the repo root on the server host. Times are for the dev box.
 | `test_bot_gear_preservation.py` | Handing a bot an upgrade does not destroy what it was wearing | |
 | `test_item_evaluator.py` | The engine reads all 2475 items and 498 equip spells the way Classic Gear Ranker does | ~2 min. Writes every disagreement to `/tmp/item_evaluator_failures.txt` |
 | `test_item_evaluator_behaviour.py` | A bot wears the better of two necks, declines the worse, and keeps both | |
+| `test_item_evaluator_loadout.py` | Hit and weapon skill pay nothing past their caps, and a set bonus lands at its threshold and not before | Scores hypothetical gear, so it summons nobody |
+| `test_item_evaluator_sets.py` | A bot assembles a six-piece set, keeps it against a small upgrade, breaks it for a large one, and equips out of a bag | |
 | `sweep_corpse_runs.py` | Cheap survey: could a ghost *in principle* walk each route | Superseded by the live suite; a route existing and a bot walking it are different claims |
 | `audit_premade_specs.py` | Reports what each level 60 premade build actually is | Not a pass/fail test |
 | `talent_dbc.py` | Reads `Talent.dbc` so builds can be authored against real data | Library and CLI |

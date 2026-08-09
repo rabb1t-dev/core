@@ -7,11 +7,20 @@ All claims below were verified against the code. Line numbers are accurate as of
 
 ## Progress
 
-Maintained as work lands so completion state does not have to be re-derived by reading the
-code. See the companion document's Progress section for the combat side, the shared build and
-test loop, and findings that apply to both.
+Status key: **not started** / **in progress** / **done**. Phase headings carry the marker. This
+section carries the commit history, the ordered tasking, and the findings that changed the plan.
+See the companion document's Progress section for the combat side and the shared build and test
+loop.
 
-Status key: **not started** / **in progress** / **done**.
+### Phase status
+
+| Phase | Status | What is left |
+| --- | --- | --- |
+| 0 - Roster, persistence, instance entry | **done** | Spell ranks are not matched to level, and a member dropped below its authored level does not re-spend its refunded talents |
+| 1 - Item evaluation engine | **done** | Nothing. Caps and set bonuses are scored on the loadout, bags are walked, and the roster's spec reaches the lookup. Talent-granted hit is not yet subtracted from the caps, which leaves them loose in the safe direction |
+| 2 - Loot distribution and award safety | **not started** | All of it. The safety rules first, then the four loot defects that destroy or strand items |
+| 3 - Raid readiness | **in progress** | Talent specs are done at every level; consumables, resistance sets, repair, world buffs, composition rules and `.raidguild report` are not started |
+| 4 - Bridge to encounter awareness | **not started** | Gated on wipe recovery, which lives in the companion document |
 
 ### Landed
 
@@ -20,38 +29,38 @@ Status key: **not started** / **in progress** / **done**.
 | `a19dc86dc` | Party bots can fill a raid group instead of silently capping at five |
 | `e04904be4` | Test harness, which is how roster work gets verified without a client |
 | `09bae86c1` | The roster table, `RaidGuildMgr`, and `.raidguild` provisioning |
-| `547a3416c` | Talent specs are asked for by name instead of drawn at random, plus the six level 60 builds that did not exist |
+| `0afbb14e3` | Summoning a roster into a raid that keeps what it earns |
+| `181386612` | The guild, filled without summoning anyone |
+| `b34c72bd6` | Bind reconciliation, so a raid enters one copy of a map rather than two |
+| `7e160ca74` | Attunement mirrored from the leader by reading the doorways |
+| `547a3416c` | Talent specs asked for by name instead of drawn at random, plus the six level 60 builds that did not exist |
 | `b2d572839` | Those six builds rebuilt on the published vanilla specs, and a template audit that applies a spec rather than counting it |
-| `8819f45db` | Specs are spent in a recorded order, so one build fits every level instead of only the one it was authored for |
+| `266f26265` | The four bot AI paths that destroyed gear to make room |
+| `6a46f7e1b` | Gear preservation tests, consumables kept rather than drunk, and roster level matching |
+| `8819f45db` | Specs spent in a recorded order, so one build fits every level instead of only the one it was authored for |
+| `c31bdee0c` | `ItemEvaluator`: gear chosen by what the spec wants rather than by what fits |
+| `a31b06272` | `.harness itemstats` and `.harness spellstats`, the engine read back from outside the process |
+| `d73c9647c` | The engine checked against a published ranker, and the bot checked against the engine |
+| uncommitted | Phase 1 closed: loadout scoring with stat caps and set bonuses, bags walked, the roster's spec reaching the weight lookup, and `.raidguild spec` to author it |
 
-`a19dc86dc` closes the "Joining the group" section of Phase 0 below in full: the group is
-promoted to a raid when it fills, `AddMember`'s return value is checked, a bot that fails to
-join is removed rather than left running its AI ungrouped, `PartyBotAddRequirementCheck`
-measures against `MAX_RAID_SIZE`, and the eight `me->GetGroup()` call sites that iterated
-without a null check are guarded. Verified end to end by `contrib/harness/test_raid_group.py`,
-which builds a 40-member raid across 8 subgroups and asserts the 41st is refused cleanly.
+### Next
 
-Two details from that section are **not** yet addressed, because they only bite once a real
-roster exists: adding members to a *defined* subgroup rather than letting `_addMember` pick
-the first free one, and setting the loot method and threshold explicitly instead of inheriting
-the `GROUP_LOOT`-with-uncommon-threshold default that `Group::Create` hardcodes. Both belong
-with roster provisioning.
+In order, because each depends on the one before it.
 
-The concurrent-creation race is also still open. It is currently avoided only by the harness
-adding bots one at a time with a gap between them; roster spawning must create the group once,
-up front.
-
-`547a3416c` makes the roster's `spec` column mean something. A bot takes a spec by name through
-`CombatBotBaseAI::m_specName`, or by hand with `.partybot add mage fire-pve`; selection is
-otherwise deterministic rather than random; and six missing level 60 builds are seeded. Verified
-by `contrib/harness/test_premade_specs.py`. Provisioning still has to set `m_specName` from the
-roster row — the column is loaded and written but nothing applies it yet — and levels other than
-60 remain unsolved, which is written up under Phase 3.
-
-`b2d572839` replaces those six builds with the ones the surviving 1.12 guides agree on, because the
-first set was written from recall and only checked for legality, which four bad builds passed. It
-also adds `contrib/harness/audit_premade_specs.py`, which applies every level 60 template to a
-character and reads the build back; all twenty it can reach spend 51 of 51 points on legal tiers.
+1. **Re-spend talents after level matching.** `MatchMemberLevel` writes the level before the
+   session loads, and `LoadFromDB` then calls `InitTalentForLevel`, which refunds anything the new
+   level cannot afford. Nothing re-applies the spec, so a member dropped below its authored level
+   arrives with free points. The ordered spend list this needed now exists, and so does the spec
+   name on the AI, so the work is to apply the first N rows of the member's spec after the level
+   write.
+2. **Match spell ranks to level**, so a member dropped to 25 is not casting rank 11 Frostbolt.
+3. **Subtract talent hit from the caps.** The cap columns hold the gear total at which a spec is
+   capped, and the authored numbers ignore the hit talents grant, so a rogue with Precision is
+   credited five points of hit it does not need. Loose in the safe direction — the error is that
+   some hit stays overvalued, which is the behaviour the caps replaced — but closing it means
+   deriving a per-spec figure from the authored talent build and keeping the two in step.
+4. **Phase 2**, beginning with the safety rules and then the four loot defects, since bots cannot be given
+   real loot until an award cannot strand or destroy it.
 
 ### Findings that changed the plan
 
@@ -121,44 +130,97 @@ character and reads the build back; all twenty it can reach spend 51 of 51 point
   that eleven shipped templates under-spend and that `ds-ruin-pve` is illegal; applying each one
   to a character shows all of them at 51 of 51 and legal. `contrib/harness/audit_premade_specs.py`
   is the trustworthy form. Never report a talent count that has not been applied to a character.
+- **A pass that equips whatever fits gives an order-dependent answer, and a test that hands it one
+  item cannot see that.** The old pass walked the bags and equipped everything it could, so which
+  of two usable items ended up worn was decided by which it looked at last. The discriminating test
+  is handing over the same pair in both orders and demanding the same verdict, in a slot the
+  character has exactly one of. A ring proves nothing, because two finger slots let a bot wear the
+  good one and the bad one at once.
+- **An external stat sheet disagrees with the server, and the server wins.** The differential
+  against Classic Gear Ranker covers 2475 items and 498 equip spells and found three real
+  resolution bugs in the engine, but most of the residual disagreement is the sheet's: it omits
+  shield base block from all 76 shields, bakes the orc Axe Specialization racial into all 57 axe
+  rows because it was built for an orc warrior, and has no row for 30 of the equip effects the
+  engine resolves. Every divergence is attributed to a named cause and still fails if the
+  arithmetic does not come out, which is what keeps the fixture from degrading into a blanket
+  exemption.
+- **Gear that raises several weapon skills is worth the largest, not their sum.** A character
+  swings one weapon, so gloves granting +7 to axes, daggers and swords are worth 7. The sheet adds
+  the three together, and the same trap applies to any future stat that appears once per skill
+  line.
+- **Stat caps and set bonuses cannot be expressed per item, so finishing them replaced how gear is
+  chosen rather than how it is scored.** Whether the tenth point of hit is worth anything depends
+  on the other nine, and three pieces of a set are worth more than three pieces. Neither statement
+  can be made about one item, so a pass that picked the best candidate per slot could not reach
+  either conclusion no matter how the weights were tuned. Selection now maximises the score of the
+  whole loadout.
+- **The pass is monotone because one of its starting points is the gear already worn.** Improvement
+  is a hill climb, ties never displace the incumbent, and the best finish across all starting points
+  wins, so the score a member ends a pass with is never lower than the one it started with. An
+  8/8 tier set survives not because sets are protected but because every single-piece swap out of
+  one scores lower.
+- **Improving one slot at a time cannot assemble a set from scratch**, since each piece may be a
+  downgrade until the bonus lands. That is why there is a starting point per set the member holds
+  more than one piece of, with those pieces forced in. Keeping a set needs no such help; only
+  building one does.
+- **The roster's `spec` column could not be set by any command.** `.raidguild add` took a role and
+  never a spec, so the column that decides which weights judge a member's gear was authorable only
+  by direct SQL — and the harness fixture's `spec` argument was being read as the role, which is why
+  nothing had noticed. Fixed by a trailing argument on `add` and a `.raidguild spec` setter, both of
+  which say so when the name has no weight row.
+- **`CanEquipItem` refuses an off-hand while a two-hander is held, which read literally makes a
+  two-hander a one-way door.** The answer is correct about right now and wrong as a question about
+  what the member could wear, so a pass that trusted it would never trade a two-hander for a weapon
+  and shield. Both hands are therefore decided together, and that one error is accepted for the
+  off-hand slot only.
+- **The fallback weight row was whichever the hash table happened to yield first.** Two members of
+  the same class with an unauthored spec could be judged by different rows, and the same member by a
+  different row after a restart. Lowest spec name now wins, and the miss is logged.
+- **Once scoring exists, a test that hands a bot an item can no longer assume it is worn.** The
+  gear preservation suite's two-hander was a low level weapon, which the evaluator correctly
+  declines for a tank holding a shield and a fast one-hander, and a declined weapon proves nothing
+  about the off-hand rule it was there to check. Any test that depends on a bot equipping something
+  now has to make that item a genuine upgrade for the spec being tested.
 
-### Next
+### Test coverage
 
-The `raidguild_member` table and the `.raidguild` command group of `add`, `remove`, `list`,
-`provision`, `summon`, `dismiss`, `status`, `guild`, `resetbinds`, `attune` and `reload` are
-done, backed by `RaidGuildMgr`. `contrib/harness/test_raid_guild_roster.py` covers authoring,
-provisioning, idempotence, account distinctness, adoption of an existing character, and that
-a provisioned member logs in; `contrib/harness/test_raid_guild_summon.py` covers a seven
-member roster being guilded with six of them offline, reaching the world as a raid, landing
-in its rostered subgroups, inheriting the leader's attunements, entering Zul'Gurub as one
-instance rather than two, dropping a planted stale bind, arriving on the leader's level rather
-than the one it was left on, leaving on dismissal, and keeping what it earned across the round
-trip. `contrib/harness/test_bot_gear_preservation.py` covers the four ways the bot AI used to
-lose gear, on the back of two new harness commands, `.harness equipnew` and `.harness items`.
+Every test in this list runs against a live server over SOAP; there is no unit test layer.
 
-**Phase 0 is done.** Level matching landed in `RaidGuildMgr` rather than in the load path the
-plan pointed at, which kept it clear of the two files the other agents are working in and, as
-it turned out, behaves better: writing the level before the session loads means a member
-arrives correct rather than being corrected in front of everyone. Next is Phase 1, the item
-evaluation engine, which the gear preservation work was the stated prerequisite for.
+| Test | What it proves |
+| --- | --- |
+| `test_raid_group.py` | A 40-member raid across 8 subgroups forms, and the 41st is refused cleanly |
+| `test_raid_guild_roster.py` | Authoring, provisioning, idempotence, account distinctness, adoption of an existing character, and that a provisioned member logs in |
+| `test_raid_guild_summon.py` | A seven member roster guilded with six of them offline, reaching the world as a raid, landing in its rostered subgroups, inheriting the leader's attunements, entering Zul'Gurub as one instance rather than two, dropping a planted stale bind, arriving on the leader's level rather than the one it was left on, leaving on dismissal, and keeping what it earned across the round trip |
+| `test_premade_specs.py` | A spec applied by name, and `--only levels` applying all six ordered specs at levels 22, 45 and 60 |
+| `audit_premade_specs.py` | Every level 60 template applied to a character and read back, spend and legality measured on the character rather than offline |
+| `test_bot_gear_preservation.py` | The four ways the bot AI used to lose gear, plus the off-hand and level restriction rules |
+| `test_item_evaluator.py` | `ItemEvaluator::ResolveItem` against the Classic Gear Ranker fixtures, item by item and spell by spell |
+| `test_item_evaluator_behaviour.py` | A bot wearing the better of two necks, declining the worse, keeping both, and reaching the same answer in either hand-over order |
+| `test_item_evaluator_loadout.py` | Hit and weapon skill paying nothing past their caps and full value below them, and a set bonus reaching the score at its threshold and not before |
+| `test_item_evaluator_sets.py` | A bot assembling a six-piece set, keeping it against a piece better by less than the bonus, breaking it for one better by more, taking an upgrade out of a bag, and reporting the spec the roster authored |
 
-Two spec items follow from `547a3416c`. Provisioning should pass the roster row's `spec` to
-`CombatBotBaseAI::m_specName`, which is a one line change and makes the column live. Ordered
-talent spending should land **before** level matching, because a member matched to any level
-other than 60 currently spends a lower level template and leaves the difference unspent.
+The harness commands that exist only to make the above observable. `.harness items` reports what a
+character wears, carries — bags included — **and holds in the mail**, which is the distinction
+between displacing an item and destroying it. `.harness equipnew` runs the equip pass directly,
+since trade completion is its only other trigger and a trade cannot be conducted over SOAP.
+`.harness itemstats` and `.harness spellstats` dump the resolved stat vector for an item entry or a
+bare equip spell, which is the only way to compare the engine against an external oracle without a
+client. `.harness loadout <class> <spec> <entry>...` scores a hypothetical set of gear that nobody
+is wearing, which is the only way to ask about a cap or a set bonus: naming the same shoulders ten
+times is how twenty points of hit gets tested. `.harness wear` and `.harness stow` set up a state
+the AI would never produce on its own — nothing in the bot AI equips a bag, and `additem` fills the
+backpack before it fills one, so without them "this upgrade is inside a bag" is unreachable.
 
-Note the sequencing dependency in Phase 4: wipe recovery lives in the companion document but
-gates raid use of this one, since without it a single wipe ends the night. It is in progress
-there.
+### Environment
 
-**There is a third world, `~/bin/server3`,** built the same way as server2 and for the same
-reason: realm 3 on world port 8087 and SOAP 7880, with its own `characters3` database,
-sharing the world database and map data. Drive it with
-`VMANGOS_SOAP_URL=http://127.0.0.1:7880/`. One thing was wrong in the script it was copied
-from and is worth fixing in server2 as well: `stop` waits for the SOAP port to be released,
-but a graceful shutdown closes that socket early and keeps the port until the process
-actually exits, so the next `start` races it and comes up with a working game port and no
-SOAP at all. server3 waits for the process to go first.
+There is a third world, `~/bin/server3`, built the same way as server2 and for the same reason:
+realm 3 on world port 8087 and SOAP 7880, with its own `characters3` database, sharing the world
+database and map data. Drive it with `VMANGOS_SOAP_URL=http://127.0.0.1:7880/`.
+
+One bug in the script it was copied from is worth fixing in server2 as well: `stop` waits for the
+SOAP port to be released, but a graceful shutdown closes that socket early and keeps the port until
+the process actually exits, so the next `start` races it and comes up with a working game port and
+no SOAP at all. server3 waits for the process to go first.
 
 ## Architecture
 
@@ -205,23 +267,26 @@ flowchart TD
     Save --> Roster
 ```
 
-## Phase 0 - Roster, persistence, and instance entry [in progress]
+## Phase 0 - Roster, persistence, and instance entry [done]
 
-The goal is a set of stable, named, guilded characters that spawn identically every time.
-
-**Status.** Complete and verified live: group joining (`a19dc86dc`), the roster table,
-provisioning, summoning, the guild, bind reconciliation, attunement mirroring and level
-matching. The one thing carried forward is the ordered talent spend list, which belongs to the
-companion document and is what a member dropped to a lower level needs before it arrives with
-a spec rather than with refunded points.
+The goal is a set of stable, named, guilded characters that spawn identically every time. Group
+joining, the roster table, provisioning, summoning, the guild, bind reconciliation, attunement
+mirroring and level matching are all in and verified live. Two items are carried into the Next list
+above: a member dropped below its authored level does not re-spend its refunded talents, and spell
+ranks do not follow level.
 
 ### Roster [done]
 
 Landed as `RaidGuildMgr` with a `raidguild_member` characters migration and the `.raidguild`
-command group. A row describes a character that should exist; `guid` and `account` are filled
-in when it does, so an unprovisioned member is the one state the roster and the `characters`
-table are allowed to disagree in. Provisioning is idempotent and adopts a character that
-already carries the name, which is what a rebuilt roster table needs.
+command group of `add`, `remove`, `list`, `provision`, `summon`, `dismiss`, `status`, `guild`,
+`resetbinds`, `attune` and `reload`. A row carries name, race, class, gender, role, spec,
+loot-priority group and subgroup; `guid` and `account` are filled in when the character exists, so
+an unprovisioned member is the one state in which the roster and the `characters` table are allowed
+to disagree. Provisioning is idempotent and adopts a character that already carries the name, which
+is what a rebuilt roster table needs.
+
+A new table rather than the existing `characters.playerbot`, which is close in shape but has no
+write path in code and is not consulted by the load path.
 
 Accounts are allocated from a base of 5,000,000, clear of the range `GenBotAccountId` draws
 from, which starts at the highest real account plus ten thousand and rises by one per bot
@@ -235,8 +300,7 @@ rather than taken from the session because the harness drives all of this over S
 there is no session player to take it from; an in-game caller may leave it off and mean
 itself.
 
-The three things left over from the group-joining fix land here, and all three are about
-doing the work before the members arrive rather than as they do:
+Group setup happens before any member arrives rather than as they do:
 
 - The group is created once, up front, by the summon command. No member ever creates it, so
   the concurrent-creation race cannot happen however many arrive on one tick.
@@ -277,8 +341,8 @@ member normally has one, but an adopted character need not, since adoption reads
 is reloaded for that member first rather than the add failing for a character that is
 demonstrably there.
 
-Members join at `GR_MEMBER` rather than the lowest rank. Initiate is what a guild gives
-someone it is still deciding about, and every one of these was written down on purpose.
+Members join at `GR_MEMBER` rather than the lowest rank, since every one of them was rostered
+deliberately.
 
 ### Instance binds [done]
 
@@ -302,33 +366,28 @@ A member already in the world keeps two things: the bind for the map it is stand
 unbinding that is how a character ends up inside an instance it has no claim to, and any bind
 the group already agrees with.
 
-`contrib/harness/test_raid_guild_summon.py` covers it by taking the seven member raid into
-Zul'Gurub and requiring that all of them arrive in **one** copy of the map. The failure this
-guards against is not a refusal at the door; it is a raid that silently splits across two
-instance IDs, which from the outside looks like bots that will not follow.
+The failure being guarded against is not a refusal at the door; it is a raid that silently splits
+across two instance IDs, which from the outside looks like bots that will not follow.
+`test_raid_guild_summon.py` therefore takes the seven member raid into Zul'Gurub and requires all of
+them to arrive in **one** copy of the map.
 
-The test plants a bind rather than waiting for one, and the reason is worth recording:
-entering behind a group that is not permanently saved leaves no personal bind at all, because
-`BindPlayerOrGroupOnEnter` only binds the entrant when `groupBind->perm` is set. A test that
-merely observed binds staying at zero would therefore pass whether or not anything was being
-cleared. It writes a `character_instance` row directly while the member is offline and then
-requires the summon to have removed it.
+That test plants a bind rather than waiting for one to appear. Entering behind a group that is not
+permanently saved leaves no personal bind at all, because `BindPlayerOrGroupOnEnter` only binds the
+entrant when `groupBind->perm` is set, so a test that merely observed binds staying at zero would
+pass whether or not anything was being cleared. It writes a `character_instance` row directly while
+the member is offline and requires the summon to have removed it.
 
-The original design notes follow.
+### Group joining: why the path used to cap at five, silently [done]
 
-- New `RaidGuildMgr` alongside
-  [src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp), owning a
-  database-authored roster: character name, class, race, role, spec template, loot-priority group.
-  The existing `characters.playerbot` table is close but has no write path in code and is not used
-  by the load path, so add a `raidguild_member` table rather than overloading it.
-### Joining the group: the current path caps at five, silently [done]
+Fixed in `a19dc86dc`: the group is promoted to a raid when it fills, `AddMember`'s return value is
+checked, a bot that fails to join is removed rather than left running its AI ungrouped,
+`PartyBotAddRequirementCheck` measures against `MAX_RAID_SIZE`, and the eight `me->GetGroup()` call sites
+that iterated without a null check are guarded. The diagnosis is kept because it is the argument for doing
+group setup up front in the summon command rather than letting members do it as they arrive.
 
-Fixed in `a19dc86dc`, except for the defined-subgroup placement, the explicit loot method and
-threshold, and the concurrent-creation race, all of which land with roster provisioning. The
-diagnosis below is kept because it explains why those three remain.
-
-`PartyBotAI::AddToPlayerGroup` is not usable as-is for a roster of forty, for two compounding reasons
-([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 516-542).
+`PartyBotAI::AddToPlayerGroup` was not usable for a roster of forty, for two compounding reasons. The
+function is now at [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 1182;
+the line references below are to the code as it stood before the fix.
 
 When the human has no group yet, the bot creates one - and `Group::Create` sets the type to
 `GROUPTYPE_NORMAL` unless it is a battleground group
@@ -348,17 +407,14 @@ bot that failed to join therefore behaves as though it had, until `GetPartyLeade
 leader's group and sets `requestRemoval`, at which point it despawns. The visible symptom is a roster that
 mysteriously settles at five members with bots flickering in and out, and nothing in the log explaining why.
 
-So roster provisioning must convert the group to a raid before adding anyone, add members in a defined
-subgroup rather than letting `_addMember` pick the first free one, and check the return value. Two further
-details matter while we are here:
+Two further details are why the summon command owns group setup:
 
 - **Concurrent creation races.** If two bots initialize on the same tick with the human ungrouped, both see
   `!group` and both call `Create`, and the second `AddMember` takes the `SetOriginalGroup` path and corrupts
-  the leader's group pointers. Roster spawning must create the group once, up front, rather than letting
-  bots create it opportunistically.
+  the leader's group pointers.
 - **`Group::Create` hardcodes the loot rules** to `GROUP_LOOT` with an uncommon threshold
-  ([src/game/Group/Group.cpp](../src/game/Group/Group.cpp) lines 132-133). Since the loot design in Phase 2
-  depends on the threshold and method, the raid guild must set both explicitly instead of inheriting these.
+  ([src/game/Group/Group.cpp](../src/game/Group/Group.cpp) lines 132-133). The loot design in Phase 2
+  depends on both the threshold and the method, so neither may be inherited.
 
 And a groupless bot is not merely idle, it is a crash. A cluster of bot AI helpers call `me->GetGroup()` and
 iterate the result without a null check - `ShouldAutoRevive`, `GetMarkedTarget`, `SelectAttackTarget`,
@@ -371,14 +427,12 @@ silent `AddMember` failure above is exactly the condition that breaks that assum
 the group mid-combat is another. Given that the harness will run thousands of unattended spawn cycles, these
 need null guards before the harness is trusted, not after it starts crashing.
 
-### Roster selection and size
+### Group size caps [reference]
 
 The roster is a stable of tracked characters that can exceed any single group size; the human picks a
-subset per zone. This is a selection feature, not a constraint — the hard caps are generous.
+subset per run. The per-run selector itself is Phase 3 work, filed under raid composition. The caps
+it has to respect are generous, and are recorded here because two of them are easy to misread.
 
-- Group composition is chosen per run: 4 bots for a 5-man, 19 for a 20-man, 39 for a 40-man, with
-  role balance (tanks, healers, damage) preserved by the selector. A roster larger than 40 is
-  desirable so there is real choice, and so characters can sit out and still exist.
 - **Select on intended group size, not `maxPlayers`.** The engine cap comes from SQL `map_template`
   rather than a DBC ([src/game/Database/SQLStorages.cpp](../src/game/Database/SQLStorages.cpp) line
   43), it is patch-aware, and it is frequently a loose ceiling rather than the design target: most
@@ -393,100 +447,86 @@ subset per zone. This is a selection feature, not a constraint — the hard caps
   behavior; it only matters if you want to swap a dead bot for a fresh one mid-run, which requires
   removing the dead one first.
 
-### Levels and progression
+### Level matching [done]
 
 **Design principle: level is a free parameter, gear is the progression.** The human levels solo and
 summons the roster only for hard quests and 5-mans, so bots can never earn enough experience to keep
-pace. Bots therefore always spawn at the human's current level, while everything that makes the roster
-feel like a guild — gear, upgrades, loot history — is earned in content run together.
+pace. A member therefore always arrives at the leader's current level, while everything that makes
+the roster feel like a guild — gear, upgrades, loot history — is earned in content run together.
+Because level is decoupled from identity, the same roster is reusable across the human's own alts.
 
-- Bots do gain experience normally, with no bot exclusion in `Player::GiveXP` or in
-  `Group::RewardGroupAtKill`, and `.levelup` and `.character level` both accept a target name. None of
-  that is needed under this model, but it means an earned-experience variant remains possible later.
-- `.partybot add` already defaults a new bot to the leader's level
-  ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) line 880). The
-  persistent `.partybot load` path does **not** adjust level, so level matching is the change needed.
-  **Done, and not where this expected.** It landed in `RaidGuildMgr::MatchMemberLevel` rather than
-  in the load path, which turned out to be both less code and better behaved. See "Level matching,
-  as built" below.
-- **Talent builds must be stored as an ordered spend list, not a finished spec.** The spawn path calls
-  `GiveLevel` followed by `InitTalentForLevel`
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 621-626), and a
-  level 25 bot has roughly 16 points to spend. Storing a build as an ordered sequence and spending the
-  first N points for the current level keeps every level valid and keeps specs coherent as the roster
-  climbs.
-- Spell ranks must follow level too, so a bot dropped to level 25 is not casting rank 11 Frostbolt.
-- **This work lands in the one code path that currently preserves earned gear by doing nothing at all.**
-  See "The init paths that destroy earned gear" below before touching it.
-- Item scoring must be level-aware rather than tuned for level 60 best-in-slot, since a level 30 roster
-  gearing up in Scarlet Monastery is the common early case.
-- Because level is decoupled from identity, the roster is reusable across the human's own alts. Note the
-  one asymmetry: a bot geared at 60 and then dropped to 25 for an alt run holds gear it no longer meets
-  the requirements for, so the roster needs either per-level gear snapshots or an accepted rule that
-  alts start a fresh roster.
-- There is no level requirement on `MapEntry` any more; `level_min` and `level_max` were dropped from
-  `map_template` in migration `20210220230709_world.sql`. Gating lives on
-  `areatrigger_teleport.required_level` and applies from patch 1.4
-  ([src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 764-772), with
-  `Instance.IgnoreLevel` as a bypass.
-- `.partybot load` imposes no level restriction. The `+10` level cap applies only to
-  `.partybot clone` ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp)
-  lines 849-853), and `PartyBot.MaxBots` is only checked inside `PartyBotAddRequirementCheck`, which
-  the load path skips entirely.
+`RaidGuildMgr::MatchMemberLevel` writes the leader's level into the member's `characters` row before
+the session loads, which is the same write the offline branch of `.character level` makes, and its
+comment is the reason it is safe: everything else is recomputed at loading. Doing it before the load
+rather than after is what keeps a member from spawning and then visibly re-rolling its stats, and it
+leaves no reconciling tick to fight a human who sets a member's level deliberately. It is the same
+ordering argument as the instance binds.
 
-### Level matching, as built [done]
+Nothing in the load path needed changing. `.partybot add` already defaults a generated bot to the
+leader's level ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) line
+880); `.partybot load` adjusts nothing and imposes no level restriction of its own. The `+10` cap
+belongs to `.partybot clone` (lines 849-853), and `PartyBot.MaxBots` is only checked inside
+`PartyBotAddRequirementCheck`, which the load path skips entirely.
 
-Summoning writes the leader's level into the member's `characters` row before the session
-loads, in `RaidGuildMgr::MatchMemberLevel`. That is the same write the offline branch of
-`.character level` makes, and its comment is why this is safe: everything else is recomputed
-at loading. `LoadFromDB` calls `InitTalentForLevel` after loading spells, so a member brought
-down to a level it can no longer afford its talents at has them refunded rather than kept.
+The round-trip test asks the discriminating question rather than the easy one. Every member is
+already on the leader's level by the time the round trip happens, so asserting that they match would
+pass while doing nothing; the witness is left on level 25 before dismissal and required to come back
+on the leader's 60. For the same reason the persistence witness in that test is an item rather than a
+level: a level surviving a round trip says nothing about whether the character was saved, since the
+roster reassigns it on every summon.
 
-Doing it before the load rather than after was the whole trick, and it is the same trick as
-the instance binds. A member corrected a second after arriving would be visible as a bot that
-spawns and then re-rolls its stats and loses talents in front of everyone. Doing it first
-means it simply arrives right, and there is no reconciling tick to fight a human who sets a
-member's level deliberately.
+Remaining:
 
-The test asks the discriminating question rather than the easy one. Every member is already
-on the leader's level by the time the round trip happens, so checking that they match would
-pass while doing nothing; the witness is therefore left on level 25 before dismissal and
-required to come back on the leader's 60.
+- **Talents are refunded and not re-spent.** `LoadFromDB` calls `InitTalentForLevel` after loading
+  spells, so a member brought down below its authored level loses what it can no longer afford and
+  arrives with free points. A level 25 character has roughly 16 to spend; the generated-bot path spends
+  them by calling `GiveLevel` then `InitTalentForLevel`
+  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 621-626), which the
+  load path does not do. The ordered spend list that makes this solvable now exists; see Phase 3.
+- **Spell ranks do not follow level**, so a member dropped to 25 still knows rank 11 Frostbolt.
+- **Item scoring is not level-aware**, and a level 30 roster gearing up in Scarlet Monastery is the
+  common early case, not level 60 best-in-slot.
+- **Gear can outrank the level it is worn at.** A member geared at 60 and then dropped to 25 for an
+  alt run holds gear it no longer meets the requirements for. This needs either per-level gear
+  snapshots or an accepted rule that alts start a fresh roster.
+- Any of this work lands in the one init branch that preserves earned gear by doing nothing at all.
+  Read "The init paths that destroy earned gear" below first.
 
-This is also why the persistence witness in that test is no longer a level. Level is a free
-parameter the roster assigns on every summon, so a level surviving a round trip would say
-nothing about whether the character was saved. An item is used instead, which is what the
-roster is meant to accumulate anyway.
+Two facts that bound the design: bots gain experience normally, with no bot exclusion in
+`Player::GiveXP` or `Group::RewardGroupAtKill` and with `.levelup` and `.character level` both
+accepting a target name, so an earned-experience variant stays possible later. And there is no level
+requirement on `MapEntry` any more, `level_min` and `level_max` having been dropped from
+`map_template` in migration `20210220230709_world.sql`; level gating now lives on
+`areatrigger_teleport.required_level` and applies from patch 1.4
+([src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 764-772), with
+`Instance.IgnoreLevel` as a bypass.
 
-What is **not** done is the ordered talent spend list. A member dropped to a lower level has
-its talents refunded and not re-spent, so it arrives specless until the spend-order work in
-the companion document lands and can be asked for the first N points.
+### Content gating and attunement [done]
 
-### Content gating and attunement
+Attunement chains are the campaign's progression spine, not an obstacle to delete. The human is gated
+normally and the roster inherits: `.raidguild attune <leader> [name]` walks every
+`areatrigger_teleport` that leads to a dungeon, follows its `required_condition` through the
+`conditions` tree, collects the `CONDITION_QUESTREWARDED` and `CONDITION_ITEM` leaves, and gives a
+member every leaf **the leader already satisfies and the member does not.** So a chain is run once
+rather than forty times.
 
-Attunement chains are the campaign's progression spine, not an obstacle to delete. Gate the human
-normally, and **mirror the human's attunements onto the roster** so a chain is run once rather than
-forty times. The human earns access; the guild inherits it.
+Mirroring rather than a teleport bypass, because `Player::TeleportTo` never evaluates conditions but
+that leaves three holes: the Upper Blackrock Spire door to Blackwing Lair is a `LOCK_KEY_ITEM` check
+requiring the Seal of Ascension (item 12344) **in each player's inventory**
+([src/game/Objects/GameObject.cpp](../src/game/Objects/GameObject.cpp) lines 2203-2228), the Lothos
+Riftwaker gossip route into Molten Core carries its own condition, and any future in-instance object
+check would need bypassing separately. Granting the real state once is less code than special-casing
+every gate. Bypassing is not available in config either: there is no `Instance.IgnoreCondition`, only
+`Instance.IgnoreLevel` and `Instance.IgnoreRaid`. And conditions are evaluated **per entering
+player**, against that player's own session
+([src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 758-795), so without
+mirroring all 40 characters would each need the attunement to walk a portal.
 
-- Conditions are evaluated **per entering player**, against that player's own session
-  ([src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 758-795), so all 40
-  characters would each need attunement to walk a portal. There is no `Instance.IgnoreCondition`
-  config; only `Instance.IgnoreLevel` and `Instance.IgnoreRaid` exist.
-
-**Mirroring beats teleport bypass.** `Player::TeleportTo` never evaluates conditions, so teleporting
-bots past a portal does work, but it leaves three holes that mirroring closes: the Upper Blackrock Spire
-door to Blackwing Lair is a `LOCK_KEY_ITEM` check requiring the Seal of Ascension (item 12344) **in each
-player's inventory** ([src/game/Objects/GameObject.cpp](../src/game/Objects/GameObject.cpp) lines
-2203-2228), the Lothos Riftwaker gossip route into Molten Core carries its own condition, and any future
-in-instance object check would need bypassing separately. Granting the real state once is less code than
-special-casing every gate.
-
-**A hardcoded manifest was the plan and is not what landed, because writing one down proved the
-idea wrong.** The manifest below said Naxxramas was gated on quests 9121, 9122 or 9123; this
-server's own trigger asks for 9378, and nothing about a list kept in a header can notice that it
-has drifted from the database it is describing. So mirroring reads the doorways instead. See
-"Mirroring, as built" below; the manifest is kept because it is still the clearest statement of
-what the gates are, with the Naxxramas line corrected.
+Mirroring reads the doorways rather than a hardcoded manifest, and the manifest is why: an early
+draft of the list below had Naxxramas gated on quests 9121, 9122 or 9123, where this server's own
+trigger asks for 9378. A list kept in a header cannot notice that it has drifted from the database it
+describes. The list is kept anyway, corrected, because it is still the clearest statement of what the
+gates are.
 
 The verified gates are narrower than expected:
 
@@ -503,45 +543,40 @@ The verified gates are narrower than expected:
 - **Ahn'Qiraj**, both 20 and 40 (area triggers 4008 and 4010): **game event 83 inactive**. This is
   server-wide state, not per-player, so there is nothing to mirror.
 
-Grant path per bot: `AddQuest` followed by `FullQuestComplete` for quest gates (the same calls behind
-`.quest complete`), `StoreNewItem` for item gates, and `ReputationMgr::SetReputation` for faction 529 if
-Argent Dawn standing is ever wanted for flavor. Run the sync when the roster is spawned, skipping
-anything a bot already has, and remember the raid-group requirement in
-`MapManager::CanPlayerEnter` still applies independently of attunement.
+The grant path per member is `AddQuest` followed by `FullQuestComplete` for a quest gate, which are
+the same calls behind `.quest complete`, and `StoreNewItem` for an item gate.
+`ReputationMgr::SetReputation` on faction 529 is available if Argent Dawn standing is ever wanted for
+flavor. The raid-group requirement in `MapManager::CanPlayerEnter` applies independently of
+attunement, so mirroring does not remove the need for a raid group.
 
-### Mirroring, as built [done]
+Whether a composite condition is an AND or an OR is deliberately not considered, which sounds like a
+shortcut and is not: a member holding everything the leader holds satisfies whatever the leader
+satisfies, whichever way the tree is wired, so the shape never needs interpreting. That is what makes
+the two Molten Core triggers free to handle. The window entrance is `OR(quest 7487, quest 7848)` and
+the leader's copy of whichever one it holds gets passed on; the lava entrance is `AND(patch, race and
+class)` and yields no leaves at all. The Ahn'Qiraj gates fall out the same way, being a game event
+rather than anything a character can carry.
 
-`.raidguild attune <leader> [name]` walks every `areatrigger_teleport` that leads to a dungeon,
-follows its `required_condition` through the `conditions` tree, and collects the
-`CONDITION_QUESTREWARDED` and `CONDITION_ITEM` leaves. A member is then given every leaf **the
-leader already satisfies and the member does not.**
-
-Whether a composite is an AND or an OR is deliberately not considered, which sounds like a
-shortcut and is not. A member holding everything the leader holds satisfies whatever the leader
-satisfies, whichever way the tree is wired, so the shape never needs to be interpreted. It also
-means the two Molten Core triggers cost nothing to handle: the window entrance is
-`OR(quest 7487, quest 7848)` and the leader's copy of one of them is what gets passed on, while
-the lava entrance is `AND(patch, race and class)` and yields no leaves at all. The Ahn'Qiraj
-gates fall out the same way, being a game event rather than anything a character can carry.
-
-Reading `ConditionEntry` needed accessors, since only `Meets` was public and "is it satisfied"
-is the one question mirroring cannot use. `GetType` and `GetValue1` through `GetValue4` were
-added alongside the existing `GetTeam`.
-
-Two things this does not cover, both known. The Upper Blackrock Spire door to Blackwing Lair is
-a `LOCK_KEY_ITEM` on a gameobject rather than an area trigger condition, so the Seal of Ascension
-is not found by walking triggers. And `RewardQuest` pays out experience, which on a roster below
-sixty would move levels around; attunement quests are level 55 content, so a roster running them
-is at sixty already, but it is a real edge and level matching should account for it.
+Reading `ConditionEntry` needed accessors, since only `Meets` was public and "is it satisfied" is the
+one question mirroring cannot use. `GetType` and `GetValue1` through `GetValue4` were added alongside
+the existing `GetTeam`.
 
 The test gives the leader one gate of each shape, Attunement to the Core for a quest and the
-Drakefire Amulet for an item, mirrors, and then mirrors again. The second pass granting nothing
-is the assertion that matters: since a grant only happens when the leader has something the
-member lacks, nothing left to grant means no member is missing anything the leader holds. It
-proves the property without the test needing to know which quests and items this server's
-doorways ask for, which is the same reason the code does not know either.
+Drakefire Amulet for an item, mirrors, and then mirrors again. The second pass granting nothing is the
+assertion that matters: a grant only happens when the leader has something the member lacks, so
+nothing left to grant means no member is missing anything the leader holds. That proves the property
+without the test needing to know which quests and items this server's doorways ask for, which is the
+same reason the code does not need to know either.
 
-### Ahn'Qiraj and server-wide world events
+Remaining:
+
+- The Upper Blackrock Spire door to Blackwing Lair is a `LOCK_KEY_ITEM` on a gameobject rather than an
+  area trigger condition, so the Seal of Ascension is not found by walking triggers.
+- `RewardQuest` pays out experience, which on a roster below sixty moves levels around. Attunement
+  quests are level 55 content, so a roster running them is at sixty already, but level matching should
+  account for it.
+
+### Ahn'Qiraj and server-wide world events [reference]
 
 Much better supported than assumed. The war effort is a complete 13-stage state machine in
 [src/game/HardcodedEvents.cpp](../src/game/HardcodedEvents.cpp) (stage enum at
@@ -572,28 +607,15 @@ Two other world events are already implemented and worth knowing about, since bo
 the **Scourge Invasion** that precedes Naxxramas, complete with a victory counter that unlocks vendor
 tiers, and the **elemental invasions**. Both are hardcoded event drivers with the same `.event` and
 `.variable` levers.
-- Account provisioning is simpler than it first appears: bot accounts do **not** need to exist in
-  realmd. `sAccountMgr.GetSecurity()` falls back to a default `SEC_PLAYER` entry for unknown IDs
-  ([src/game/AccountMgr.cpp](../src/game/AccountMgr.cpp) lines 205-207) and the realmd row is never
-  consulted during bot login. All that is required is a **distinct nonzero `account` value on each
-  character row**, so that `PlayerBotMgr::AddBot` does not trip the "account is already online"
-  check ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) lines
-  423-427). This is a characters-database concern only.
-- Guild registration: `Guild::Create(Player* leader, std::string name)`
-  ([src/game/Guild/Guild.cpp](../src/game/Guild/Guild.cpp) line 126) needs no petition but does
-  require an **online** leader with a session. `Guild::AddMember(ObjectGuid, uint32 rank, uint32
-  petitionId = 0)` at line 197 works on **offline** characters via `PlayerCacheData`, so bots can be
-  enrolled without being spawned. The member cap is never enforced;
-  `GuildAddStatus::GUILD_FULL` is defined and never returned.
 
-### Instance entry and binding
+### Instance entry: engine behaviour to respect [reference]
 
-This was the largest gap in the original plan and needs a code change, not just an operating
-procedure.
+The rules the bind work above is built on, kept because anything that changes spawning or entry has to
+keep satisfying them.
 
-**A later audit found the spawn path pre-empting bind resolution entirely.** `PlayerBotAI::SpawnNewPlayer`
-creates a persistent state and binds the new bot to it as **permanent** before the bot is even added to the
-map ([src/game/PlayerBots/PlayerBotAI.cpp](../src/game/PlayerBots/PlayerBotAI.cpp) lines 116-121):
+`PlayerBotAI::SpawnNewPlayer` creates a persistent state and binds the new bot to it as **permanent**
+before the bot is even added to the map
+([src/game/PlayerBots/PlayerBotAI.cpp](../src/game/PlayerBots/PlayerBotAI.cpp) lines 116-121):
 
 ```cpp
 if (instanceId && mapId > 1) // Not a continent
@@ -604,7 +626,7 @@ if (instanceId && mapId > 1) // Not a continent
 }
 ```
 
-Worth being precise about the blast radius, because the obvious reading overstates it. The third argument is
+The blast radius is narrower than it looks. The third argument is
 `load`, and `Player::BindToInstance` skips its `INSERT INTO character_instance` when `load` is true
 ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 16000-16021). So this creates an
 in-memory permanent bind and **not** a durable raid lockout row; it does not accumulate database rows across
@@ -617,8 +639,8 @@ instance IDs of the same map.
 The reconciliation check does not catch it either. `DungeonMap::BindPlayerOrGroupOnEnter` compares the group
 bind against the entered map only in the branch where the player has **no** personal bind
 ([src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 2259-2282); when a personal bind exists it merely
-asserts that bind matches. So the mismatch that matters is the one case that goes unchecked. Roster entry
-must clear or align every bot's personal bind before teleporting, and should prefer temporary group binds.
+asserts that bind matches. So the mismatch that matters is the one case that goes unchecked. This is why
+`SummonMember` clears personal binds before the session loads rather than reconciling them at the door.
 
 - `.partybot load` captures the leader's instance ID at
   [src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) lines 1031-1034
@@ -627,29 +649,27 @@ must clear or align every bot's personal bind before teleporting, and should pre
   `Player::GetBoundInstanceSaveForSelfOrGroup`
   ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 16044-16062), where a
   **personal bind takes precedence over the group bind**. A bot carrying a stale `character_instance`
-  row for the target map will be sent to the wrong instance.
-- `.partybot add` already does this correctly for temporary bots, calling `BindToInstance` before
-  entry in `PlayerBotAI::SpawnNewPlayer`
+  row for the target map is sent to the wrong instance.
+- `.partybot add` handles this for temporary bots by calling `BindToInstance` before entry in
+  `PlayerBotAI::SpawnNewPlayer`
   ([src/game/PlayerBots/PlayerBotAI.cpp](../src/game/PlayerBots/PlayerBotAI.cpp) lines 115-121). The
-  fix is to give the load path equivalent handling: reconcile or clear conflicting personal binds,
-  then bind the bot to the leader's `DungeonPersistentState` before teleporting.
+  roster takes the opposite route, clearing rather than binding, so the group's bind is the only thing
+  deciding where a member goes.
 - `DungeonMap::BindPlayerOrGroupOnEnter` contains `MANGOS_ASSERT(false)` for a permanent personal
   bind pointing at a different instance ([src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines
-  2201-2305). A mismatched roster is a debug crash, not a graceful failure, so bind reconciliation
-  needs to happen before entry rather than being discovered at the door.
+  2201-2305). A mismatched roster is a debug crash, not a graceful failure, which is why
+  reconciliation cannot be left until the door.
 - `MapManager::CanPlayerEnter` ([src/game/Maps/MapManager.cpp](../src/game/Maps/MapManager.cpp)
   lines 180-218) requires `group->isRaidGroup()` unless the player is a GM or `Instance.IgnoreRaid`
   is set. `Group::ConvertToRaid()` is therefore a hard prerequisite for entry, not a convenience.
 - Instance-per-hour throttling is a non-issue: `CheckInstanceCount` is per account and re-entry to an
   already-known instance ID is always allowed
   ([src/game/AccountMgr.cpp](../src/game/AccountMgr.cpp) lines 441-459).
-- Provide a `.raidguild resetbinds` maintenance command, since weekly raid resets and experimentation
-  will leave stale binds across the roster.
 
-### Persistence: there are two bot lifecycles and only one of them can save
+### Persistence: two bot lifecycles, one of which can save [reference]
 
-This is the foundational constraint of the whole document, and it is sharper than "enable a config
-option." There are two mutually exclusive bot lifecycles:
+The foundational constraint of the whole document, and sharper than "enable a config option". The two
+lifecycles are mutually exclusive:
 
 - **Generated bots** (`.partybot add`, `.partybot clone`, BattleBot) go through `SpawnNewPlayer` into
   `Player::Create`, which sets `m_saveDisabled = true` unconditionally with the comment "only temporary
@@ -668,7 +688,7 @@ changes. `AllowSaving` is not a facade — `SaveToDB` genuinely writes equipment
 instances with durability, spells, talents, skills, money, reputation, and quests — but the bot lifecycle
 defaults to ephemeral and most spawn commands actively destroy progression.
 
-### The init paths that destroy earned gear
+### The init paths that destroy earned gear [reference]
 
 Three functions will erase a roster bot's progression if they ever run on it:
 
@@ -678,19 +698,19 @@ Three functions will erase a roster bot's progression if they ever run on it:
   ([src/game/ObjectMgr.cpp](../src/game/ObjectMgr.cpp) lines 12426-12428).
 - `PartyBotAI::CloneFromPlayer` unequips everything and copies the clone source's gear.
 
-Today the roster is safe from all three by accident: `PartyBotAI` init branches on `m_race && m_class`,
-and the database-loaded branch runs none of them
-([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 615-661). It survives
-because it does nothing.
+The roster is safe from all three because `PartyBotAI` init branches on `m_race && m_class` and the
+database-loaded branch runs none of them
+([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 615-661). Its safety
+comes from its own emptiness, which is why `RaidGuildMgr` always constructs `PartyBotAI` through the load
+constructor that leaves race and class zero.
 
-**That is a direct collision with level matching.** The level-matching design in the previous section
-requires adding `GiveLevel`, talent spending, and rank adjustment into exactly the branch whose safety
-comes from its own emptiness. The rule for that work: level and talents may be rewritten on spawn,
-equipment may not, and `ResetTalents` must be reached only through a path that provably does not touch
-inventory. This needs a test that spawns a geared roster bot, despawns it, and asserts the item GUIDs in
-`character_inventory` are unchanged.
+That collides with the remaining level work, which wants talent spending and rank adjustment in exactly
+that branch. The rule: level and talents may be rewritten on spawn, equipment may not, and `ResetTalents`
+may only be reached through a path that provably does not touch inventory. Anything added there needs a
+test that spawns a geared member, despawns it, and asserts the item GUIDs in `character_inventory` are
+unchanged.
 
-### Remaining save warts
+### Remaining save warts [reference]
 
 - Two on-login mutations get persisted. The bot teleports to the coordinates captured near the leader at
   load time (**not** a dynamic follow) at
@@ -710,8 +730,10 @@ inventory. This needs a test that spawns a geared roster bot, despawns it, and a
   `max(account.id) + 10000` and `LoadFromDB` skips the account-ownership check for bots
   ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 14693-14700). Only `characters`
   rows are required. `CharactersPerRealm` caps client-side creation at 10 and does not bind here.
-- Provision bags explicitly. Neither the random nor the premade gear path adds any, leaving only the
-  16 backpack slots, which is not enough for loot plus a consumable loadout.
+- Provision bags explicitly. Neither the random nor the premade gear path adds any, and nothing in the
+  bot AI equips one, leaving only the 16 backpack slots, which is not enough for loot plus a consumable
+  loadout. The evaluator already reads bag contents, so this is the only thing standing between a
+  member and using them.
 - Trading is blocked for `IsSavingDisabled()` players, and `Group` skips its database insert for them,
   so mixing generated and roster bots in one group produces inconsistent behavior. Keep the roster pure.
 - Guild membership is genuinely persistent for offline characters. `Guild::AddMember` falls back to
@@ -719,15 +741,28 @@ inventory. This needs a test that spawns a geared roster bot, despawns it, and a
   ([src/game/Guild/Guild.cpp](../src/game/Guild/Guild.cpp) lines 230-242), and `Guild::Create` needs only
   a leader with no petition or signature requirement, so programmatic creation works.
 
-## Phase 1 - Item evaluation engine [not started]
+## Phase 1 - Item evaluation engine [done]
 
-This is the core new capability and has no existing foundation. The only "is A better than B" logic
-in the entire bot codebase is hunter ammo selection by item level. The random gear path filters on
-presence of a primary stat and then picks uniformly at random
-([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line 2780),
-and only fills empty slots (line 2677) with no concept of replacement.
+The core new capability, which had no existing foundation: the only "is A better than B" logic in the
+bot codebase was hunter ammo selection by item level, and the random gear path filters on presence of
+a primary stat, picks uniformly at random
+([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line 2780), and
+only fills empty slots (line 2677) with no concept of replacement.
 
-### The vanilla itemization problem
+`ItemEvaluator` and its weight table are in, along with the gear preservation work that had to precede
+them, the two properties of a combination that a per-item score cannot express — stat caps and set
+bonuses — the bag walking that decides what the pass can see, and the spec plumbing that decides which
+weights it uses. The one loose end is recorded under "Caps" below: the authored cap figures do not yet
+subtract the hit that talents grant, which leaves them loose in the direction that overvalues hit
+rather than the direction that discards it.
+
+The phase deliberately does **not** include the authority layers above the computed score — curated
+overrides and pins — or the disposal allowlist and award logging. Those are properties of an award and
+disposal path rather than of scoring, they cannot be tested until that path exists, and they now live in
+Phase 2. "Why the engine is safe without pins" below is the argument that this ordering is sound rather
+than a gap.
+
+### The vanilla itemization problem [reference]
 
 Verified with real data. `ItemStat` carries only seven mods (mana, health, agility, strength,
 intellect, spirit, stamina) at
@@ -762,17 +797,138 @@ So the evaluator has three input layers, not one:
   to `SpellItemEnchantmentEntry`. Vanilla has positive random **properties** only; there is no
   negative-ID suffix system and no `ItemRandomSuffix` store in this codebase.
 
-### Mechanics
+### The engine, as built [done]
 
-- Stat weights in a `raidguild_stat_weight` table keyed by class and **spec** so tuning needs no
-  recompile. Spec rather than role, because a fire and a frost mage weight hit differently and the
-  roster already records spec per member.
-- Upgrade delta, not absolute score: compare the candidate against the item currently occupying the
-  target slot. Handle two-hand versus one-hand plus offhand, the two ring and two trinket slots,
-  `ITEM_FLAG_UNIQUE_EQUIPPED`, and `ItemSet` bonuses via `m_itemSetEffects`.
-- Reuse `ItemPrototype::GetAllowedEquipSlots`
-  ([src/game/Objects/Item.cpp](../src/game/Objects/Item.cpp) line 577) for slot resolution rather
-  than reimplementing it.
+[src/game/PlayerBots/ItemEvaluator.h](../src/game/PlayerBots/ItemEvaluator.h) declares a singleton with
+these entry points:
+
+- `ResolveItem(proto, item)` collapses all three input layers above into one `ResolvedStats` vector.
+  Passing an `Item` folds in its random-property enchantment slots; passing a prototype alone, which is
+  what a drop before it is rolled amounts to, skips them.
+- `ResolveSpell(spellId)` does the same for a bare equip spell, which is what the differential test
+  needs to attribute a disagreement to a spell rather than to an item.
+- `GetWeights(classId, spec)` and `Score(stats, weights)` are the dot product, keyed `classId:spec`.
+  `HasWeights` is the same lookup without the fallback, so a command handed a spec name can say
+  whether it has weights of its own.
+- `ResolveLoadout(worn, player)` sums a whole set of gear and adds every set bonus the combination
+  triggers, and `ScoreLoadout(total, weights)` scores a total with the weight row's caps applied.
+  These are the pair that can see what a per-item score cannot. There are two overloads of the first:
+  one over `Item*` for real gear, one over prototypes for a hypothetical loadout, which is what
+  `.harness loadout` and its test use.
+- `UpgradeDelta(player, proto, item, weights)` scores a candidate against what occupies its target
+  slots, positive meaning wear it. It handles two-hand versus one-hand plus off-hand, where both hands
+  have to leave together, and the paired ring and trinket slots, where the worse of the two occupants
+  is the right baseline. It is a per-item answer and stays uncapped, which is the right shape for
+  "should I roll on this" and the wrong one for "what should I wear"; the award path in Phase 2 is
+  where it earns its keep.
+- `OptimizeEquipment(player, weights)` assigns the best **combination** available into the equipment
+  slots, from everything the character wears or carries, bags included. Displaced gear goes to bags or
+  mail through `AutoUnequipItemFromSlot`; nothing is destroyed.
+
+`OptimizeEquipment` maximises `ScoreLoadout` rather than assigning each slot its best candidate,
+because neither a cap nor a set bonus is visible from one slot. It works as a hill climb from three
+kinds of starting point:
+
+- **The gear already worn.** This is the seed that gives the pass its most useful property: since ties
+  never displace the incumbent and the best finish wins, the score a member ends with is never lower
+  than the one it started with. An 8/8 tier set is kept for a reason rather than by a rule — every
+  single-piece swap out of it scores lower.
+- **Nothing worn**, which dresses a member that arrives with gear in its bags and empty slots.
+- **One per set the member holds more than one piece of**, with those pieces forced in. Single-piece
+  moves cannot assemble a set from scratch, because each piece may be a downgrade until the bonus
+  lands. Keeping a set needs no help; building one does.
+
+Each round tries every candidate in every slot, plus the empty option, and keeps the best improving
+move. The hands are the exception: a two-hander and an off-hand exclude each other, so both are
+decided together and trading one arrangement for the other is a single move. Per-item resolution is
+cached for the duration of the pass, since the search asks for the same item's contribution many
+times and resolving is the expensive half.
+
+`CanWear` is `Player::CanEquipItem` with one accepted exception: while a member holds a two-hander,
+`CanEquipItem` reports that no off-hand can be equipped. That is true of right now and false as a
+question about what the member could wear, and taking it literally would make a two-hander a one-way
+door. Since both hands are decided together, an off-hand is only ever chosen beside a main hand that
+leaves room for it.
+
+`CombatBotBaseAI::EquipOrUseNewItem` calls `OptimizeEquipment` when a weight row resolves, and
+otherwise falls back to the old equip-what-fits pass, which keeps its guarantee that nothing is
+destroyed to make room. It learns any proficiency the new gear requires first, because `CanEquipItem`
+answers no while the proficiency is missing and a bot that can never wear what it earns is pointless.
+Slot resolution goes through `ItemPrototype::GetAllowedEquipSlots`
+([src/game/Objects/Item.cpp](../src/game/Objects/Item.cpp) line 577) and `Player::CanEquipItem` rather
+than a reimplementation.
+
+Three resolution rules are worth stating because they are the ones an external sheet gets wrong:
+
+- **Weapon skill takes the maximum across skill lines, not the sum**, melee and ranged sharing one
+  field, because a character swings one weapon. Ranged attack power is a different and much cheaper
+  stat and keeps its own field.
+- **Block value includes the base block printed on a shield**, which is the larger half of the stat,
+  not only what equip effects add.
+- **Spell penetration is stored as a magnitude**, since the weight schema treats every column as more
+  is better.
+
+### Stat weights [done]
+
+`raidguild_stat_weight` ([sql/migrations/20260809001000_world.sql](../sql/migrations/20260809001000_world.sql),
+extended by [sql/migrations/20260809010000_world.sql](../sql/migrations/20260809010000_world.sql))
+is keyed by class and **spec** rather than role, because a fire and a frost mage weight hit differently
+and the roster already records a spec per member. The spec string is
+`player_premade_spell_template.name`, so a weight row and a talent template line up by name. Tuning
+therefore needs no recompile, only a table reload.
+
+Warrior rows are transcribed from Classic Gear Ranker's own instructions tab. Every other class is
+authored to published vanilla priorities, so that the roster has a weight the day scoring ships rather
+than waiting for a theorycrafter per class. The four specs from the 1.12 rebuild that had a talent
+build and no weights — `arms-pve`, `sm-ruin-pve`, `seal-fate-daggers-pve` and `discipline-holy-pve` —
+now have rows, each following the nearest authored spec of the same class and role rather than
+inventing precision that has not been derived.
+
+A spec with no row is still scored, against the lowest-named row for its class, and both the log and
+the command that set the spec say so. That fallback used to be whichever row the hash table yielded
+first, which meant two members of the same class could be judged differently and the same member
+differently again after a restart.
+
+One gap remains in the table: `ResolvedStats` resolves all six resistances, but `StatWeights` carries
+columns for only fire, nature and frost. Shadow, arcane and holy resistance are computed and then
+cannot be weighted. Nothing in vanilla raiding needs them enough to justify three more columns yet.
+
+#### Caps [done]
+
+The model is linear, which is wrong for the two stats vanilla hard-caps. Hit past the cap earns
+nothing because a miss chance cannot go below zero, and weapon skill stops reducing miss and dodge
+once it reaches the target's defense — which is exactly why Edgemaster's Handguards is famous for +7
+when only the first 5 do anything. Left linear, a warrior valued hit at 55 a point forever, which was
+the largest known source of confidently wrong answers.
+
+Caps are three more columns — `hit_cap`, `sphit_cap`, `weapon_skill_cap`, zero meaning uncapped — and
+they are applied to the total in `ScoreLoadout`, never to an item. The figures are gear-derived totals
+against a level 63 target: 9 hit for melee, 16 for spells, 5 weapon skill, and 5 hit for the
+player-versus-player rows, which fight same-level targets and so have no level-based miss to remove.
+Healers have no spell hit cap because a heal cannot miss and their `sphit` weight is already zero.
+Defense deliberately has none: past crit immunity it stops being decisive but keeps giving dodge and
+miss, so a hard cap would model it worse than the linear weight does.
+
+The known incompleteness: talent-granted hit is not subtracted, though it belongs in these numbers,
+because a rogue with Precision needs five points less from gear than one without. Doing it properly
+means deriving a figure per spec from the authored talent build and keeping the two in step. Until
+then the caps are loose, which is the safe direction — the error left is that some hit stays
+overvalued, which is the behaviour being replaced, whereas a cap set too low would have members
+discard hit they actually need.
+
+#### Set bonuses [done]
+
+`ItemSet` on the prototype and `ItemSet.dbc` give the thresholds and the spells; each spell whose
+threshold the worn count reaches is resolved exactly as an equip-trigger spell is, and the profession
+sets' skill requirement is honoured the same way `AddItemsSetItem` honours it. Each bonus is resolved
+into its own vector before being added, because the within-item weapon skill rule takes a maximum and
+applying a set bonus onto a running total would let it swallow skill the pieces already granted.
+
+This is what stops a full tier set being broken up for one higher-scoring off-set piece, and equally
+what allows it to be broken when the off-set piece is worth more than the bonus. Thero-shan's
+Vestments is the worked example the tests use: six pieces score 444.33 alone and 504.33 together for
+a combat rogue, so the bonus is worth 60, and a belt beating the set's by 42 is declined while one
+beating it by 124 is taken.
 
 ### Safety first: scoring will be wrong, so make wrong answers survivable
 
@@ -781,12 +937,14 @@ suboptimal choice — it is an **irreversible** one. A tank receiving Thunderfur
 scoring problem to be solved with better weights; it is a problem of having allowed destruction at all.
 Accuracy is a quality goal. Irreversibility limits are a correctness requirement, and they come first.
 
-There are already **three** live examples of exactly this failure in the bot code, none of which have
-anything to do with scoring. A dedicated audit pass found the other two after the first turned up.
+#### The four destructive paths [done]
 
-The pattern is always the same: the bot needs a slot, so it destroys whatever is in one. This survived
-because a throwaway bot's bags hold nothing but generated reagents, so there was never anything of value to
-lose.
+Fixed in `266f26265` and `6a46f7e1b`. None of the four had anything to do with scoring, and the pattern
+is always the same: the bot needs a slot, so it destroys whatever is in one. They survived because a
+throwaway bot's bags hold nothing but generated reagents, so there was never anything of value to lose.
+The diagnoses are kept because they are the shape of mistake the award path in Phase 2 can repeat. Line
+references in this subsection point at the code as it stood before the fix; the functions now live at
+`AddItemToInventory` line 3301, `AddHunterAmmo` line 3316 and `EquipOrUseNewItem` line 3382.
 
 **One: the reagent top-up.** `CombatBotBaseAI::DoCastSpell` tops up a missing reagent on cast failure, and
 to make room it destroys whatever occupies the first backpack slot, unconditionally
@@ -827,8 +985,8 @@ if (slot != NULL_SLOT)
 }
 ```
 
-The trigger is what makes this severe: it runs on **trade completion**
-([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 3358-3378),
+The trigger is what makes this severe: it runs on **trade completion**, still, at
+[src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 4005-4027,
 and bots auto-accept every trade unconditionally. So the most natural way a human would ever hand a bot an
 upgrade - open a trade window and give it the sword - is a path that permanently deletes the sword it was
 replacing. The old item is not mailed, not bagged, just gone. The same function also immediately *uses* any
@@ -847,63 +1005,89 @@ store the ammo, and then calls `SetAmmo` anyway, leaving a hunter whose ammo fie
 not have. Auto-shot then keeps failing, which re-enters `AddHunterAmmo`, which destroys the next thing in
 slot 0. That is a **destructive loop**, and it is the single most dangerous behavior found in this pass.
 
-All four must be fixed in the gear-preservation work ahead of any evaluator work: find a free slot rather
-than clearing an occupied one, move replaced gear to bags or mail rather than destroying it, honor
-`CanEquipItem`, and propagate storage failure to callers instead of swallowing it.
+How each was closed:
 
-**All four are now fixed [done].** The hunter ammo one landed with the spec work; the other three
-are the commit that follows this note. `AddItemToInventory` returns whether the item is really in
-the bags, and `AddHunterAmmo` only sets the ammo field when it is, which is what breaks the
-destructive loop. The reagent top-up no longer clears the first backpack slot, so a reagent that
-will not fit is now simply a reagent that will not fit. `EquipOrUseNewItem` asks `CanEquipItem`
-instead of `FindEquipSlot`, so unique-equipped, class and level restrictions are honored rather
-than walked past; sends the replaced item to the bags or the mail through
-`Player::AutoUnequipItemFromSlot` instead of destroying it, and declines the swap if that fails;
-and calls `AutoUnequipOffhandIfNeed` afterwards.
+- `AddItemToInventory` returns whether the item really reached the bags, and `AddHunterAmmo` only sets
+  the ammo field when it did, which is what breaks the destructive loop.
+- The reagent top-up no longer clears the first backpack slot. A reagent that will not fit is simply a
+  reagent that will not fit.
+- `EquipOrUseNewItem` asks `CanEquipItem` rather than `FindEquipSlot`, so unique-equipped, class and
+  level restrictions are honored rather than walked past; sends the replaced item to bags or mail
+  through `Player::AutoUnequipItemFromSlot` and declines the swap if that fails; and calls
+  `AutoUnequipOffhandIfNeed` afterwards.
+- Consumables are kept rather than used on receipt. Nothing else in the bot AI touches bag
+  consumables, so leaving them alone leaves the decision with whoever handed them over.
 
-**Both of the things left behind are now closed too.** Consumables are kept rather than used on
-receipt: the pass ran on trade completion, so a raid handed forty flasks drank them in the trade
-window, standing in a city. Nothing else in the bot AI touches bag consumables, so leaving them
-alone leaves the decision with whoever handed them over.
+One defect the fix introduced and the test caught: moving a displaced item to the bags means the loop,
+which reads the bags as it walks them, finds it further along and swaps it straight back in. The pass
+now decides which slots to consider before it starts, so an item it puts down is not picked up again by
+the same pass.
 
-And the paths have a live test, `contrib/harness/test_bot_gear_preservation.py`, built on two new
-harness commands: `.harness equipnew` calls the pass directly, since trade completion is its only
-other trigger and there is no way to conduct a trade over SOAP, and `.harness items` reports what
-a character is wearing, carrying **and holding in the mail**. The mail is the part that matters:
-displaced gear that the bags will not take is mailed, so a test that looked only at bags and
-equipment could not tell that from destruction, which is exactly the distinction being made.
+`contrib/harness/test_bot_gear_preservation.py` covers four cases, each starting from a stripped bot: a
+swap leaves the displaced sword in the bags, a sword requiring level 60 stays off a level 1 bot, a
+two-hander takes the shield off rather than being worn beside it, and a potion is still there
+afterwards. Stripping between cases is not tidiness — see the finding about order dependence, which is
+what an un-stripped bot exposes.
 
-Four cases, each starting from a stripped bot: a swap leaves the displaced sword in the bags, a
-sword requiring level 60 stays off a level 1 bot, a two-hander takes the shield off rather than
-being worn beside it, and a potion is still there afterwards.
+#### Why the engine is safe without pins [done]
 
-Stripping between cases is not tidiness. **This pass has no notion of better**: it equips
-everything it can, in bag order, so the last thing it looks at is what ends up worn. The first
-version of the test assumed otherwise and failed by watching a starting axe beat a sword it had
-just equipped. Choosing between two usable items is the evaluator's job and the evaluator is
-Phase 1.
+The safety rules proper — the disposal allowlist, pins, and award logging — are specified under Phase 2,
+because every one of them is a property of the award and disposal path rather than of scoring. This
+subsection records why they are not needed before that path exists, so the ordering is a decision rather
+than an oversight.
 
-One bug was introduced by the fix and caught here. Moving the displaced item to the bags instead
-of destroying it means the loop, which reads the bags as it walks them, finds it further along
-and swaps it straight back in. `EquipOrUseNewItem` now decides which slots to consider before it
-starts, so an item put down by this pass is not picked up again by it.
+Nothing in `ItemEvaluator.cpp` destroys, vendors or otherwise removes an item from the world: there is no
+`DestroyItem`, no `ModifyMoney` and no sell call anywhere in the file. `OptimizeEquipment` unequips through
+`Player::AutoUnequipItemFromSlot`, then checks whether the slot actually emptied and skips the swap if it
+did not, so a swap that cannot make room simply does not happen. `AutoUnequipItemFromSlot` stores to bags,
+or mails when bags are full, and the mail is not a leak either: it is sent through `MailSender(Object*)`,
+which sets `MAIL_NORMAL`, and `OldMailsReturner` only zeroes the return target for message types that are
+not `MAIL_NORMAL` ([src/game/ObjectMgr.cpp](../src/game/ObjectMgr.cpp) lines 6994-7009), so expired
+self-mail is returned to the same character rather than deleted.
 
-The safety rules proper:
+The worst a wrong score can therefore do today is take a legendary off and put it in the bags, which is
+recoverable. Unique, class and level restrictions are already filtered before an item is considered, by
+`Player::CanEquipItem` rather than by scoring and then rejecting. Writing a pin flag now would mean writing
+a guard that nothing exercises, which is how the four paths above survived for as long as they did.
 
-- **Nothing is ever destroyed on the strength of a score.** Disposal is limited to an explicit allowlist:
-  grey and white items, and greens meaningfully below the member's current tier. Anything blue or above is
-  kept, and the fallback when bags fill is the mail path that
-  `Player::AutoUnequipItemFromSlot` already uses, never `DestroyItem`.
-- **Pinned items are invisible to the evaluator.** Legendaries, questline rewards, and anything the human
-  marks stay equipped and undisposable regardless of what the score says. Because legendary and questline
-  rewards are granted deliberately to a nominated member rather than earned by a bot, that grant path sets
-  the pin at the same time. Thunderfury therefore never enters scoring in the first place.
-- **Every award and disposal is logged**, so a bad weight is diagnosable after the fact rather than
-  discovered as a missing item weeks later.
-- **Unique, class-restricted, and level-restricted items** are filtered before scoring rather than scored
-  and then rejected.
+Two limits of the mail fallback worth knowing before Phase 2 leans on it. A bot never reads its mail, so a
+mailed item is stranded rather than lost, and the return-to-self cycle means it stays stranded
+indefinitely. And displaced gear that goes to mail is invisible to the next optimisation pass, which reads
+equipment, the backpack and the bags but not the mailbox.
 
-### Where ranking data should come from
+### Which gear the pass can see [done]
+
+`OptimizeEquipment` reads the equipped slots, the 16 backpack slots, and the contents of every equipped
+bag. Bags matter more than their share of the code suggests: nothing in the bot AI equips one, so until
+provisioning hands them out this is anticipatory, but the moment a member has a bag it is where earned
+gear ends up, and gear the pass cannot see is gear it will never wear.
+
+`.harness items` reports bag contents for the same reason, and it is not only cosmetic: every gear test
+distinguishes an item displaced from one destroyed by asking where it went, and a report that stopped
+at the backpack would read "moved into a bag" as "gone".
+
+Two commands exist to set up a state the AI cannot produce on its own. `.harness wear` equips an item
+into its natural slot, which is the only way to give a bot a bag at all, and `.harness stow` puts an
+item inside a named bag, which `additem` cannot do because it fills the backpack first.
+
+### The spec plumbing [done]
+
+`RaidGuildMgr::SummonMember` now passes the roster's `spec` to `CombatBotBaseAI::m_specName` alongside
+the role. Two things read it: the stat weight lookup in `EquipOrUseNewItem`, and
+`SelectPremadeSpecTemplate`, which is what the talent re-spend after level matching will need.
+
+The larger part of this was that the column could not be authored. `.raidguild add` took a role and
+never a spec, so `spec` was settable only by direct SQL — and the harness fixture had been passing its
+`spec` argument into the role position, which is why nothing had noticed. `add` now takes a trailing
+spec, `.raidguild spec <name> <spec>` changes one without removing the member and losing its earned
+gear, and both report when the name has no weight row of its own rather than leaving that to a log
+nobody reads. Changing a spec does not re-optimise a member already in the world: its gear was chosen
+under the old weights and a roster edit should not reshuffle a raid mid-run.
+
+The BiS ranking fixture described below is what would make the weights themselves, as opposed to the
+resolution and the caps, safe to iterate on.
+
+### Where ranking data comes from [reference]
 
 External item databases are the wrong first stop, for a specific reason: **this server's own
 `item_template` is authoritative and the external sources are not.** VMaNGOS is patch-scoped with a `patch`
@@ -912,67 +1096,103 @@ reference site. Scoring against anything other than the server's own data introd
 very hard to debug. Wowhead in particular offers no public bulk API, and scraping it is both against its
 terms and fragile.
 
-What genuinely cannot be derived from `item_template` is **how much each stat is worth to each spec**, and
-that is theorycrafting output rather than item data. Reference sites do not publish it either.
+What cannot be derived from `item_template` is **how much each stat is worth to each spec**, which is
+theorycrafting output rather than item data, and reference sites do not publish it either. No importable
+dataset of vanilla-1.12 stat weights exists. The obvious candidate does not fit: `wowsims/classic` is a
+**Season of Discovery** simulator, carrying runes, phase-scoped level caps, and SoD-only specs such as
+Shaman Warden, so its itemization and weights are wrong for a 1.12 server. The rest are commercial and
+closed, or scattered per-class theorycrafting posts. And the sims compute weights *dynamically per gear
+set* precisely because weights are non-linear and gear-dependent, so any static per-spec table is an
+approximation wherever it comes from.
 
-It is worth being blunt that no importable dataset of vanilla-1.12 stat weights exists. The obvious
-candidate does not fit: the open-source `wowsims/classic` project is a **Season of Discovery** simulator,
-carrying runes, phase-scoped level caps, and SoD-only specs such as Shaman Warden, so its itemization and
-weights are wrong for a 1.12 server. The remaining options are commercial and closed, or scattered
-per-class theorycrafting posts. Worse, the sims themselves compute weights *dynamically per gear set*
-precisely because weights are non-linear and gear-dependent, so any static per-spec table is an
-approximation no matter where it comes from.
+So community data is inverted from its intended use. Weights are small enough to hand-author, roughly
+twenty specs times a handful of stats, and anyone WoW-literate can get them approximately right. What
+published best-in-slot lists are good for is **checking the result**, not seeding it:
 
-That argues for inverting the intended use of community data. Weights are small enough to hand-author -
-roughly twenty specs times a handful of stats - and anyone WoW-literate can get them approximately right.
-What community best-in-slot lists are genuinely good for is **checking the result**, not seeding it:
-
-- Transcribe a published BiS list per spec into a fixture, and assert that the evaluator's ranking of those
-  items reproduces the expected order. Disagreement means the weights are wrong, and the test says which
-  slot and which item.
 - This makes external data a **test oracle rather than a runtime dependency**, which avoids the licensing
   and format friction entirely, needs no scraping, and gets stronger over time as fixtures accumulate.
+  `contrib/harness/fixtures/classic_gear_ranker_*.tsv` is the first instance of the pattern, checking
+  stat resolution item by item.
+- The remaining fixture to build is a published BiS list per spec, asserting that the evaluator's ranking
+  of those items reproduces the expected order. That checks the **weights**, where the existing fixture
+  checks resolution, and a disagreement names the slot and the item.
 - It also localizes the curation effort where it pays: the override list only needs entries where the
   formula demonstrably misfires, and the fixture tests are what reveal those.
 
 So the model has three layers, in increasing authority:
 
 1. **Computed score** from the server's own data, using the three input layers above times the per-spec
-   weights. This carries the long tail: the thousands of items nobody will ever curate.
+   weights, capped where vanilla caps and credited for whatever set the combination completes. This
+   carries the long tail: the thousands of items nobody will ever curate. **Done**, and it is what Phase 1
+   delivers.
 2. **Curated overrides** for the few hundred items that actually matter. An explicit ranking table, keyed
    by spec and slot, that wins over the computed score. This is the practical answer to "how do we
    prioritize the item stack properly" — for raid gear, do not trust a formula when a known-correct answer
-   exists.
-3. **Pins and locks**, which win over everything and are described above.
+   exists. **Phase 2**, since the items it exists to get right are the ones the award path hands out.
+3. **Pins and locks**, which win over everything. **Phase 2**, with the disposal path they guard.
 
-### Vanilla-specific traps that break naive scoring
+### Vanilla-specific traps that break naive scoring [reference]
 
 Worth enumerating, because each one produces a confidently wrong answer rather than a near miss:
 
 - **Weapon speed is not a stat.** Slow weapons are disproportionately valuable where damage is
   proc-driven or normalized — Windfury and Seal of Command being the obvious cases — while rogues want a
-  fast offhand. Scoring on `Damage[]` alone will hand the enhancement shaman a fast dagger.
-- **Hit has a cap and stats past it are worthless**, so weights cannot be linear. The same applies to
-  weapon skill on weapons, which is partly a hit effect.
+  fast offhand. Scoring on `Damage[]` alone will hand the enhancement shaman a fast dagger. `ResolvedStats`
+  carries `speed` and `avg_hit` separately from `dps` so a weight can express this; the warrior tank row
+  is the only one that currently does.
+- **Hit has a cap and stats past it are worthless**, so a per-item weight cannot be linear. The same
+  applies to weapon skill on weapons, which is partly a hit effect. Handled by capping the total rather
+  than the item, since the cap is a property of everything worn at once; see "Caps" above for what the
+  authored figures do and do not account for.
 - **Healing power and spell damage are different stats** carried by similar-looking equip auras.
-  `SPELL_AURA_MOD_HEALING_DONE` is worth nothing to a shadow priest and everything to a holy one.
+  `SPELL_AURA_MOD_HEALING_DONE` is worth nothing to a shadow priest and everything to a holy one. Kept
+  apart as `spheal` and `spdmg`.
 - **Tanks do not want damage stats.** Without an explicit tank weighting that values stamina, armor,
   defense, and block, a naive "more is better" score puts damage plate on the main tank.
-- **Set bonuses mean an individually worse piece can be the correct choice.** This is why `ItemSet` is in
-  the mechanics list rather than an afterthought.
+- **Set bonuses mean an individually worse piece can be the correct choice**, and equally that a set is
+  worth a number rather than being sacred. Handled by scoring the loadout, which is what made per-slot
+  selection untenable; see "Set bonuses" above.
 - **Resistance gear is situational, not absolute.** Fire resistance is near-worthless generally and
-  decisive for Ragnaros, so resistance belongs to the per-encounter loadout rather than to the score.
+  decisive for Ragnaros, so resistance belongs to the per-encounter loadout in Phase 3 rather than to the
+  score. The small nonzero resistance weights in the table are tie-breakers, not a substitute for that.
 - **On-use effects have no place in a stat model.** Their value depends on cooldown alignment and the
   encounter, which is exactly the kind of judgement the curated override layer exists to encode.
 
-## Phase 2 - Hybrid loot distribution [not started]
+## Phase 2 - Hybrid loot distribution and award safety [not started]
+
+Nothing here has been started. Bots still pass on every roll unconditionally
+([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 4059-4073),
+still never open a corpse, and `MASTER_LOOT` is still missing from the killing-blow handler.
+
+This phase owns the irreversibility limits as well as the distribution, because an award path is the first
+thing capable of losing an item permanently. Phase 1 can be wrong and recoverable; Phase 2 cannot.
+
+### Safety rules for award and disposal
+
+These come before accuracy, and before any of the distribution work below is switched on. The evaluator is
+the component most likely to be subtly incorrect, and the failure that matters is not a suboptimal choice
+but an irreversible one.
+
+- **Nothing is ever destroyed on the strength of a score.** Disposal is limited to an explicit allowlist:
+  grey and white items, and greens meaningfully below the member's current tier. Anything blue or above is
+  kept, and the fallback when bags fill is the mail path that `Player::AutoUnequipItemFromSlot` already
+  uses, never `DestroyItem`. Note the two limits on that fallback recorded under Phase 1: a bot never reads
+  its mail, and mailed gear is invisible to the next optimisation pass.
+- **Pinned items are invisible to the evaluator.** Legendaries, questline rewards, and anything the human
+  marks stay equipped and undisposable regardless of what the score says. Because legendary and questline
+  rewards are granted deliberately to a nominated member rather than earned by a bot, that grant path sets
+  the pin at the same time. Thunderfury therefore never enters scoring in the first place.
+- **Curated overrides** win over the computed score for the few hundred items that matter, which are
+  exactly the items this phase hands out. See the three-layer model under Phase 1.
+- **Every award and disposal is logged**, so a bad weight is diagnosable after the fact rather than
+  discovered as a missing item weeks later.
 
 ### A bot killing blow can lock the human out of the corpse
 
 Fix this before anything else in this phase, because it silently removes loot from the run. When a bot lands
 the killing blow it becomes `loot.roundRobinPlayer`, and its `SMSG_PARTYKILLLOG` handler clears that
 assignment again so real players can loot - but only for three of the four loot methods
-([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 564-592):
+([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1231-1259):
 
 ```cpp
 if (pGroup->GetLootMethod() == ROUND_ROBIN ||
@@ -1065,10 +1285,11 @@ flagged `is_underthreshold` and **never rolled** — it is looted round-robin or
   `Map::IsRaid()`.
 - **At or above the loot threshold**, bots make scored roll decisions, replacing the unconditional
   pass at [src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp)
-  lines 3412-3425 with NEED on a real upgrade, GREED if usable or worth vendoring, PASS otherwise.
+  lines 4059-4073 with NEED on a real upgrade, GREED if usable or worth vendoring, PASS otherwise. The
+  scored answer is `ItemEvaluator::UpgradeDelta`, which already exists.
 - **Below the threshold**, implement round-robin corpse looting. Bots currently never loot corpses at
   all, and `PartyBotAI` actively releases its round-robin claim after each kill
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 564-586) to stay
+  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1231-1259) to stay
   out of a human's way, which is wrong for a raid that is 39 parts bot.
 
 ### Hook point and invariants
@@ -1158,7 +1379,12 @@ The human's own class chains stay entirely normal. It is only rewards destined f
 grant path, and the raid content that feeds them — Molten Core for the bindings and the essence, world
 bosses for other chains — is exactly what the roster exists to clear.
 
-## Phase 3 - Raid readiness [not started]
+## Phase 3 - Raid readiness [in progress]
+
+Talent specs are done, at every level, and are written up at the end of this section. Everything else
+below is not started.
+
+### Consumables, resistance sets, and economy [not started]
 
 - Consumable loadouts per role in a database table, provisioned on spawn, consumed through
   `CastItemUseSpell` or the existing `UseItemEffect` pattern at
@@ -1173,8 +1399,9 @@ bosses for other chains — is exactly what the roster exists to clear.
   real item consumption for roster bots.
 - Resistance loadouts: a per-encounter gear set table plus a swap routine using
   `AutoUnequipItemFromSlot` and `EquipItem`. No equipment manager exists in vanilla, so this is
-  built from scratch. Currently the only resistance handling anywhere in the bot code is paladin
-  auras and shaman totems, chosen at random from a pool.
+  built from scratch. The only resistance handling anywhere in the bot code is paladin auras and shaman
+  totems, which the companion document's `677a9cc14` made deliberate but which are still buffs rather
+  than gear.
 - **Armor cannot be swapped in combat, and this is a design constraint rather than an obstacle to work
   around.** `ItemPrototype::CanChangeEquipStateInCombat` returns true only for weapons and projectiles
   ([src/game/Objects/ItemPrototype.h](../src/game/Objects/ItemPrototype.h) lines 508-523), and
@@ -1224,17 +1451,35 @@ bosses for other chains — is exactly what the roster exists to clear.
   possession. Goblin Sapper Charges require Engineering 205, and several engineering trinkets behave the
   same way. So grant a real skill number wherever usability is gated on it, and grant only the item
   where it is not, which covers potions, enchanted gear, and crafted armor.
-- Raid composition needs vanilla-specific rules, not generic role balance. A 40-man wants roughly eight
-  to ten healers, enough warriors to cover multi-tank fights, and shaman coverage spread across
-  subgroups for totems. Encode this in the roster selector rather than leaving it to the human.
+### Raid composition and the per-run selector [not started]
 
-### Talent specs: assignable per member [mostly done at level 60, open below it]
+The roster is a stable of tracked characters that can exceed any single group size, and the human picks a
+subset per run: 4 bots for a 5-man, 19 for a 20-man, 39 for a 40-man. A roster larger than 40 is desirable
+so there is real choice and so characters can sit out and still exist, and nothing constrains that; the
+guild member cap is never enforced and bot accounts only need distinct nonzero `account` values on the
+character rows, so an eighty-member roster is fine and is the intended shape.
 
-Landed in `547a3416c`. Bots take a spec by name or entry through `CombatBotBaseAI::m_specName`,
-which is what a roster row's `spec` column feeds, and `.partybot add mage fire-pve` is the manual
-form. Selection no longer ends in a random draw, the loader no longer couples specs to gear, and
-six missing level 60 builds now exist. What remains open is levels other than 60, described at the
-end of this section.
+Selection needs vanilla-specific rules rather than generic role balance. A 40-man wants roughly eight to
+ten healers, enough warriors to cover multi-tank fights, and shaman coverage spread across subgroups for
+totems. Encode this in the selector rather than leaving it to the human. The group size caps the selector
+has to respect are recorded under Phase 0.
+
+### Readiness reporting [not started]
+
+A `.raidguild report` command showing per-member gear score, resistance totals, durability, enchantment
+coverage, and consumable stock, which doubles as the readiness check before a raid attempt. Gear score is
+the one part with a foundation already: `ItemEvaluator::ScoreLoadout` against the member's own weight row,
+which is the same number `OptimizeEquipment` maximises and therefore comparable between members.
+
+### Talent specs: assignable per member [done]
+
+Landed across `547a3416c`, `b2d572839` and `8819f45db`. Bots take a spec by name or entry through
+`CombatBotBaseAI::m_specName`, which is what a roster row's `spec` column is meant to feed;
+`.partybot add mage fire-pve` is the manual form. Selection is totally ordered rather than ending in a
+random draw, the loader no longer couples specs to gear, six missing level 60 builds exist, and an ordered
+spend list makes one build fit every level. `RaidGuildMgr::SummonMember` now passes the roster's spec
+through, so the column feeds both this and the weight lookup; see "The spec plumbing" under Phase 1.
+What is still missing is the re-spend after a level match, which is Next item 1.
 
 Specs are fully controllable, and the existing machinery is better than expected. A spec is stored as two
 SQL rows rather than a hardcoded build: `player_premade_spell_template` carries entry, class, level, role,
@@ -1250,15 +1495,14 @@ and `.character premade spec <entry|name>` applies one. So the workflow is to le
 spec it exactly as wanted in-game, save it under a name, and hand that name to a roster member. The
 alternative, used for the six specs below, is to generate the rows from Talent.dbc and check them.
 
-**A loader trap sat directly in the path of our intended design, and it failed silently. Fixed.**
+**A loader trap sat directly in the path of this design and failed silently. Fixed.**
 `LoadPlayerPremadeTemplates` loads four things in sequence - gear templates, gear items, spec templates,
-spec spells - and it used to `return` if either *gear* query came back empty, so the two later sections
-never ran. The consequence was precisely inverted from what we want: our design deliberately **does not**
-use premade gear templates, because applying one wipes the earned gear this whole project exists to
-accumulate, and leaving those tables empty stopped every talent spec from loading while the log named a
-third table that was fine. Two systems that look independent were coupled by control flow, and the
-failure mode was "my carefully authored specs do nothing". The sections are independent now, verified
-against a copy of the world database with both gear tables truncated: all 59 spec templates still load.
+spec spells - and used to `return` if either *gear* query came back empty, so the two later sections never
+ran. This design deliberately does not use premade gear templates, because applying one wipes the earned
+gear the project exists to accumulate, so leaving those tables empty was the intended state and it stopped
+every talent spec from loading while the log named a third table that was fine. Two systems that look
+independent were coupled by control flow. The sections are independent now, verified against a copy of the
+world database with both gear tables truncated: all 59 spec templates still load.
 
 Three more defects in the same system, all of which bite a roster:
 
@@ -1271,7 +1515,7 @@ Three more defects in the same system, all of which bite a roster:
   build against Talent.dbc before it can be written, and `.harness talents` reports spend per tree against
   what the level allows and names any talent standing on nothing. Both earn their keep: the validator
   caught two prerequisites in the arms build that the game enforces and the author did not know about.
-- **Below-level fallback under-spends talents**, which is the open half of this section. See below.
+- **Below-level fallback under-spends talents.** Fixed by the spend order below.
 - **`.character premade savespec` captures the whole spellbook**, not just talents
   ([src/game/Commands/CharacterCommands.cpp](../src/game/Commands/CharacterCommands.cpp) lines 2205-2220),
   and re-application resets talents but never removes previously learned non-talent spells. Specs therefore
@@ -1283,18 +1527,17 @@ Three more defects in the same system, all of which bite a roster:
 `LearnPremadeSpecForClass` filtered templates by class and level, preferred one whose `role` matched, and
 otherwise picked at random. Party bot init calls it *before* `AutoAssignRole` when no role is preset
 ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1044-1047), so the role
-was still `ROLE_INVALID` at selection time and the first spawn always took the random path. Note that this
-ordering cannot simply be reversed: `AutoAssignRole` infers the role from the talents the spec is about to
-grant, so it has nothing to read before one is applied. The answer is to remove the need to guess rather
-than to reorder.
+was still `ROLE_INVALID` at selection time and the first spawn always took the random path. That ordering
+cannot simply be reversed, because `AutoAssignRole` infers the role from the talents the spec is about to
+grant and so has nothing to read before one is applied. The answer was to remove the need to guess.
 
-A named spec now wins outright, which is also the only way to express a build the role enum cannot: that
-enum holds tank, melee damage, ranged damage and healer, so a fire and a frost mage are the same value and
-the choice between them used to be a coin flip. Failing a name, selection is totally ordered — preferred
-role, then highest level, then entry — with the entry tie-break there because the template map is a
-`std::unordered_map` and ties genuinely resolved differently between runs. With no role known it prefers a
-damage build. Composition rules can now be real constraints: at least two protection warriors, a target
-number of frost mages before Molten Core, shaman spread across subgroups.
+A named spec wins outright, which is also the only way to express a build the role enum cannot: the enum
+holds tank, melee damage, ranged damage and healer, so a fire and a frost mage are the same value. Failing
+a name, selection is totally ordered — preferred role, then highest level, then entry — with the entry
+tie-break there because the template map is a `std::unordered_map` and ties genuinely resolved differently
+between runs. With no role known it prefers a damage build. Composition rules can therefore be real
+constraints: at least two protection warriors, a target number of frost mages before Molten Core, shaman
+spread across subgroups.
 
 `AutoAssignRole` remains unreliable in a way worth knowing: it detects specs by hardcoded single spell IDs
 such as `SPELL_SANCTITY_AURA = 20218`
@@ -1310,15 +1553,15 @@ mage, no arms warrior, no SM/Ruin warlock, no dagger rogue, no full-budget pries
 which between them are most of a raid's damage and one of its healing specs. The shipped 53 templates
 cover levels 19, 29, 39, 49 and 60, with everything below 60 being a PvP twink build.
 
-The rebuild is the more useful half of that. The first version was written from memory of vanilla
-theorycraft and checked only for legality, and legality turns out to say very little: a build can spend
-all 51 points, stand on every prerequisite, and still be a bad character. Four of the six bought talents
-that do nothing to a raid boss — Impact, Deflection, Martyrdom, Improved Nature's Grasp — purely as a toll
-to reach the next tier, and two were the wrong build outright. The warlock was a deep destruction spec
-nobody raids, when the two real choices are DS/Ruin, already shipped, and SM/Ruin, which was the actual
-gap. The druid had no Restoration points and therefore no Furor, which is the talent the entire cat
-rotation is built on. The current six are the builds the surviving 1.12 guides agree on: fire 18/31/2,
-arms 31/20, SM/Ruin 30/0/21, Seal Fate daggers 30/16/5, holy 21/30, powershifting cat 14/32/5.
+The rebuild is the more useful half of that, and the reason is recorded under the findings: legality says
+very little, so a build can spend all 51 points, stand on every prerequisite, and still be a bad character.
+Four of the first six bought talents that do nothing to a raid boss — Impact, Deflection, Martyrdom,
+Improved Nature's Grasp — purely as a toll to reach the next tier, and two were the wrong build outright.
+The warlock was a deep destruction spec nobody raids, when the two real choices are DS/Ruin, already
+shipped, and SM/Ruin, which was the actual gap. The druid had no Restoration points and therefore no Furor,
+which is the talent the entire cat rotation is built on. The current six are the builds the surviving 1.12
+guides agree on: fire 18/31/2, arms 31/20, SM/Ruin 30/0/21, Seal Fate daggers 30/16/5, holy 21/30,
+powershifting cat 14/32/5.
 
 **The shipped level 60 templates are sound, which took a live check to establish.** Counting a
 template's points by matching its `player_premade_spell` rows against Talent.dbc says that eleven of the
@@ -1330,10 +1573,6 @@ read the build back, which is what `contrib/harness/audit_premade_specs.py` does
 spends all 51 points and stands on legal tiers. Do not trust a talent count that never touched a
 character. The audit cannot reach the three paladin specs, because it drives a Horde leader and paladins
 are Alliance only in vanilla; those want an Alliance leader before they can be called clean.
-
-Roster size is unconstrained in any way that matters. The guild member cap is never enforced, and bot
-accounts only need distinct nonzero `account` values on the character rows, so an eighty-member roster
-that you select forty from per raid is fine and is the intended shape.
 
 Two hazards to respect:
 
@@ -1390,9 +1629,6 @@ with no ordered spec — paladin, hunter, shaman — still falls back to the old
 still the level it was asked for, spends its whole budget, holds nothing illegal, and at 60 still matches
 the authored build. It also spawns a mage and a druid at 45 with no spec named, which is the case that
 reached the twink build.
-- A `.raidguild report` command showing per-member gear score, resistance totals, durability,
-  enchantment coverage, and consumable stock, which doubles as the readiness check before a raid
-  attempt.
 
 ## Phase 4 - Bridge to encounter awareness [not started]
 
@@ -1402,15 +1638,17 @@ reached the twink build.
 - Gate attempts on readiness, for example warning when raid-wide fire resistance is too low for
   Ragnaros.
 - Wipe recovery is specified in the encounter document, since it is combat behavior, but it is a hard
-  dependency for this one: without it, a single wipe ends the raid night.
+  dependency for this one: without it, a single wipe ends the raid night. It is in progress there, with
+  release, the healer window, the spirit-healer fallback, corpse runs and in-combat resurrection landed.
 
 ## Risks and open items
 
 - Scoring quality is the make-or-break factor. Vanilla itemization is irregular enough that
-  hand-tuned weights per class and role will need iteration; expect the weight table to be edited a
-  lot.
+  hand-tuned weights per class and spec will need iteration; expect the weight table to be edited a
+  lot. The BiS ranking fixture is what makes that iteration safe.
 - Bind reconciliation is the highest-risk correctness work, because the failure mode is an assert
-  rather than a clean error. Build the `.raidguild resetbinds` tooling before the first raid test.
+  rather than a clean error. `.raidguild resetbinds` exists for exactly this and should be used
+  before the first raid test of a session.
 - Server load from 39 persistent `Player` objects on one map is real but acceptable for a local
   single-player server.
 - Save-on-logout means bugs are destructive to the roster. Back up the characters database before

@@ -83,16 +83,20 @@ def cleanup(harness, members):
         harness.run(f"character erase {name}", allow_failure=True)
 
 
-def summon_roster(harness, members, leader, bot, spec="tank", level=1):
+def summon_roster(harness, members, leader, bot, role="tank", spec="", subgroup=1):
     """Build the roster, bring the leader in, and summon the bot to it.
 
     Returns None once the bot is in the world, or a message describing what went wrong.
+
+    Role and spec are separate arguments because they are separate things: the role drives the
+    AI's behaviour and the spec names the stat weight row its gear is judged against. A suite
+    that asserts against particular scores has to set the second one.
     """
     cleanup(harness, members)
     harness.run("raidguild reload")
 
     for name, race, class_id in members:
-        harness.run(f"raidguild add {name} {race} {class_id} 0 {spec} {level}")
+        harness.run(f"raidguild add {name} {race} {class_id} 0 {role} {subgroup} {spec}".rstrip())
 
     harness.run("raidguild provision")
     harness.login(leader, timeout=60)
