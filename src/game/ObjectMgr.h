@@ -585,6 +585,11 @@ struct PlayerPremadeSpecTemplate
     uint8 requiredClass = 0;
     CombatBotRoles role = ROLE_INVALID;
     std::string name;
+    // Talents in the order their points are spent, when `ordered` is set. Applying only the
+    // first N is then a coherent build for a character holding N points, which is what lets one
+    // template serve every level instead of only the one it was authored for. Without the flag
+    // this is an unordered set that only means anything applied whole.
+    bool ordered = false;
     std::vector<uint32> spells;
 };
 typedef std::unordered_map<uint32, PlayerPremadeGearTemplate> PlayerPremadeGearMap;

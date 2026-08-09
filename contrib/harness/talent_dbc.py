@@ -15,6 +15,7 @@ generate a build and prove it legal before it ever reaches the database.
 """
 
 import argparse
+import functools
 import json
 import os
 import struct
@@ -125,8 +126,13 @@ class Talent(object):
         return len(self.ranks)
 
 
+@functools.lru_cache(maxsize=4)
 def load_talents(dbc_dir=DEFAULT_DBC_DIR):
-    """Return (talents by id, tab id -> (class mask, tabpage))."""
+    """Return (talents by id, tab id -> (class mask, tabpage)).
+
+    Cached because validating a spend order re-reads this once per prefix, and a 51 point
+    build has 51 prefixes.
+    """
     talents = {}
     for record in read_dbc(os.path.join(dbc_dir, "Talent.dbc"), TALENT_FIELDS):
         talent = Talent(record)
@@ -256,6 +262,85 @@ def build_spell_ids(spend, dbc_dir=DEFAULT_DBC_DIR):
         talent = talents[talent_id]
         spells.append(talent.ranks[rank - 1])
     return spells
+
+
+def spend_order(class_name, spend, tree_order, dbc_dir=DEFAULT_DBC_DIR):
+    """Turn a finished build into the order its points are spent, one entry per point.
+
+    Returns a list of (talent id, rank), where rank counts up from 1, so the list is exactly as
+    long as the build's point total and its first N entries are what a character with N points
+    should have. That is the whole reason this exists: a template is otherwise a finished set
+    with no way to be worth anything below the level it was authored for.
+
+    Trees are spent in the order given, and within a tree by row and then column, which is
+    legal for free. A talent on row r needs 5r points above it in its own tree, and the
+    finished build already satisfies that, so filling rows top down can never reach a row
+    early. Prerequisites are the one thing row order does not settle by itself, so a talent
+    whose prerequisite is not yet paid for is deferred and retried.
+
+    What this does not model is a human's priorities. Row order inside a tree means a talent
+    that a real character would rush is taken whenever its row comes up, and a later tree is
+    untouched until the one before it is finished. Ordering the trees is therefore the author's
+    lever, and the only one: at the full level the build is identical either way.
+    """
+    talents, _ = load_talents(dbc_dir)
+    order_of_tree = {name: index for index, name in enumerate(tree_order)}
+
+    remaining = []
+    for tab_id, talent in talents_for_class(class_name, dbc_dir):
+        if talent.talent_id in spend:
+            tree = TAB_NAMES[tab_id]
+            remaining.append((order_of_tree.get(tree, len(order_of_tree)),
+                              talent.row, talent.col, talent))
+    remaining.sort(key=lambda item: item[:3])
+
+    ordered = []
+    taken = {}
+    while remaining:
+        for index, item in enumerate(remaining):
+            talent = item[3]
+            # A prerequisite is satisfied only above the named rank, matching the check the
+            # client makes and the one validate_build makes.
+            if talent.depends_on and taken.get(talent.depends_on, 0) <= talent.depends_on_rank:
+                continue
+
+            for rank in range(1, spend[talent.talent_id] + 1):
+                ordered.append((talent.talent_id, rank))
+            taken[talent.talent_id] = spend[talent.talent_id]
+            del remaining[index]
+            break
+        else:
+            stuck = ", ".join(str(item[3].talent_id) for item in remaining)
+            raise ValueError("%s: no legal order, stuck on talents %s" % (class_name, stuck))
+
+    return ordered
+
+
+def validate_spend_order(class_name, ordered, dbc_dir=DEFAULT_DBC_DIR):
+    """Check that every prefix of a spend order is itself a legal build.
+
+    Validating only the finished build is not enough once a template can be applied partially.
+    A prefix is what a character below the authored level actually receives, so an order whose
+    thirtieth point stands on a row it has not paid for produces an illegal level 39 character
+    from a build that is perfectly legal at 60.
+    """
+    problems = []
+    for length in range(1, len(ordered) + 1):
+        spend = {}
+        for talent_id, rank in ordered[:length]:
+            spend[talent_id] = max(spend.get(talent_id, 0), rank)
+
+        # A prefix of N points is exactly what the level granting N points must produce.
+        for problem in validate_build(class_name, spend, dbc_dir, level=length + 9):
+            problems.append("after %u points: %s" % (length, problem))
+
+    return problems
+
+
+def spend_order_spell_ids(ordered, dbc_dir=DEFAULT_DBC_DIR):
+    """The spell id for each point of a spend order, which is what a template row stores."""
+    talents, _ = load_talents(dbc_dir)
+    return [talents[talent_id].ranks[rank - 1] for talent_id, rank in ordered]
 
 
 def main():

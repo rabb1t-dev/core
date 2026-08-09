@@ -12325,8 +12325,11 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
     do
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading player premade spells ...");
-        //                                                               0        1
-        std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT `entry`, `spell` FROM `player_premade_spell`"));
+        // Ordered by `spend_order` because for a spec that has one, the order is the data: the
+        // first N rows are the build for a character with N talent points. Rows left at 0 are
+        // an unordered set, which sorts arbitrarily among themselves and is applied whole.
+        //                                                               0        1        2
+        std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT `entry`, `spell`, `spend_order` FROM `player_premade_spell` ORDER BY `entry`, `spend_order`"));
 
         if (!result)
         {
@@ -12347,6 +12350,7 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
             uint32 entry = fields[0].GetUInt32();
             uint32 spell = fields[1].GetUInt32();
+            uint32 spendOrder = fields[2].GetUInt32();
 
             auto itr = m_playerPremadeSpecMap.find(entry);
             if (itr == m_playerPremadeSpecMap.end())
@@ -12357,6 +12361,12 @@ void ObjectMgr::LoadPlayerPremadeTemplates()
 
             if (!sSpellMgr.GetSpellEntry(spell))
                 continue;
+
+            // A spec counts as ordered the moment any row says where it belongs. Skipping a
+            // spell for being unknown would otherwise silently shorten the order, so this is
+            // set from rows that survived the check above.
+            if (spendOrder)
+                itr->second.ordered = true;
 
             count++;
             itr->second.spells.push_back(spell);
@@ -12425,7 +12435,11 @@ void ObjectMgr::ApplyPremadeSpecTemplateToPlayer(uint32 entry, Player* pPlayer) 
         return;
     }
 
-    if (pPlayer->GetLevel() < itr->second.level)
+    // An unordered spec is a finished build and only means anything at the level it was written
+    // for, so the character is dragged up to that level. An ordered one is spent down to
+    // whatever the character can afford and so must never move it: raising a level 45 bot to 60
+    // to give it a spec defeats the point of asking for a level 45 bot.
+    if (!itr->second.ordered && pPlayer->GetLevel() < itr->second.level)
     {
         pPlayer->GiveLevel(itr->second.level);
         pPlayer->InitTalentForLevel();
@@ -12440,8 +12454,17 @@ void ObjectMgr::ApplyPremadeSpecTemplateToPlayer(uint32 entry, Player* pPlayer) 
     if (!itr->second.spells.empty())
     {
         pPlayer->ResetTalents(true);
-        for (auto spellId : itr->second.spells)
+
+        // Each row of an ordered spec is one talent point, so the character's own budget is the
+        // number of rows to apply. Anything past it belongs to levels this character has not
+        // reached. An unordered spec has no such reading and is applied whole.
+        size_t limit = itr->second.spells.size();
+        if (itr->second.ordered)
+            limit = std::min<size_t>(limit, pPlayer->GetFreeTalentPoints());
+
+        for (size_t i = 0; i < limit; ++i)
         {
+            uint32 const spellId = itr->second.spells[i];
             uint32 const firstRankId = sSpellMgr.GetFirstSpellInChain(spellId);
             if (firstRankId && firstRankId != spellId && GetTalentSpellPos(firstRankId))
                 pPlayer->LearnSpell(firstRankId, false, true);

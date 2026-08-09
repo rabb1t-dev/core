@@ -32,6 +32,11 @@ LEADER_PASSWORD = "harness"
 LEVEL = 60
 POINTS_AT_60 = 51
 
+CLASS_IDS = {
+    "warrior": 1, "paladin": 2, "hunter": 3, "rogue": 4, "priest": 5,
+    "shaman": 7, "mage": 8, "warlock": 9, "druid": 11,
+}
+
 # The specs authored to fill the level 60 gaps, with the tree spend each should produce. The
 # per-tree numbers are the real assertion: a total of 51 only says the points went somewhere,
 # while "Fire 32" says the bot is a fire mage rather than an arcane one that happens to add up.
@@ -48,6 +53,15 @@ AUTHORED = [
 # one level 60 template, which is exactly the case that used to be settled by a dice roll.
 DETERMINISM_CLASSES = ["warrior", "priest", "druid", "mage"]
 
+# Levels to apply an ordered spec at. None of these is a level any template was authored for,
+# apart from 60, which is the point: the old data had templates at 19, 29, 39, 49 and 60 and
+# nothing sensible to say about anything between them.
+SPEND_ORDER_LEVELS = [22, 45, 60]
+
+# Classes with an ordered spec, checked below 60 without naming it, since a roster is not the
+# only thing that spawns bots and `.partybot add mage 45` should not produce a twink either.
+UNNAMED_BELOW_60 = ["mage", "druid"]
+
 ADD_TIMEOUT = 60.0
 SPEC_TIMEOUT = 45.0
 POLL = 2.0
@@ -60,8 +74,12 @@ def info(harness, name):
         return None
 
 
+def member_details(harness, leader):
+    return (info(harness, leader) or {}).get("members_detail", [])
+
+
 def members_of(harness, leader):
-    return [m["name"] for m in (info(harness, leader) or {}).get("members_detail", [])]
+    return [m["name"] for m in member_details(harness, leader)]
 
 
 def clear_roster(harness, leader):
@@ -94,9 +112,25 @@ def provision_leader(harness):
     return LEADER["name"]
 
 
-def add_bot(harness, leader, bot_class, spec=None, attempts=2):
-    """Add one bot, optionally naming its spec, and return its name."""
-    argument = f"{bot_class} {LEVEL} {spec}" if spec else bot_class
+def add_bot(harness, leader, bot_class, spec=None, attempts=2, level=LEVEL):
+    """Add one bot, optionally naming its spec, and return its name.
+
+    The new member is matched on class and level rather than taken as whichever name appeared,
+    because a bot dismissed at the end of one case can still be finishing its join when the next
+    one starts. Trusting the first new name then hands back the previous case's bot, and the
+    build read off it belongs to another class entirely -- which reads as a spec failure and is
+    not one.
+    """
+    # The level goes on the command whenever it is not the default, spec or no spec, because
+    # asking for a bot below 60 without naming a build is exactly the case worth testing.
+    parts = [bot_class]
+    if spec or level != LEVEL:
+        parts.append(str(level))
+    if spec:
+        parts.append(spec)
+
+    argument = " ".join(parts)
+    wanted_class = str(CLASS_IDS[bot_class])
 
     for _ in range(attempts):
         before = set(members_of(harness, leader))
@@ -104,9 +138,12 @@ def add_bot(harness, leader, bot_class, spec=None, attempts=2):
 
         deadline = time.time() + ADD_TIMEOUT
         while time.time() < deadline:
-            new = set(members_of(harness, leader)) - before - {leader}
-            if new:
-                return sorted(new)[0]
+            for member in member_details(harness, leader):
+                name = member.get("name")
+                if name in before or name == leader:
+                    continue
+                if member.get("class") == wanted_class and member.get("level") == str(level):
+                    return name
             time.sleep(POLL)
 
     return None
@@ -124,8 +161,18 @@ def build_of(harness, bot):
     return data
 
 
-def check_legal(label, data):
-    """Every applied build must spend its whole budget on talents it is entitled to."""
+def points_at(level):
+    """Vanilla grants the first talent point at level 10 and one per level after."""
+    return max(0, level - 9)
+
+
+def check_legal(label, data, expected_level=LEVEL):
+    """Every applied build must spend its whole budget on talents it is entitled to.
+
+    The level is asserted too, not just the points. Applying a spec used to drag a character up
+    to the template's level, so a level 45 bot asked for a level 60 build came back level 60,
+    and a check that only looked at points would have called that a pass.
+    """
     problems = []
     summary = data.get("summary", {})
     if not summary:
@@ -135,10 +182,13 @@ def check_legal(label, data):
     available = summary.get("available", 0)
     free = summary.get("free", 0)
     illegal = summary.get("illegal", 0)
+    level = summary.get("level")
 
-    if available != POINTS_AT_60:
-        problems.append(f"{label}: level {summary.get('level')} offers {available} points, "
-                        f"expected {POINTS_AT_60}")
+    if level != expected_level:
+        problems.append(f"{label}: is level {level}, expected {expected_level}")
+    if available != points_at(expected_level):
+        problems.append(f"{label}: level {level} offers {available} points, "
+                        f"expected {points_at(expected_level)}")
     if spent != available:
         problems.append(f"{label}: spends {spent} of {available} points")
     if free:
@@ -178,6 +228,65 @@ def check_authored(harness, leader):
                     problems.append(f"{spec}: {points} unexpected points in {tree}")
 
             print(f"  {spec:<26} {dict(sorted(trees.items()))}")
+        finally:
+            harness.run(f"harness exec {bot} partybot remove", allow_failure=True)
+            time.sleep(POLL)
+
+    return problems
+
+
+def check_levels(harness, leader):
+    """A spec must fit whatever level it is applied to, not only the one it was authored for.
+
+    This is the whole point of a spend order. Before it, a level 45 bot fell back to the level
+    39 twink template and spent 30 of its 36 points, or was dragged up to 60 to fit the build.
+    Either way nothing reported it, which is why the assertion is on the level and the point
+    total together.
+    """
+    problems = []
+
+    for bot_class, spec, expected in AUTHORED:
+        for level in SPEND_ORDER_LEVELS:
+            clear_roster(harness, leader)
+            bot = add_bot(harness, leader, bot_class, spec, level=level)
+            if not bot:
+                problems.append(f"{spec} at {level}: no bot joined the group")
+                continue
+
+            try:
+                data = build_of(harness, bot)
+                problems.extend(check_legal(f"{spec} at {level}", data, expected_level=level))
+
+                trees = {k: v for k, v in data.get("trees", {}).items() if v}
+                # The order has to converge on the authored build, or a level 60 member of the
+                # roster is no longer the spec it was asked for.
+                if level == LEVEL and trees != expected:
+                    problems.append(f"{spec} at {level}: build is {trees}, expected {expected}")
+
+                print(f"  {spec + ' @ ' + str(level):<30} "
+                      f"{data.get('summary', {}).get('spent', '?'):>2}/{points_at(level)} "
+                      f"{dict(sorted(trees.items()))}")
+            finally:
+                harness.run(f"harness exec {bot} partybot remove", allow_failure=True)
+                time.sleep(POLL)
+
+    # An unnamed bot below 60 has to reach an ordered spec too. Selection used to consider only
+    # templates at or below the bot's level, so a level 45 mage took the level 39 twink build and
+    # spent 30 of its 36 points however good the level 60 data was.
+    for bot_class in UNNAMED_BELOW_60:
+        clear_roster(harness, leader)
+        bot = add_bot(harness, leader, bot_class, level=45)
+        if not bot:
+            problems.append(f"unnamed {bot_class} at 45: no bot joined the group")
+            continue
+
+        try:
+            data = build_of(harness, bot)
+            problems.extend(check_legal(f"unnamed {bot_class} at 45", data, expected_level=45))
+            trees = {k: v for k, v in data.get("trees", {}).items() if v}
+            print(f"  {'unnamed ' + bot_class + ' @ 45':<30} "
+                  f"{data.get('summary', {}).get('spent', '?'):>2}/{points_at(45)} "
+                  f"{dict(sorted(trees.items()))}")
         finally:
             harness.run(f"harness exec {bot} partybot remove", allow_failure=True)
             time.sleep(POLL)
@@ -234,7 +343,7 @@ def check_unknown_spec_falls_back(harness, leader):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="SOAP url, defaults to the harness default")
-    parser.add_argument("--only", choices=["authored", "determinism", "fallback"],
+    parser.add_argument("--only", choices=["authored", "levels", "determinism", "fallback"],
                         help="run a single section")
     args = parser.parse_args()
 
@@ -246,6 +355,9 @@ def main():
         if args.only in (None, "authored"):
             print("authored specs:")
             problems.extend(check_authored(harness, leader))
+        if args.only in (None, "levels"):
+            print("ordered specs fit the level they are applied to:")
+            problems.extend(check_levels(harness, leader))
         if args.only in (None, "determinism"):
             print("unnamed spec is stable:")
             problems.extend(check_determinism(harness, leader))

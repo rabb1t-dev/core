@@ -2779,13 +2779,19 @@ PlayerPremadeSpecTemplate const* CombatBotBaseAI::SelectPremadeSpecTemplate() co
     std::vector<PlayerPremadeSpecTemplate const*> vSpecs;
     for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
     {
-        if (itr.second.requiredClass == me->GetClass() &&
-            itr.second.level == me->GetLevel())
+        if (itr.second.requiredClass != me->GetClass())
+            continue;
+
+        // An ordered spec fits any level up to its own, because it is spent down to the budget
+        // rather than applied whole. It therefore does not need a template authored for this
+        // exact level, which is the only reason a level 45 bot can have a real build at all.
+        if (itr.second.level == me->GetLevel() ||
+            (itr.second.ordered && itr.second.level >= me->GetLevel()))
             vSpecs.push_back(&itr.second);
     }
-    // Use lower level spec template if there are no templates for the current level. Note that
-    // this under-spends talents, because application only levels a character up to the template
-    // level and never spends the difference. Templates must exist at every level actually used.
+    // Use lower level spec template if nothing fits. Note that this under-spends talents,
+    // because application only levels a character up to the template level and never spends the
+    // difference. It is what a class with no ordered spec still falls back to.
     if (vSpecs.empty())
     {
         for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())

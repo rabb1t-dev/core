@@ -7,6 +7,11 @@ nothing paid for beneath it, or points spent past what the level allows -- appli
 produces a bot that is quietly wrong. Every build below is checked against Talent.dbc before a
 single INSERT is printed, so the migration cannot be generated unless the builds are legal.
 
+Each spec is emitted as an ordered spend list, one row per talent point, rather than as a set
+of finished talents. That is what lets one row set serve every level: a character with 36
+points takes the first 36 rows. The order is checked at every prefix, not just at the end,
+because a prefix is a real character and an order can be legal at 60 while illegal at 39.
+
 Talents are written as names, resolved to ids through the DBC, because a bare id is unreadable
 and unreviewable. Run with the DBC files present:
 
@@ -179,16 +184,9 @@ SPECS = [
         # healer has nothing else to buy there, and threat is not what kills healers.
         "discipline-holy-pve", "priest", ROLE_HEALER,
         {
-            "Discipline": {
-                "Unbreakable Will": 5,
-                "Silent Resolve": 1,
-                "Improved Power Word: Fortitude": 2,
-                "Improved Power Word: Shield": 3,
-                "Inner Focus": 1,
-                "Meditation": 3,
-                "Mental Agility": 5,
-                "Divine Spirit": 1,
-            },
+            # Holy is spent before Discipline even though Discipline is the shallower tree,
+            # because a partly levelled healer wants Holy Specialization and Divine Fury long
+            # before it wants a stronger Fortitude buff.
             "Holy": {
                 "Improved Renew": 3,
                 "Holy Specialization": 5,
@@ -198,6 +196,16 @@ SPECS = [
                 "Improved Healing": 3,
                 "Spiritual Guidance": 5,
                 "Spiritual Healing": 5,
+            },
+            "Discipline": {
+                "Unbreakable Will": 5,
+                "Silent Resolve": 1,
+                "Improved Power Word: Fortitude": 2,
+                "Improved Power Word: Shield": 3,
+                "Inner Focus": 1,
+                "Meditation": 3,
+                "Mental Agility": 5,
+                "Divine Spirit": 1,
             },
         },
     ),
@@ -227,6 +235,11 @@ SPECS = [
                 "Heart of the Wild": 5,
                 "Leader of the Pack": 1,
             },
+            # Restoration is spent before Balance so that Furor arrives as early as the build
+            # can afford it. Balance is last because its first five points are dead weight.
+            "Restoration": {
+                "Furor": 5,
+            },
             "Balance": {
                 # Five dead points to reach row 1. Every option on the first Balance row is
                 # useless to a cat, so this is the cheapest way through rather than a choice.
@@ -235,9 +248,6 @@ SPECS = [
                 "Natural Weapons": 5,
                 "Natural Shapeshifter": 3,
                 "Omen of Clarity": 1,
-            },
-            "Restoration": {
-                "Furor": 5,
             },
         },
     ),
@@ -298,6 +308,12 @@ def main():
         spend = resolve(class_name, trees, names_by_spell)
 
         problems = talent_dbc.validate_build(class_name, spend, level=LEVEL)
+
+        # Ordering is what makes a template worth anything below the level it was authored
+        # for, and every prefix of that order has to be a legal build in its own right.
+        ordered = talent_dbc.spend_order(class_name, spend, list(trees.keys()))
+        problems.extend(talent_dbc.validate_spend_order(class_name, ordered))
+
         if problems:
             failed = True
             print("%s (%s) is not a legal build:" % (spec_name, class_name), file=sys.stderr)
@@ -305,18 +321,23 @@ def main():
                 print("    %s" % problem, file=sys.stderr)
             continue
 
-        spells = talent_dbc.build_spell_ids(spend)
+        spells = talent_dbc.spend_order_spell_ids(ordered)
         spent = sum(spend.values())
         summary = ", ".join("%s %u" % (tree, sum(ranks.values()))
                             for tree, ranks in trees.items())
 
-        lines.append("-- %s: %s, %u points (%s)" % (spec_name, class_name, spent, summary))
+        lines.append("-- %s: %s, %u points spent in order (%s)"
+                     % (spec_name, class_name, spent, summary))
         lines.append("INSERT INTO `player_premade_spell_template`"
                      " (`entry`, `class`, `level`, `role`, `name`) VALUES (%u, %u, %u, %u, '%s');"
                      % (entry, talent_dbc.CLASS_IDS[class_name], LEVEL, role,
                         sql_escape(spec_name)))
-        values = ", ".join("(%u, %u)" % (entry, spell) for spell in spells)
-        lines.append("INSERT INTO `player_premade_spell` (`entry`, `spell`) VALUES %s;" % values)
+        # One row per talent point, numbered from 1, so applying the first N rows is what a
+        # character holding N points gets.
+        values = ", ".join("(%u, %u, %u)" % (entry, spell, position)
+                           for position, spell in enumerate(spells, start=1))
+        lines.append("INSERT INTO `player_premade_spell` (`entry`, `spell`, `spend_order`)"
+                     " VALUES %s;" % values)
         lines.append("")
 
     if failed:
