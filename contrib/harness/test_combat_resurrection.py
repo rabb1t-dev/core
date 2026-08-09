@@ -112,6 +112,10 @@ def group_in_combat(harness):
 
 def start_fight(harness):
     """Summon the boss onto the leader and wait for the group to be pulled into combat."""
+    # Clear the field first. A bag from an earlier run is still standing and still in combat
+    # with a leader who cannot die and so never drops it, and the group would assist against
+    # that one instead of the one summoned here.
+    harness.despawn(LEADER, PUNCHING_BAG)
     harness.run(f"harness exec {LEADER} npc summon {PUNCHING_BAG}", allow_failure=True)
 
     deadline = time.time() + COMBAT_TIMEOUT
