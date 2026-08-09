@@ -197,6 +197,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.cpp
     PlayerBots/PlayerBotAI.cpp
     PlayerBots/PlayerBotMgr.cpp
+    PlayerBots/ItemEvaluator.cpp
     PlayerBots/RaidGuildMgr.cpp
     Server/Protocol/Opcodes.cpp
     Server/Packets/Battleground.cpp
@@ -449,6 +450,7 @@ set (game_SRCS
     PlayerBots/BattleBotWaypoints.h
     PlayerBots/PlayerBotAI.h
     PlayerBots/PlayerBotMgr.h
+    PlayerBots/ItemEvaluator.h
     PlayerBots/RaidGuildMgr.h
     Server/Protocol/Opcodes.h
     Server/Protocol/Opcodes_active.h

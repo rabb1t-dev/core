@@ -13,6 +13,7 @@
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
 #include "Utilities/Random.h"
+#include "ItemEvaluator.h"
 
 #include <random>
 
@@ -3380,6 +3381,48 @@ void CombatBotBaseAI::AddHunterAmmo()
 
 void CombatBotBaseAI::EquipOrUseNewItem()
 {
+    // Learn any proficiency a new piece of gear asks for before asking whether it can be
+    // worn. CanEquipItem answers no while it is missing and a bot that can never wear what
+    // it earns is pointless.
+    auto learnProficiency = [this](Item* pItem)
+    {
+        if (!pItem || !pItem->GetProto())
+            return;
+        if (uint32 proficiencySpellId = pItem->GetProto()->GetProficiencySpell())
+            if (!me->HasSpell(proficiencySpellId))
+                me->LearnSpell(proficiencySpellId, false, false);
+    };
+
+    for (uint8 i = EQUIPMENT_SLOT_START; i < EQUIPMENT_SLOT_END; ++i)
+        learnProficiency(me->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
+    for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        learnProficiency(me->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
+
+    // Prefer the roster's authored spec; fall back to the short role name so a member that
+    // has not been given one still has a weight row to resolve against.
+    std::string spec = m_specName;
+    if (spec.empty())
+    {
+        switch (m_role)
+        {
+            case ROLE_TANK:      spec = "tank"; break;
+            case ROLE_HEALER:    spec = "healer"; break;
+            case ROLE_MELEE_DPS: spec = "fury"; break;
+            case ROLE_RANGE_DPS: spec = "shadow-pve"; break;
+            default: break;
+        }
+    }
+
+    if (StatWeights const* pWeights = sItemEvaluator.GetWeights(me->GetClass(), spec))
+    {
+        sItemEvaluator.OptimizeEquipment(me, *pWeights);
+        return;
+    }
+
+    // No weight row for this class and spec yet. Equip whatever still fits without
+    // destroying anything, so a bot whose weights have not been authored still progresses
+    // and never loses gear doing so. Choosing between usable items is the evaluator's job
+    // and this path is only the escape hatch until the next migration fills the gap.
     // Which backpack slots held something when this started. A swap now puts the displaced
     // item back into the bags rather than destroying it, and it lands in a slot that was
     // free, so a loop reading the bags as it walks them would find it further along and
@@ -3401,23 +3444,13 @@ void CombatBotBaseAI::EquipOrUseNewItem()
             switch (pItem->GetProto()->Class)
             {
                 case ITEM_CLASS_CONSUMABLE:
-                {
                     // Kept, not drunk. This runs on trade completion, so using a consumable
                     // the moment it arrives means a raid handed forty flasks drinks them in
-                    // the trade window, standing in a city, out of combat. Nothing else in
-                    // the bot AI uses bag consumables, so leaving them alone leaves the
-                    // decision with whoever handed them over.
+                    // the trade window, standing in a city, out of combat.
                     break;
-                }
                 case ITEM_CLASS_WEAPON:
                 case ITEM_CLASS_ARMOR:
                 {
-                    // Before asking whether it can be equipped, since the answer is no
-                    // while the proficiency is missing.
-                    if (uint32 proficiencySpellId = pItem->GetProto()->GetProficiencySpell())
-                        if (!me->HasSpell(proficiencySpellId))
-                            me->LearnSpell(proficiencySpellId, false, false);
-
                     // Asked of CanEquipItem rather than FindEquipSlot, which only answers
                     // where a thing of that shape goes. Unique-equipped, class and level
                     // restrictions were all being walked past on the way to EquipItem.
@@ -3428,16 +3461,12 @@ void CombatBotBaseAI::EquipOrUseNewItem()
                     uint8 const slot = dest & 255;
 
                     // Whatever is in the way goes to the bags, or to the mail if the bags
-                    // are full. It used to be destroyed, and the trigger is what made that
-                    // severe: this runs on trade completion and bots accept every trade, so
-                    // the natural way to hand a bot an upgrade was also the way to delete
-                    // the item it replaced.
+                    // are full, rather than being destroyed. It can decline, and the new
+                    // item staying in the bags is a better answer than forcing the old one
+                    // out of the world.
                     if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                     {
                         me->AutoUnequipItemFromSlot(slot);
-
-                        // It can decline, and the new item staying in the bags is a better
-                        // answer than forcing the old one out of the world.
                         if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                             break;
                     }

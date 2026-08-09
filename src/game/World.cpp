@@ -70,6 +70,7 @@
 #include "Transports/TransportMgr.h"
 #include "PlayerBotMgr.h"
 #include "RaidGuildMgr.h"
+#include "ItemEvaluator.h"
 #include "ZoneScriptMgr.h"
 #include "CharacterDatabaseCache.h"
 #include "CreatureGroups.h"
@@ -1856,6 +1857,9 @@ void World::SetInitialWorldSettings()
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading raid guild roster ..."); // Requires Players cache
     sRaidGuildMgr.Load();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading item evaluation weights ...");
+    sItemEvaluator.Load();
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "");
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Loading faction change ...");
