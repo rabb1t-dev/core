@@ -8,15 +8,30 @@ encounter knowledge inside the bot AI.
 Companion document: [persistent-bot-raid-guild.md](persistent-bot-raid-guild.md) covers the roster
 and gearing side. This document covers combat and encounter behavior.
 
-All claims below were verified against the code. Line numbers are accurate as of review.
+All claims below were verified against the code. Symbol and function names are the durable
+reference; line numbers drift as files are edited and are indicative only.
 
 ## Progress
 
-Maintained as work lands so completion state does not have to be re-derived by reading the
-code. Phase headings carry a status marker; this section carries the detail and, more
-importantly, the findings that changed the plan.
+Status key: **not started** / **in progress** / **done**. Phase headings carry the marker. This
+section carries the phase status, the commit history, the ordered tasking, and the findings that
+changed the plan.
 
-Status key: **not started** / **in progress** / **done**.
+### Phase status
+
+| Phase | Status | What is left |
+| --- | --- | --- |
+| 0 - Death and wipe recovery | **in progress** | Applying a soulstone before the pull, which needs a warlock spell slot that does not exist yet. Everything else is done and tested at raid scale |
+| 1 - Generic combat correctness | **in progress** | Tick responsiveness. Spell reflect is contingent on there being content that needs it, and there may be none |
+| The rotation engine | **not started** | All of it. Spell population, its prerequisite, is done |
+| 1a - Playing the class properly | **not started** | All of it. The largest phase in the project |
+| 1b - Raid flow, pull control, tank assignment | **not started** | All of it |
+| 2 - Movement arbitration and hazard avoidance | **not started** | All of it, and gated on 3a rather than the reverse |
+| 3a - Encounter directive layer | **not started** | All of it |
+| 3b - Instance objective orchestration | **not started** | All of it |
+| 4 - Content rollout, smallest first | **not started** | All of it |
+| 4b - Difficulty tuning | **not started** | All of it, built alongside 1a rather than after it |
+| 5 - Tooling | **in progress** | Hazard and directive inspection, attempt logging |
 
 ### Landed
 
@@ -45,33 +60,58 @@ Status key: **not started** / **in progress** / **done**.
 | `a23a5ac39` | Death, drinking and ammo made costly by default, and visible to the harness |
 | `8ac59f148` | Rogue poisons applied from a vial that is then gone, rather than cast for free |
 | `a79512778` | Rebirth, soulstones and Ankhs, so a death mid-pull need not end the pull |
+| `3b77aadb4` | The harness commands written down, since agents were re-deriving them |
+| `162942935` | Damage dealers wait for the tank before opening |
+| `5c864516e` | The field cleared before the resurrection suite summons its target |
+| `bb0a65648` | The threat ceiling tuned for damage rather than for tidiness |
+| `51007f390` | A bot below sixty learns the class spells its level would already have |
+| `1ba9c0df2` | `.harness threat` reports which flip rule each attacker is judged by |
+| `6477e5e16` | The tank holds the target at full raid size |
+
+### Next
+
+In order. The first two close Phase 0 and Phase 1; the third is the gate on everything after them.
+
+1. **Apply a soulstone before the pull.** Consuming one works and Rebirth and Ankhs are done, so
+   this is the last of Phase 0. It is blocked on the warlock spell struct having no soulstone slot,
+   which is `PopulateSpellData` work.
+2. **Author tank specs at 19, 29, 39 and 49.** A low-level bot asked to tank now has the right
+   spellbook but spends its talents on an arms twink build. Data work rather than code.
+3. **The rotation engine**, which gates Phase 1a and therefore most of the project. Build the
+   action pipeline first, since chain casting alone is roughly 17 percent of caster throughput and
+   needs no new hooks.
+
+Two items are deliberately parked. **Tick responsiveness** is part of the engine's action pipeline
+rather than a separate task, and doing it early would mean doing it twice. **Spell reflect
+avoidance** waits on evidence that any scripted boss in this codebase reflects, since a grep for
+`SPELL_AURA_REFLECT_SPELLS` across `src/scripts` returns nothing.
 
 ### Findings that changed the plan
 
 Recorded because each one cost real investigation and would otherwise be re-derived.
 
-- **The 110 and 130 percent pull thresholds are real here, and the melee test is the
-  creature's reach rather than the attacker's class.** `ThreatContainer::selectNextVictim`
-  ([src/game/Threat/ThreatManager.cpp](../src/game/Threat/ThreatManager.cpp) lines 340-357)
-  keeps the current victim while the best candidate is within 110 percent of it, and switches
-  above 130 percent outright or above 110 percent when `CanReachWithMeleeAutoAttack` says the
-  creature can hit the candidate. So a hunter that has crept into melee is on the melee rule
-  regardless of being a ranged class, and a rooted caster's reach decides it rather than
-  anyone's role.
-- **A per-cast threat gate cannot hold a warlock, because the threat it is throttling has
-  already been committed.** Ten bots on one target overshot their ceiling by six to sixteen
-  points of the tank's threat, which is one cast's worth and was expected. The warlock kept
-  climbing after it stopped casting: damage over time goes on arriving for another fifteen
-  seconds, so the quantity to leave room for is everything in flight, not the next spell. This
-  is why the headroom is thirty points rather than the ten a single cast would suggest, and it
-  is the argument for a real threat estimate rather than a bigger constant.
+- **The 110 and 130 percent pull thresholds are real here, and the melee test is the creature's
+  reach rather than the attacker's class.** `ThreatContainer::selectNextVictim` keeps the current
+  victim while the best candidate is within 110 percent of it, and switches above 130 percent
+  outright or above 110 percent when `CanReachWithMeleeAutoAttack` says the creature can hit the
+  candidate. So the threshold follows position, not role: a caster that has drifted into reach is
+  judged at 110 like anything else, which means a mage sitting at 117 percent of the tank looks
+  safe against 130 and is not. Anything reasoning about this has to ask the creature.
+- **A per-cast threat gate cannot hold a warlock, because the threat it is throttling has already
+  been committed.** The warlock kept climbing after it stopped casting, since damage over time
+  goes on arriving for another fifteen seconds. The quantity to leave room for is everything in
+  flight, not the next spell, which is why the caster headroom is thirty points rather than the
+  ten a single cast suggests and why a real threat estimate beats a bigger constant.
 - **Threat is invisible from outside and the two failures look identical.** A damage dealer
   holding station below the tank and one that has run out of things to cast produce the same
   observation, as do a raid whose tank is holding and one whose boss is a second from turning
-  round. `.harness threat` exists for that, and the first thing it showed was that peaks
-  measured from the opening seconds are arithmetic rather than behaviour: the tank's threat
-  starts near zero and every ratio against it is enormous.
-
+  round. `.harness threat` exists for that, and the first thing it showed was that peaks measured
+  from the opening seconds are arithmetic rather than behaviour: the tank's threat starts near
+  zero and every ratio against it is enormous.
+- **A binary that is built is not a binary that is running.** The service runs an installed copy
+  and the loop was only calling `make`, so several hours of threat measurements described code
+  that had never executed. Anything measured on this server is worthless without `make install`
+  and a restart first.
 - **Bot sessions report connected, and the consequence is a third outcome this document did
   not consider.** Phase 0 asked whether `GetSession()->IsConnected()` is true for a bot,
   since the corpse-run design rests on it. It is: `m_connected` is initialized `true` in the
@@ -207,32 +247,20 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   reports success, and each bot has to be told to remove itself. The reset in
   `test_raid_group.py` was never doing anything; it only passed because it happened to run
   against an empty roster.
-- **Two of the four free-resource cheats this document catalogued were not what it said, and
-  one of them was not a cheat at all.** Both claims were reasoned from upstream MaNGOS rather
-  than read here. Environmental death was said to charge the ten percent durability loss
-  twice, once in `DealDamage` and again in `Player::EnvironmentalDamage`. It does not:
-  `EnvironmentalDamage` passes `durabilityLoss = false` down, `Unit::Kill` is handed the same
-  flag and skips its own charge, and the comment at the call site says exactly that. Nothing
-  to fix. The weapon buff was said to be free because a triggered spell skips the mana cost;
-  in this fork `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not `m_IsTriggeredSpell`,
-  and the cost is calculated either way, so shaman imbues were always paid for. What the
-  triggered flag really skipped was the global cooldown, range and line of sight, and the
-  silence and school lockouts, which is worth having and is what the fix bought.
-- **Rogue poisons were free for a reason no flag controls.** [fixed] A rogue never learns the
-  poison enchant; it learns the trade spell that makes the vial, and the vial applies the
-  enchant when used. The bot skipped the vial and cast the enchant by name, so it was not that
-  the consumption was being waived, it was that nothing was ever consumed and no poison needed
-  to exist. Making the cast non-triggered changed nothing here.
-
-  The fix turned out to need no part of poison selection, which is what had made it look like
-  someone else's job. A weapon enchant the character never learned is, by that fact alone, one
-  that comes out of an item, and the item can be found by asking which item casts it. So
-  `CastWeaponBuff` splits on `HasSpell`: a shaman imbue is cast, and anything else is applied by
-  using the vial the bot is carrying, through `Player::CastItemUseSpell` — the same path the
-  client uses, which spends a charge and destroys the vial. Stocking rides along with the
-  reagents at spawn, since a vial is a reagent in everything but the field it is filed under.
-  Verified live: a rogue with two different poisons carries 19 of each after buffing both hands,
-  and one with the same poison in both carries 18 of a single stack.
+- **Two of the four free-resource cheats this document catalogued were not what it said, and one
+  was not a cheat at all.** Both had been reasoned from upstream MaNGOS rather than read here.
+  Environmental death was said to charge the ten percent durability loss twice; it does not, since
+  `EnvironmentalDamage` passes `durabilityLoss = false` down and `Unit::Kill` skips its own charge
+  on the same flag. The weapon buff was said to be free because a triggered spell skips the mana
+  cost; in this fork `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not
+  `m_IsTriggeredSpell`, so shaman imbues were always paid for. Read the fork, not the family.
+- **A weapon enchant the character never learned comes out of an item, and that alone identifies
+  the fix.** [fixed] A rogue learns the trade spell that makes the poison vial, never the enchant
+  the vial applies, so the bot casting the enchant by name was not having consumption waived — no
+  poison ever had to exist. This looked like a poison-selection problem and needed no part of it:
+  `CastWeaponBuff` splits on `HasSpell`, casting a shaman imbue and applying anything else through
+  `Player::CastItemUseSpell`, which is the path the client uses and spends a charge. Verified live,
+  a rogue carries 19 of each of two poisons after buffing both hands.
 - **Free full health and mana out of range was load-bearing, so removing it alone hangs the
   bot.** The out-of-combat block tests for food and drink before it tests for distance, and a
   bot that needs either never falls through, so the only way one could ever reach the teleport
@@ -245,6 +273,23 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   player who has gone elsewhere carried a null pointer into `Corpse::GetFactionTemplateId`.
   The race is on the corpse in all three cases and is what set the owner's faction to begin
   with, so it is derived from that rather than left to a caller to remember.
+
+### Test coverage
+
+Every test runs against a live server over SOAP; there is no unit test layer. The roster and gearing
+suites are listed in the companion document.
+
+| Test | What it proves |
+| --- | --- |
+| `test_wipe_recovery.py` | A partial wipe recovered by the surviving healer with nobody releasing, and a full wipe recovered with nobody left to cast anything |
+| `test_raid_wipe_recovery.py` | Each of the seven raids filled to its own cap and wiped with nobody standing, the whole raid walking back into an instance holding no live player |
+| `test_corpse_runs_live.py` | A bot killed inside each of the 26 instances releasing, crossing the world between, and letting itself back in unaided, with a spirit-healer rescue counted as a failure |
+| `test_bwl_corpse_run.py` | The one instance with no portal a ghost can walk into: the fallback to the map's ghost entrance, eighteen hundred yards of Blackrock Mountain, and a scripted trigger no search of the teleport table finds |
+| `sweep_corpse_runs.py` | Every entrance reachable from its release graveyard, as a mesh property rather than a walk. Cheap enough to run over all of Dire Maul's twenty-eight doors |
+| `test_combat_resurrection.py` | A bot that dies mid-fight brought back before the fight ends, by Rebirth and by self resurrection, three runs each |
+| `test_threat_throttling.py` | The tank leading the list when damage is released, no single loss of the target lasting more than fifteen seconds, and the tank holding it for at least 85 percent of the settled fight |
+| `test_spell_population.py` | Every named spell slot on a bot of each of the nine classes, asserting both that the bot knows what is in the slot and that the rank matches its level |
+| `test_totem_and_blessing_choice.py` | That a bot makes the same totem and blessing choice on every spawn, that the choice moves when group composition moves, and that each member holds the blessing suited to it |
 
 ### Build and test loop
 
@@ -273,6 +318,9 @@ Working on the WSL host, since SOAP binds to loopback. Source at `~/vmangos`, bu
   moving between branches. It does **not** make a genuinely new edit faster, and it does not
   help when a widely included header's contents change, since that changes the hash of every
   translation unit that includes it.
+- **`make` is not deployment.** The service runs the installed copy under `~/server/bin`, so a build
+  without `make install` and a restart leaves the old binary running and every measurement taken
+  against it worthless. This cost several hours once already.
 - **Restarting mangosd** needs an explicit wait for port 7878 to be released and rebound,
   otherwise the next SOAP call races the restart.
 - **There is a second world, `~/bin/server2`, for when two people are working at once.** A
@@ -294,11 +342,10 @@ Working on the WSL host, since SOAP binds to loopback. Source at `~/vmangos`, bu
 
 ## Scope: orchestration is bounded, rotations are not
 
-An earlier version of this section claimed the work was orchestration rather than rotations. The
-orchestration half of that is right and is argued below. The rotation half was wrong: a nine-class audit
-found the combat layer resting on a framework that caps quality no matter how much per-class code is
-added, and rebuilding it is now the single largest piece of work in the project. See
-[The rotation engine](#the-rotation-engine).
+The orchestration half of this project is bounded and is argued below. The rotation half is not, and
+it is the single largest piece of work here: a nine-class audit found the combat layer resting on a
+framework that caps quality no matter how much per-class code is added. See the rotation engine
+section below.
 
 The codebase has 113 `boss_*.cpp` scripts across 24 `instance_*.cpp` scripts, roughly 50 boss scripts
 in 5-man dungeons and 63 in raids. That count overstates the work, because a large majority of
@@ -373,43 +420,27 @@ nothing. There is currently zero connection between bot AI and encounter scripts
 Three things already work and need no effort:
 
 - **School immunity.** `CombatBotBaseAI::CanTryToCastSpell` already calls
-  `pTarget->IsImmuneToSpell(pSpellEntry, false)` at
-  [src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line 2839.
-  Ragnaros' fire immunity is pure data (`creature_template.school_immune_mask = 4`, set for entry
-  11502 in a migration), and the mage rotation reaches Frostbolt before Fire Blast and Fireball at
-  [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1898-1917. The
-  "mages must use frost on Ragnaros" mechanic therefore already works today. Note that Scorch below
-  20 percent health and cooldowns such as Arcane Power and Presence of Mind sit ahead of Frostbolt in
-  that chain, which does not change the conclusion.
-- **Redundant aura suppression.** Line 2845 of the same function refuses to re-apply an aura the
-  target already has.
-- **Accepting resurrection.** Bots auto-accept `SMSG_RESURRECT_REQUEST` at
-  [src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines
-  3381-3390, using the proper `ResurrectUsingRequestData()` path. This is the seed of wipe recovery.
+  `pTarget->IsImmuneToSpell(pSpellEntry, false)`. Ragnaros' fire immunity is pure data
+  (`creature_template.school_immune_mask = 4` for entry 11502), and the mage rotation reaches
+  Frostbolt before Fire Blast and Fireball, so "mages must use frost on Ragnaros" already works.
+- **Redundant aura suppression.** The same function refuses to re-apply an aura the target already
+  has. This is also the line that breaks every damage-over-time refresh; see the rotation engine.
+- **Accepting resurrection.** Bots auto-accept `SMSG_RESURRECT_REQUEST` through the proper
+  `ResurrectUsingRequestData()` path. This was the seed wipe recovery was built from.
 
-## Three structural blockers
+## Two remaining structural blockers
 
-**No wipe recovery.** `PartyBotAI::ShouldAutoRevive`
-([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 237-266) returns
-false when no group member is alive, so on a full wipe nobody revives. Party bots never call
-`BuildPlayerRepop` or `RepopAtGraveyard` outside battlegrounds (lines 731-751), never send
-`CMSG_REPOP_REQUEST`, and have no soulstone, Rebirth, or Ankh logic — druid `pRebirth` is parsed at
-[src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 1468-1471
-and never cast. Worse, `UpdateAI` returns immediately once a bot is dead, so a dead bot does nothing
-at all. Since patch 1.11 the engine does not auto-release players inside instances
-([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 1286-1303), so nothing breaks
-the deadlock. After one wipe the entire group lies on the floor permanently. This blocks even *testing*
-the rest of the work, which is why Phase 0 addresses it.
+There were three. **No wipe recovery** was the first and is closed: a wiped raid now releases, runs
+back and lets itself in, at forty bots, in every instance in the game. Phase 0 has the detail.
 
-**The AI tick is 1000ms.** `PB_UPDATE_INTERVAL` at
-[src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 42 throttles each
-bot to one decision per second. Adequate for a rotation, fatal for Heigan's dance or a Deep Breath.
+**The AI tick is 1000ms.** `PB_UPDATE_INTERVAL` in
+[src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) throttles each bot to one
+decision per second. Adequate for a rotation, fatal for Heigan's dance or a Deep Breath, and the
+reason roughly 17 percent of caster throughput is currently lost between casts.
 
-**Boss phases are private.** Onyxia's `m_uiPhase` is a plain member variable on the AI struct at
-[src/scripts/kalimdor/dustwallow_marsh/onyxias_lair/boss_onyxia.cpp](../src/scripts/kalimdor/dustwallow_marsh/onyxias_lair/boss_onyxia.cpp)
-lines 716-743. Instance-wide progress goes through `ScriptedInstance::SetData/GetData`, which is
-publicly readable, but per-boss phase integers are not mirrored there. There is also no event bus, so
-consumers must poll.
+**Boss phases are private.** Onyxia's `m_uiPhase` is a plain member variable on the AI struct.
+Instance-wide progress goes through `ScriptedInstance::SetData/GetData`, which is publicly readable,
+but per-boss phase integers are not mirrored there. There is also no event bus, so consumers poll.
 
 ## Architecture
 
@@ -445,12 +476,11 @@ lines 979-1003.
 
 ### The director needs two backends, because outdoor content has no instance
 
-An earlier draft hung the `EncounterDirector` off `InstanceData` and reached it through
-`GetInstanceData()`. **That only works inside instances.** `Map::CreateInstanceData` returns immediately
-when the map entry has no script id ([src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 1986-1996),
-and the continents have an empty `ScriptName` in `map_template`, so `GetInstanceData()` is null on maps
-0 and 1. Every outdoor encounter this campaign wants is therefore uncovered: Azuregos, Lord Kazzak, the
-four dragons of nightmare, and Prince Thunderaan for the Thunderfury chain.
+**`GetInstanceData()` is null on maps 0 and 1**, so a director hung off `InstanceData` alone covers
+no outdoor content at all. `Map::CreateInstanceData` returns immediately when the map entry has no
+script id, and the continents have an empty `ScriptName` in `map_template`. That leaves out every
+outdoor encounter this campaign wants: Azuregos, Lord Kazzak, the four dragons of nightmare, and
+Prince Thunderaan for the Thunderfury chain.
 
 Define the director as an interface with two implementations:
 
@@ -485,32 +515,21 @@ on the `creature` row, three to seven days by default, and can be shortened for 
 
 ## Phase 0 - Death and wipe recovery [in progress]
 
-**Status.** The deadlock is gone: a wiped group now recovers on its own, verified end to end
-by `contrib/harness/test_wipe_recovery.py`. Landed are the movement-ack fix (`5e77b066d`),
-the two corpse-path bugs (`700a41239`), and recovery itself (`2c28cd731`) — gating
-`ShouldAutoRevive`, explicit release, a budgeted healer window, and the spirit-healer
-fallback, with `PartyBot.AutoRevive` off and `PartyBot.DeathRecoveryTimeout` at 60 on the dev
-server. Observed sequence for a full wipe in Durotar: dead in place, released and at the
-graveyard two seconds later, ghost until the timeout, spirit resurrection at 58 seconds, then
-walking back to the group.
+**Status.** A wiped raid recovers on its own, unaided, in every instance in the game. The deadlock
+that made this the first blocker is gone: `ShouldAutoRevive` is gated, release is explicit, a
+surviving healer gets a budgeted window, and the spirit healer is the outer deadline. Recovery costs
+distance rather than a flat timeout, because the corpse run works — every entrance is reachable from
+the graveyard its ghosts release to, six of them only after an offmesh link.
 
-The corpse run has since landed too (`22989e473`), so recovery costs distance rather than a
-flat timeout. Every entrance in the game has been surveyed and every one is reachable from
-the graveyard its ghosts release to: 19 dungeons and all 7 raids, confirmed by
-`contrib/harness/sweep_corpse_runs.py`. Six of them needed an offmesh link first
-(`18c47ba47`).
+Two suites prove it. `test_corpse_runs_live.py` kills a bot inside each of the 26 instances and
+requires it to release, cross whatever world lies in between and let itself back in, counting a
+spirit-healer rescue as a failure however alive it leaves the bot; it runs in about five minutes and
+comes in clean. Four bot bugs and two engine bugs were found in the gap between "a route exists" and
+"a bot walks it", all recorded under findings.
 
-The survey has since been replaced by the real thing. `contrib/harness/test_corpse_runs_live.py`
-kills a bot inside each of the 26 instances and requires it to release, cross whatever world
-lies in between and let itself back in unaided, treating a spirit-healer rescue as a failure
-however alive it leaves the bot. It runs all 26 across a pool of leaders in about five minutes
-and has come in clean repeatedly. Four bot bugs and two engine bugs were found in the gap
-between "a route exists" and "a bot walks it", all recorded under findings.
-
-Scale is covered too, by `contrib/harness/test_raid_wipe_recovery.py`: each raid filled to its
-own player cap and wiped inside, with nobody left standing including the leader, so the
-instance holds no live player at all while the whole raid walks back. **All seven recover
-completely**, in 11 minutes for the set:
+`test_raid_wipe_recovery.py` does it at scale: each raid filled to its own cap and wiped with nobody
+left standing including the leader, so the instance holds no live player at all while the raid walks
+back. **All seven recover**, in 11 minutes for the set:
 
 | Raid | Bots | Back inside |
 | --- | --- | --- |
@@ -522,285 +541,162 @@ completely**, in 11 minutes for the set:
 | Ahn'Qiraj Temple | 39 | 92s |
 | Naxxramas | 39 | 62s |
 
-Blackwing Lair is the hardest of them, since the way back in is the scripted Orb of Command
-rather than a portal and every one of the thirty-nine needs Blackhand's Command to use it.
-Forty ghosts on one road is also the load case the single-bot suite cannot produce, and it
-holds up: releases land within two seconds of the wipe and the run back is no slower per bot
-than it is alone.
+Blackwing Lair is the hardest, since the way back in is the scripted Orb of Command rather than a
+portal and all thirty-nine need Blackhand's Command to use it. Forty ghosts on one road is also the
+load case the single-bot suite cannot produce, and it holds: releases land within two seconds of the
+wipe and the run back is no slower per bot than it is alone.
 
-The free-resource defaults are done, and the death penalty is now the default rather than a
-setting the dev server happens to carry: `PartyBot.AutoRevive` is off, the out-of-combat full
-restore is gone, the spawn-time restore no longer reaches characters loaded from the database,
-hunters are stocked once when they spawn instead of whenever a shot finds an empty quiver,
-weapon buffs go through the normal cast path, and a rogue's poisons are applied by using a vial
-that is then gone. Three of the five turned out to be different bugs than this document
-described, all recorded under findings. `.harness info` reports health, power, ammo, both
-weapons' temporary enchants and everything in the bot's bags now, because none of this could be
-seen from outside otherwise, and a consumable that is spent looks exactly like one that is not
-until the stack is counted. Both suites were re-run against it: 26 of 26 and 7 of 7, clean.
+**What is left is applying a soulstone before the pull.** Consuming one works, but nothing applies
+one and nothing can until the warlock spell struct has a slot for it.
 
-`Corpse::GetFactionTemplateId` is fixed. The claimed double durability loss on environmental
-death was not real; see findings.
+The spirit-healer fallback is not scaffolding to be deleted now that the corpse run works. It stays
+as the outer deadline, since a corpse somewhere the bot cannot path to would otherwise stall the
+whole roster.
 
-Note that the spirit-healer fallback is not scaffolding to be deleted once the corpse run
-lands. It stays as the outer deadline, since a corpse in a spot the bot cannot path to would
-otherwise stall the whole roster.
+**The free-resource cheats are off by default, not merely switchable.** Several paths handed bots
+free resources, and each one hid the failure it was compensating for. A realistic path exercised only
+during measurement runs rots, and the gap between measured behaviour and played behaviour becomes a
+permanent source of confusion, so the harness and the human see the same game.
 
-Do this first. Nothing else is testable without it, and every later phase will be exercised through
-repeated wipes.
+The line is not "cheat versus no cheat" but **whether the shortcut erases a time or risk cost or
+merely a gold cost.** Time and risk are what make the content a game and are what the harness
+measures, so those go. Gold and inventory bookkeeping are tedium nobody is watching, and those stay.
 
-**The free-resource cheats are off by default, not merely switchable.** Several paths hand bots free
-resources, and each one hides the failure it is compensating for. These were originally scoped as a switch
-the harness would flip; that was too weak. If the realistic path is only exercised during measurement runs,
-it rots, and the difference between measured behavior and played behavior becomes a permanent source of
-confusion. Default them off and let the harness and the human see the same game.
+Erasing time or risk, therefore off by default. Three of these five turned out to be different bugs
+than this document originally described; the corrected versions are under findings.
 
-The useful line to draw is not "cheat versus no cheat" but **whether the shortcut erases a time or risk cost
-or merely a gold cost.** Time and risk are what make the content a game and are exactly what the harness
-measures, so those shortcuts go. Gold and inventory bookkeeping are tedium the human is not watching, and
-those may stay.
+- **Full health and mana out of combat.** [done] Granted when the bot was more than 100 yards from
+  the party *leader*, not from enemies, so that a bot left out of range did not sit drinking forever.
+  Bots now drink like players and mana burnout across a spread-out raid is visible. Removing it alone
+  hangs the bot; see findings for why distance has to be handled before hunger.
+- **Ammo refilled on a failed shot.** [done] `AddHunterAmmo` granted a full stack whenever auto-shot
+  failed for want of ammo, so a hunter could never run dry. The accepted cost is that roster
+  provisioning must stock and restock ammo, or hunters silently stop contributing.
+- **Auto-resurrection between pulls.** [done] `ShouldAutoRevive` and the resurrect at its call site
+  erased the death penalty entirely. Off by default makes the corpse run the only recovery path, and
+  therefore load-bearing rather than optional.
+- **Weapon buffs cast as triggered spells.** [done, and two thirds of the original claim was wrong]
+  `CastWeaponBuff` built the spell with `triggered = true`, which was said to make shaman imbues free.
+  It did not: `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not `m_IsTriggeredSpell`, so
+  they were always paid for. What the flag really skipped was the global cooldown, range and line of
+  sight, and the silence and school lockouts, which is worth having and is what the fix bought.
+- **Rogue poisons, which were genuinely free for a reason no flag controls.** [done] A rogue learns
+  the trade spell that makes the vial, not the enchant the vial applies, so the bot cast the enchant
+  by name without ever holding a poison. `CastWeaponBuff` now splits on `HasSpell` — exactly the line
+  between an imbue and a poison — and applies the latter by using the vial, which spends a charge.
 
-Erasing time or risk, therefore off by default:
+Bot mount copying does the same and worse, setting `PLAYER_CHEAT_NO_CAST_TIME` and
+`PLAYER_CHEAT_NO_POWER` around a triggered cast, but that one only affects travel.
 
-- **Full health and mana out of combat.** [done] Set when the bot is more than 100 yards **from the party
-  leader** - not from enemies - and gated behind `DrinkAndEat` returning true
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 792-805). It exists so
-  a bot left out of range does not sit drinking forever. With it off, bots sit and drink like players do,
-  and mana burnout across a spread-out raid becomes visible.
-- **Ammo refilled on a failed shot.** [done] `AddHunterAmmo` grants a full stack whenever auto-shot fails with
-  `SPELL_FAILED_NO_AMMO` or `SPELL_FAILED_NEED_AMMO`
-  ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line 2908, called
-  from [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 1566-1572), so a
-  hunter can never run dry. Turning this off has a real cost worth accepting deliberately: roster
-  provisioning must stock ammo and restock it between runs, otherwise hunters silently stop contributing.
-- **Auto-resurrection between pulls.** [done] `ShouldAutoRevive`
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 237) plus the
-  resurrect at its call site (lines 731-748) erase the death penalty entirely. Off by default means the
-  corpse run below is the only recovery path, which makes it load-bearing rather than optional.
-
-There is also a rule bypass that is not a config at all, and it directly inflates two classes.
-`CombatBotBaseAI::CastWeaponBuff` constructs the spell with `triggered = true`
-([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines 3074-3086):
-
-```cpp
-Spell* spell = new Spell(me, pSpellEntry, true, ObjectGuid(), nullptr, nullptr, nullptr);
-```
-
-[done, and it was two thirds wrong] A triggered spell skips the global cooldown, the range and
-line-of-sight checks, and the silence and school-lockout checks. It does **not** skip the mana cost
-here, whatever it does upstream: `Spell::TakePower` exempts `m_triggeredByAuraSpell` and not
-`m_IsTriggeredSpell`, and `m_powerCost` is calculated regardless, so shaman imbues were always
-paid for. Reagent consumption is skipped, but these spells have no reagents, so that changed
-nothing either. The cast is normal now, which buys the cooldown and the two checks and is worth
-having, and enhancement throughput was never inflated the way this said.
-
-[done] Poisons were a separate problem that the flag never touched, and they really were free: a
-rogue knows the trade spell that makes the vial, not the enchant the vial applies, and the bot
-cast the enchant by name without ever holding a poison. `CastWeaponBuff` now splits on whether
-the character knows the spell, which is exactly the line between an imbue and a poison, and
-applies the latter by using the vial. See findings.
-
-Bot mount copying does something similar and worse, setting `PLAYER_CHEAT_NO_CAST_TIME` and
-`PLAYER_CHEAT_NO_POWER` around a triggered cast, though that one only affects travel.
-
-Related and worth knowing when interpreting failures: `CanTryToCastSpell` checks cooldown, global cooldown,
-power, immunity, shapeshift, aura state, and range, but **omits line of sight and silence**. Those failures are
-therefore only discovered at cast time, which is a large part of why bots appear to stutter behind pillars.
+Worth knowing when interpreting cast failures: `CanTryToCastSpell` checks cooldown, global cooldown,
+power, immunity, shapeshift, aura state and range, but **omits line of sight and silence**. Those are
+discovered only at cast time, which is much of why bots appear to stutter behind pillars.
 
 Erasing only gold, therefore acceptable to keep:
 
 - **Free reagents at spawn.** `AddAllSpellReagents` grants every reagent and totem the bot's spells
-  require ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) line
-  1827). Costs gold only, and a roster of forty bots shopping for Sacred Candles is pure tedium.
-  A rogue's poison vials are now stocked here too, one stack per poison and only when the bot has
-  none, since spending them is a cost in gold and applying them is not a cost in anything else.
-- **Fake food and drink.** `DrinkAndEat` casts spells 1131 and 1137 rather than consuming real items
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 185). This removes the
-  gold cost of water while **keeping the time cost of drinking**, which is the part that matters, so it
-  falls on the acceptable side of the line.
+  require. Costs gold only, and forty bots shopping for Sacred Candles is pure tedium. Poison vials
+  are stocked here too, one stack per poison and only when the bot has none, since spending them is a
+  cost in gold and applying them is not a cost in anything else.
+- **Fake food and drink.** `DrinkAndEat` casts spells 1131 and 1137 rather than consuming real items,
+  which removes the gold cost of water while **keeping the time cost of drinking** — the part that
+  matters.
 
 Two consequences of turning auto-resurrection off are easy to miss:
 
-- **Spawn-time full restore is a corpse-run bypass.** [done] Bot initialization set health and power to
-  100 percent for both kinds of bot, so despawning and re-summoning a wiped roster resurrected it at full
-  strength and skipped the corpse run completely. A character conjured seconds ago still starts whole,
-  since it has no history to keep, but one loaded from the database now keeps what it logged out with.
-  This landed the same afternoon `.raidguild summon` did, which is the command it would otherwise have
-  made free.
-- **A stuck corpse run deadlocks the whole roster.** With no auto-revive, a bot whose corpse is unreachable
-  or whose pathing stalls stays dead forever and the harness waits on it indefinitely. The spirit-healer
-  fallback is therefore not a nicety: it is the timeout that keeps the system live, and it needs to fire on
-  elapsed time rather than on a successful path query.
+- **Spawn-time full restore is a corpse-run bypass.** [done] Bot initialization set health and power
+  to 100 percent, so despawning and re-summoning a wiped roster resurrected it at full strength and
+  skipped the corpse run. A character conjured seconds ago still starts whole, having no history to
+  keep, but one loaded from the database keeps what it logged out with.
+- **A stuck corpse run deadlocks the whole roster.** With no auto-revive, a bot whose corpse is
+  unreachable stays dead forever and the harness waits on it indefinitely. This is why the
+  spirit-healer fallback fires on elapsed time rather than on a failed path query.
 
-The `ResurrectPlayer` call in `PlayerBotMgr::Update`
-([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) lines 238-245) stays as
-is. It fires only on bot removal and exists to avoid leaving corpses behind on despawn.
+The `ResurrectPlayer` call in `PlayerBotMgr::Update` stays as is. It fires only on bot removal and
+exists to avoid leaving corpses behind on despawn.
 
-**The death and corpse code was cold while bots self-resurrected; turning that off makes it hot, and it has
-bugs.** An audit found several, of which two are directly in the corpse-run path:
+**The death and corpse code was cold while bots self-resurrected, and turning that off made it hot.**
+Three engine bugs, all fixed. `ResurrectUsingRequestData` never cleared the resurrect request on
+success, and since a resurrection spell is refused while `IsRessurectRequested()` is true, a bot that
+accepted one resurrection could not be resurrected again until it died afresh — for a healer working
+down a pile of corpses, the difference between recovering and not. `BuildPlayerRepop` could leave a
+bot holding the ghost flag while still in `CORPSE` state if `CreateCorpse` failed, after which it
+could neither release nor be resurrected. And `Corpse::GetFactionTemplateId` dereferenced an
+`m_faction` that is never set for database-loaded corpses, which is a crash rather than a glitch.
 
-- **A resurrect request is never cleared on success.** [fixed] `ResurrectUsingRequestData` resurrects and spawns bones
-  but never calls `ClearResurrectRequestData`, and that only otherwise runs on transition to `JUST_DIED`
-  ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) around lines 20164-20220). Since
-  `SpellEffects.cpp` refuses a resurrection spell while `IsRessurectRequested()` is true, **a bot that
-  accepts one resurrection cannot be resurrected again until it dies afresh.** For a raid healer working down
-  a pile of corpses, that is the difference between recovering and not.
-- **Release can leave a bot permanently stuck.** [fixed] If `CreateCorpse` fails inside `BuildPlayerRepop`, the
-  function has already applied ghost form and returns before `SetDeathState(DEAD)`
-  ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 4644-4695). The bot then holds the
-  ghost flag while still in `CORPSE` state, and `HandleRepopRequestOpcode` refuses to release anything already
-  flagged as a ghost - so it can neither release again nor be resurrected, with no corpse registered.
+A fourth, the claimed double durability loss on environmental death, was never real; see findings.
 
-Two more were listed here as worth fixing while in this code, and only one of them was real.
-`Corpse::GetFactionTemplateId` did dereference an `m_faction` that is never set for DB-loaded corpses
-or for bones spawned by `Map::RemoveCorpses` when the owner is elsewhere, which is a crash rather than
-a glitch, and it is fixed. Environmental deaths were said to apply the ten percent durability loss
-twice; they do not, and never did. See findings.
+The engine behaviour the recovery path rests on. Each was verified, and none of it is obvious from
+the source:
 
-One item needs verifying rather than fixing blind, because it decides whether release works at all for bots.
-`ScheduleRepopAtGraveyard` defers the graveyard teleport when `GetSession()->IsConnected()`, and the deferred
-path only fires once `HasPendingMovementChange()` is false
-([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 5039-5045 and 1330-1336). Bot sessions
-have no real client to acknowledge movement. If a bot session reports connected, release may never complete
-and the ghost sits on its corpse forever; if it reports disconnected, the immediate branch runs and everything
-is fine. Establish which, first thing, since the whole recovery design rests on it.
+- **Ghosts cannot follow.** `FollowMovementGenerator::Update` and `ChaseMovementGenerator` both
+  return immediately when the owner is not alive, and silently, so the obvious implementation does
+  nothing at all. The run is therefore a `MovePoint` reissued each time the previous leg ends.
+  Ghosts are otherwise unrestricted: only the `CORPSE` state is rooted.
+- **Re-entering as a ghost auto-resurrects at the portal.** `Player::TeleportTo` resurrects at 50
+  percent and destroys the corpse when the destination map holds it, so the run ends at the entrance
+  rather than at the body, and `CMSG_RECLAIM_CORPSE` is rarely the resurrection path in practice.
+- **Ghosts may re-enter mid-encounter.** The anti-rush check blocks living players only.
+- **Release must be explicit**, since patch 1.11 stopped auto-release inside instances. Release and
+  the `ShouldAutoRevive` gate had to land together: ungated, a released bot resurrects on the spot
+  and destroys the corpse the run depends on; gated without release, it freezes in `CORPSE` forever
+  because `ShouldAutoRevive` finds no living ally.
+- **`SelectResurrectionTarget` skipped any member not in `CORPSE` state**, so a surviving healer
+  silently lost the ability to help teammates the instant they released, which is backwards. The
+  spell engine accepts any non-alive target.
+- **Corpse reclaim escalates** — 30, then 60, then 120 seconds by recent deaths, within a 39-yard
+  radius. Both checks are plain C++ with no client dependency. The escalation matters for the
+  harness, since repeated wipe testing pushes every bot to the two-minute delay.
+- **Graveyard resolution prefers `MapEntry::ghostEntranceMap`** when the corpse is inside an
+  instance. Naxxramas is the exception at -1, relying on an explicit `game_graveyard_zone` row for
+  zone 3456. If nothing resolves, the ghost stays where it died.
+- **Steep slopes must not be excluded** the way they are for a living bot. Several dungeon mouths sit
+  at the bottom of a drop, and refusing the descent leaves the ghost pacing the rim above its corpse.
+- **The area-trigger scan is correct and should not be optimised away.** Sending a known entrance id
+  instead fails on Blackwing Lair, whose entrance is a scripted trigger absent from the teleport
+  table. It is merely gated on being within 60 yards so a long run does not pay for it each tick.
+- **Non-saveable bots do get working in-world corpses.** `CreateCorpse` always registers with
+  `sObjectAccessor`; `IsSavingDisabled()` gates only the database write. An earlier assumption here
+  said otherwise.
+- **Ghost run speed is configured against the wrong death state.** The configs applied at `CORPSE`
+  rather than `DEAD`, so the rate reached the body on the floor and never the ghost, which is the
+  only one of the two that walks anywhere. Fixed, along with the speed recalculation
+  `BuildPlayerRepop` was missing. `Death.Ghost.RunSpeed.World = 3.0` took the 26-instance suite from
+  14 minutes to 5.
+- **Durability is not exempted.** Bots take the standard 10 percent loss per death, so wipe-heavy
+  testing destroys roster gear without the repair work from the companion document. Spirit-healer
+  resurrection costs 25 percent across all items plus resurrection sickness.
+- **If the human leaves, every bot requests removal**, and removal resurrects dead bots first. The
+  instance stays loaded with only bots present, because `Map::HaveRealPlayers()` is consulted by
+  temporary battleground bots and never by `PartyBotAI`.
 
-The goal is a real corpse run: the group releases spirit, appears at the entrance graveyard, and runs
-back into the instance alongside the human, exactly as human players do. The engine supports nearly
-all of this. Two specifics govern the design.
+Combat resurrection is done (`a79512778`). Rebirth is cast during the fight above the healing
+rotation and drops shapeshift to do it, which is most of its value, since it cannot be cast in any
+form and a feral or balance druid is the ordinary case. Self resurrection reads
+`PLAYER_SELF_RES_SPELL`, which the engine has already resolved into whichever of soulstone, Ankh or
+Twisting Nether applies, so all three are one branch; it is spent during combat, and otherwise only
+once the window for a living healer has closed, since a healer's mana comes back and these do not
+for half an hour. A surviving healer is preferred over a corpse run throughout: `UpdateDeadAI` holds
+a bot in `CORPSE` while a healer is alive and casting.
 
-**`MoveFollow` does not work on a ghost, so bots cannot simply follow the human back.**
-`FollowMovementGenerator::Update` returns immediately when the owner is not alive at
-[src/game/Movement/TargetedMovementGenerator.cpp](../src/game/Movement/TargetedMovementGenerator.cpp)
-lines 698-704, and `ChaseMovementGenerator` does the same. This is the obvious implementation and it
-fails silently. Corpse runs must be built from `MovePoint` chains, which have no alive check at the
-motion layer, or `FollowMovementGenerator` must be patched to permit dead followers. Ghosts are
-otherwise unrestricted: only the `CORPSE` state is rooted, per `Unit::ShouldBeRooted` at
-[src/game/Objects/Unit.h](../src/game/Objects/Unit.h) line 1299.
+## Phase 1 - Generic combat correctness [in progress]
 
-**Re-entering the instance as a ghost auto-resurrects the bot at the portal.** `Player::TeleportTo`
-resurrects at 50 percent and destroys the corpse when the destination map holds the player's corpse
-([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 1953-1963). The corpse run
-therefore ends at the instance entrance, not at the body. That is acceptable and convenient, but it
-means run-to-corpse pathing inside the instance would be dead code, and `CMSG_RECLAIM_CORPSE` will
-rarely be the resurrection path in practice.
-
-The state machine. Release, the `ShouldAutoRevive` gate, ghost-targeted resurrection and the
-spirit-healer deadline landed in `2c28cd731`, and the run back and re-entry followed in
-`22989e473`. The analysis below is kept because it is what the implementation was built from.
-
-- **Release.** [done] Send the equivalent of `CMSG_REPOP_REQUEST`, or call `BuildPlayerRepop()` followed by
-  `ScheduleRepopAtGraveyard()` directly, mirroring what battleground bots already do at
-  [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 731-751. Since
-  patch 1.11 the engine does not auto-release inside instances
-  ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 1286-1303), so release must be
-  explicit.
-- **Gate `ShouldAutoRevive` first.** [done] It returns true unconditionally once a bot reaches the `DEAD`
-  ghost state ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
-  237-240), which would resurrect the bot on the spot and defeat the corpse run entirely. Its other
-  heuristics — blocking revival while any member is in combat or any healer lives — are reasonable for
-  a 5-man assist bot and wrong here. The two failure modes compose badly: without explicit release the
-  bots freeze in `CORPSE` forever because `ShouldAutoRevive` finds no living ally, and the moment
-  release is added they immediately resurrect on the spot and destroy their own corpses. Both halves
-  must land together.
-- **`SelectResurrectionTarget` will not res a released ghost.** [done] It skips any member whose death state
-  is not `CORPSE` ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
-  451-452), even though the spell engine accepts any non-alive target since resurrection spells are
-  death-only and both `CORPSE` and `DEAD` satisfy that. So a surviving healer silently stops being able
-  to help teammates the instant they release, which is backwards.
-- **Corpse reclaim has an escalating delay** of 30, 60, then 120 seconds based on recent deaths, and a
-  39-yard radius (`CORPSE_RECLAIM_RADIUS`). Both checks live in `HandleReclaimCorpseOpcode`
-  ([src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 573-602) and are
-  plain C++ with no client dependency, so they can be driven server-side. The escalation matters for
-  the harness: repeated wipe testing pushes every bot to the two-minute delay.
-- **Correction to an earlier assumption in this document.** Non-saveable bots *do* get working in-world
-  corpses. `CreateCorpse` always calls `sObjectAccessor.AddCorpse`, and `IsSavingDisabled()` gates only
-  the database write ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 4834-4840).
-  Persistent roster bots therefore gain corpse survival across a relog or restart, but nothing about
-  live wipe recovery depends on it. The blocker is entirely the missing AI pipeline.
-- **Graveyard resolution.** `Player::RepopAtGraveyard`
-  ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 5047-5101) handles the ghost
-  teleport out, and `ObjectMgr::GetClosestGraveYardForArea` (lines 7571-7630) prefers a graveyard on
-  `MapEntry::ghostEntranceMap` when the corpse is inside an instance. Molten Core and Blackwing Lair
-  both have `ghostEntranceMap = 0` with valid coordinates, as does Deadmines. Naxxramas has
-  `ghostEntranceMap = -1` and relies on an explicit `game_graveyard_zone` row for zone 3456, so it
-  needs a special case. If no graveyard resolves at all, the ghost simply stays where it died.
-- **Run back.** [done] `PartyBotAI::UpdateCorpseRun`. `BattleBotWaypoints` turned out not to be worth
-  reusing: authored waypoints are unnecessary because the mesh already knows the terrain, so the run
-  is a `MovePoint` reissued each time the previous leg ends. Steep slopes are *not* excluded the way
-  they are for a living bot — several dungeon mouths sit at the bottom of a drop, and refusing the
-  descent leaves the ghost pacing the rim above its own corpse.
-- **Enter.** `CombatBotBaseAI::ActivateNearbyAreaTrigger()`
-  ([src/game/PlayerBots/CombatBotBaseAI.cpp](../src/game/PlayerBots/CombatBotBaseAI.cpp) lines
-  3305-3319) routes to `HandleAreaTriggerOpcode`, which contains explicit ghost-entering-a-dungeon
-  handling at [src/game/Handlers/MiscHandler.cpp](../src/game/Handlers/MiscHandler.cpp) lines 712-756.
-  Note that it scans every area trigger globally and takes the first match within 5 yards. The
-  advice here was originally to send a known entrance trigger id directly and skip the scan; that
-  turned out to be wrong, because Blackwing Lair's entrance is a scripted trigger that no lookup of
-  the teleport table finds. The scan is the correct behaviour and matches what a client does; it is
-  merely gated on being within 60 yards of the entrance so a long run does not pay for it each tick.
-- Ghosts may re-enter even mid-encounter. The anti-rush check at
-  [src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 2157-2164 only blocks living players.
-
-Supporting work:
-
-- Wire up the resurrection tools that already exist but are unused: druid Rebirth, warlock soulstones,
-  shaman Reincarnation. [mostly done, `a79512778`] Rebirth is cast during the fight, above the healing
-  rotation, and drops shapeshift to do it, which is most of the value: it cannot be cast in any form
-  and a feral or balance druid is the ordinary case. Self resurrection reads `PLAYER_SELF_RES_SPELL`,
-  which the engine has already resolved into whichever of soulstone, Ankh or Twisting Nether applies,
-  so all three are one branch; it is spent during combat and otherwise only once the window for a
-  living healer has closed, since a healer's mana comes back and these do not for half an hour.
-  Reincarnation also needed its Ankh stocked, being the one reagent the spawn-time pass cannot reach.
-  `contrib/harness/test_combat_resurrection.py` covers both, three runs each.
-
-  What is left is the soulstone's other half. Consuming one works, but nothing applies one, and
-  nothing can until the warlock spell struct has a slot for it — that is `PopulateSpellData`, which
-  another agent is in the middle of. A surviving healer resurrecting the raid is already preferred
-  over a corpse run: `UpdateDeadAI` holds a bot in `CORPSE` while a healer is alive and casting.
-- Offer spirit healer resurrection as a configurable fallback. `SendSpiritResurrect`
-  ([src/game/Handlers/NPCHandler.cpp](../src/game/Handlers/NPCHandler.cpp) lines 416-477) is far
-  simpler to drive than a corpse run, at the cost of 25 percent durability across all items plus
-  resurrection sickness. Useful when pathing fails.
-- Budget for durability. Bots take the standard 10 percent loss per death with no exemption
-  ([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) lines 1169-1181), so wipe-heavy testing
-  will destroy roster gear without the repair work from the companion document.
-- The ghost run-speed configs were applied when the death state is `CORPSE` rather than `DEAD`
-  ([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) lines 7267-7274), so the rate only ever
-  reached the body on the floor and never the ghost, which is the only one of the two that walks
-  anywhere. Now fixed, along with the speed recalculation that `BuildPlayerRepop` was missing:
-  ghost form is applied before the state changes, so nothing had recomputed speed since. The dev
-  server runs `Death.Ghost.RunSpeed.World = 3.0`, which is what took the full 26-instance suite
-  from 14 minutes to 5.
-- Useful behavioral detail: if the human leaves entirely, `GetPartyLeader()` fails and every bot sets
-  `requestRemoval` ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
-  686-690), and removal resurrects dead bots first
-  ([src/game/PlayerBots/PlayerBotMgr.cpp](../src/game/PlayerBots/PlayerBotMgr.cpp) lines 236-245). The
-  instance itself stays loaded with only bots present, because `Map::HaveRealPlayers()`
-  ([src/game/Maps/Map.cpp](../src/game/Maps/Map.cpp) lines 1820-1825) is consulted only by temporary
-  battleground bots, never by `PartyBotAI`.
-
-## Phase 1 - Generic combat correctness [not started]
-
-No boss knowledge required. These fix behavior that is wrong in every raid encounter.
+No boss knowledge required. These fix behaviour that is wrong in every raid encounter. Threat and
+tanking are done and tested at full raid size; tick responsiveness is folded into the rotation
+engine's action pipeline.
 
 - **Tank threat generation.** [done] Every ceiling below is a share of the tank's threat, so the
   tank's own output sets what the whole raid is allowed to do, and it was the thing most wrong.
   A bot tank finished the eight second hold on 251 threat at full raid size, which is not a
   throttle problem but an empty rotation, and the numbers underneath it were all consequences.
 
-  Four separate faults, each worth stating because each looks like a working rotation from
-  outside. **Taunt and Revenge were absent from the warrior spell data** — not unused, never
-  populated. Taunt turned out to be covered anyway: `UpdateInCombatAI` taunts for every tank
-  class off `m_spellListTaunt`, which is built from anything carrying `SPELL_EFFECT_ATTACK_ME`
-  or `SPELL_AURA_MOD_TAUNT` and so catches a druid's Growl as readily as a warrior's Taunt. An
-  earlier revision of this document claimed nothing in the codebase could taunt, which was
-  wrong. **The tank shared the damage warrior's list**, which spends
-  its early slots on Execute, Overpower and Rend and reaches Sunder Armor eleventh. **Heroic
-  Strike's test was inverted**, dumping rage only below thirty and pooling in silence above it,
-  so the tank being hit hardest did least with what that earned. And **Sunder Armor has no
-  cooldown and never fails**, which makes it a floor: Demoralizing Shout sat under it and was
-  unreachable.
+  Four faults, each of which looks like a working rotation from outside. **Taunt and Revenge were
+  absent from the warrior spell data**, never populated. **The tank shared the damage warrior's
+  list**, which spends its early slots on Execute, Overpower and Rend and reaches Sunder Armor
+  eleventh. **Heroic Strike's test was inverted**, dumping rage only below thirty and pooling in
+  silence above it, so the tank being hit hardest did least with what that earned. And **Sunder
+  Armor has no cooldown and never fails**, which makes it a floor that Demoralizing Shout sat
+  under, unreachable.
 
   `UpdateInCombatAI_WarriorTank` splits the tank off and orders it by what the spell data says
   rather than by habit. Defensive Stance first, since Taunt, Revenge and Shield Block are all
@@ -811,22 +707,18 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
   Then the cooldown itself, best threat per rage first: Shield Slam, Revenge, the two shouts held
   behind their own auras, and Sunder Armor as the floor.
 
-  Taunt stays in the shared path rather than being copied here, and that path gained the two
-  things it was missing. It fired whenever the mob was simply looking at someone else, which
-  taunts it off the *other tank* as readily as off a mage and leaves two tanks trading it all
-  encounter with no taunt left when a damage dealer genuinely needs saving; `ShouldTauntTarget`
-  now requires the holder to be a group member who is not another tank. And it returned on a
-  successful cast, giving up the tank's cast for that tick on top of the target it had just
-  lost, which is the worst possible moment to do nothing — Taunt is off the global cooldown, so
-  it now breaks out of the loop and carries on into the rotation.
+  Thunder Clap and Mocking Blow are deliberately absent. Both carry stance mask 65536, Battle
+  Stance, so a Defensive tank calling them was calling something that always failed.
 
-  Thunder Clap and Mocking Blow are deliberately not in it. Both carry stance mask 65536, which
-  is Battle Stance, so a Defensive tank calling them was calling something that always failed.
-
-  At twenty-five bots this moved every damage dealer's peak from 102-124 percent of the tank's
-  threat, with two mages taking the boss outright, to 16-86 percent with nobody above it. The
-  throttle is no longer what holds the raid together; the tank is simply ahead, and the throttle
-  is the safety net it was supposed to be.
+  **Taunt was already handled and this document previously said it was not.** `UpdateInCombatAI`
+  taunts for every tank class off `m_spellListTaunt`, built from anything carrying
+  `SPELL_EFFECT_ATTACK_ME` or `SPELL_AURA_MOD_TAUNT`, so it catches a druid's Growl as readily as a
+  warrior's Taunt. That shared path was missing two things rather than existing. It fired whenever
+  the mob was merely looking at someone else, which takes it off the *other tank* as readily as off
+  a mage and leaves two tanks trading it all encounter with no taunt left when a damage dealer
+  needs saving; `ShouldTauntTarget` now requires a group member who is not another tank. And it
+  returned on a successful cast, giving up the tank's global cooldown on top of the target it had
+  just lost. Taunt is off the global cooldown, so it now breaks and carries on into the rotation.
 
 - **A bot below sixty barely knew its class.** [done] Found while checking that the tank above
   degrades properly at Wailing Caverns levels, and much larger than the thing it was found
@@ -877,14 +769,6 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
   throttle that worked by never attacking would satisfy every assertion above and show up as a raid
   idling at half the tank's threat.
 
-  Before any of this, damage dealers ran to 143 percent of the tank and took the mob off it. With
-  the ceiling alone a warlock still pulled at 127 percent, because it had opened before the tank had
-  anything to be a percentage of. As it stands, at twenty-five bots the hold leaves the tank on 1042
-  threat against a next best of 720, it never loses the target across a minute of settled fight, and
-  seventeen of the twenty-five push to within a tenth of its threat. An earlier run of the same
-  shape lost the target twice for two seconds each, which is the intended behaviour rather than a
-  near miss.
-
   **Five seconds of hold was tried and is not enough**, which is worth recording because it looks
   like free damage. A bot tank does not open like a player one: five seconds into a twenty-five bot
   pull it held 215 threat and was behind a rogue's auto-attacks, where at eight it held 966.
@@ -894,63 +778,54 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
   **Being over the ceiling is no longer a reason to stop, only a reason to cast something smaller.**
   `PickRankForThreat` answers "which rank" where the ceiling used to answer "whether", walking down
   the chain from `GetPrevSpellInChain` and taking the highest rank whose threat fits the room left.
-  The estimate is exact enough to do this because threat for a damage spell *is* the damage:
-  `SpellEffects` hands the number it just dealt straight to `AddThreat`, so
-  `CalculateSpellEffectValue` through `SpellDamageBonusDone` answers the question before the cast.
-  Only direct damage is downranked. A lower rank of a damage over time effect would hold the target's
-  slot with the weak version for the full duration, and melee ranks barely differ.
+  The estimate is exact enough because threat for a damage spell *is* the damage: `SpellEffects`
+  hands the number it just dealt straight to `AddThreat`, so `CalculateSpellEffectValue` through
+  `SpellDamageBonusDone` answers the question before the cast. Only direct damage is downranked; a
+  lower rank of a damage over time effect would hold the target's slot with the weak version for the
+  full duration, and melee ranks barely differ.
 
-  What a cast may spend is half the distance still left to the flip, not the whole of it, because a
-  cast is never the only thing in flight: earlier damage over time keeps ticking and two more casts
-  may land before the next look at the list. Half is what leaves room for those without leaving the
-  caster idle. This is the same technique real casters use and it applies mid-fight as well as in the
-  opening, which is where nearly all of its value is — the opening has very little room to spend, and
-  a warlock beating the hold gets around fifty threat a cast where its full rank is worth eleven
-  hundred.
+  A cast may spend half the distance still left to the flip rather than all of it, because a cast is
+  never the only thing in flight: earlier damage over time keeps ticking and two more casts may land
+  before the next look at the list. This applies mid-fight as well as in the opening, which is where
+  most of its value is — a warlock beating the hold gets around fifty threat a cast where its full
+  rank is worth eleven hundred.
 
-  It changes the shape of the threat list, and the change is intended. Damage dealers used to stop
-  dead below the tank; now they close on the flip and sit slightly above it, peaking at 102 to 115
-  percent of the tank's threat at twenty-five bots. They cannot run away from there, since every cast
-  is sized against a gap that shrinks as they close it, and the tank held the target for the whole of
-  that fight.
+  **Melee auto-attack is gated too, and it was the last thing failing at full raid size.** Only
+  spellcasts pass through `CanTryToCastSpell`, so the hold was silence for a caster and nothing
+  whatever for a rogue, which finished the eight seconds level with the tank having cast nothing.
+  `HoldOpeningSwings` pushes the swing timer out to the end of the hold rather than stopping the
+  attack, so the bot goes on attacking, chasing and running its rotation and everything that asks
+  what it is fighting gets the same answer; only the swings land later. It runs ahead of every early
+  return in `UpdateInCombatAI`, since a bot that took a different branch this tick is still swinging.
+  Ranged and off-hand timers go with it, because a hunter's auto shot bypasses the cast gate for the
+  same reason.
 
-  **Melee auto-attack is gated too, and it was the whole of what was left at full raid size.**
-  Only spellcasts pass through `CanTryToCastSpell`, so the hold was silence for a caster and
-  nothing whatever for a rogue, which finished the eight seconds level with the tank having cast
-  nothing. `HoldOpeningSwings` pushes the swing timer out to the end of the hold instead of
-  stopping the attack, so the bot goes on attacking, chasing and running its rotation, and
-  everything that asks what it is fighting still gets the same answer — only the swings land
-  later. It runs ahead of every early return in `UpdateInCombatAI`, since a bot that took a
-  different branch this tick is still swinging. Ranged and off-hand timers go with it, because a
-  hunter's auto shot bypasses the cast gate for the same reason.
+  **Where it stands, measured against a deployed binary.** Damage dealers originally ran to 143
+  percent of the tank and took the mob off it; with the ceiling alone a warlock still pulled at 127
+  percent, having opened before the tank had anything to be a percentage of. Now, at twenty-five
+  bots, the tank ends the hold on 2069 threat against a next best of 781 and never loses the target,
+  with the best damage dealer peaking at 86 percent. At thirty-nine, three consecutive runs never
+  lose it either, peaking at 63 percent with nobody within a tenth of the tank. Rogues, in melee
+  reach for the whole fight, peak in the twenties and thirties where they used to finish the opening
+  level with the tank.
 
-  **All of the above is now measured against a deployed binary.** Everything before it was not:
-  the service runs an installed copy and the loop was only building, so several hours of numbers
-  described code that was never running. Redone at twenty-five bots, the tank ends the hold on
-  2069 threat against a next best of 781 and never loses the target, with the best damage dealer
-  at 86 percent. At thirty-nine, three consecutive runs — two of them back to back, which is the
-  condition the one failure appeared under — never lose the target either, peaking at 63 percent
-  with nobody within a tenth of the tank. Rogues, in melee reach for the whole fight, peak in the
-  twenties and thirties where they used to finish the opening level with the tank.
+  Every number in this section predating that deployment was measured against a binary that was
+  never running; see findings.
 
-  The single failure worth recording ran eight mages to 100-117 percent and handed the boss round
-  three of them for 28 seconds. It has not reproduced, and it began by reporting a punching bag
-  left standing by the previous run, so bots were already engaged on a second mob when the
-  measured fight started. Treat a leftover target in the output as invalidating the run.
+  `test_threat_throttling.py` reports one failure worth recording, in which eight mages reached
+  100-117 percent and handed the boss round three of them for 28 seconds. It has not reproduced
+  across three subsequent runs, and it opened by reporting a punching bag left standing by the
+  previous run, so bots were already engaged on a second mob when the measured fight began. Treat a
+  leftover target in the output as invalidating the run.
 
   One limit remains: the ramp is a fixed eight seconds rather than a wait for the tank to have
   enough. Downranking takes most of the sting out of that, since the hold is quiet rather than
-  silent, but an adaptive release would still end it early on a clean pull and late on a messy
-  one.
-
-  **`.harness threat` reports `melee=` and `dist=` per hostile**, which is what settled the
-  question above. The 110 versus 130 percent rule follows position, not class:
-  `ThreatManager.cpp` line 351 asks `CanReachWithMeleeAutoAttack` about the pretender, so a
-  caster that has drifted into reach is judged at 110 like anything else and a percentage that
-  looks safe against 130 is not. Guessing the threshold from the class hid exactly that case.
-- **Tick responsiveness.** Either lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so
-  a hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
-  39 bots polling at high frequency is the main CPU risk in this project.
+  silent, but an adaptive release would still end it early on a clean pull and late on a messy one.
+- **Tick responsiveness.** Lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so a
+  hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
+  39 bots polling at high frequency is the main CPU risk in this project. Do this as part of the
+  rotation engine's action pipeline rather than on its own, since that work has to touch the same
+  timer and doing it twice buys nothing.
 - **Spell reflect avoidance, contingent on there being content that needs it.** The APIs exist:
   `SPELL_AURA_REFLECT_SPELLS` and `SPELL_AURA_REFLECT_SPELLS_SCHOOL` resolved at
   [src/game/Objects/SpellCaster.cpp](../src/game/Objects/SpellCaster.cpp) lines 199-212, checkable
@@ -967,8 +842,10 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
 A full nine-class audit established that the per-class rotations are not merely thin. They sit on a
 framework whose properties cap quality regardless of how much per-class code is added, and every class is
 a hand-written if-chain with no shared structure. Building an engine comes **before** the five
-coordination mechanisms below, because those mechanisms are conditions and priorities and there is
+coordination mechanisms in Phase 1a, because those mechanisms are conditions and priorities and there is
 currently nowhere to express either.
+
+Its one prerequisite, spell population, is done. The engine itself is not started.
 
 ### What the audit found
 
@@ -979,10 +856,10 @@ Druid, and the entire combat brain for Mage, Priest, and Warlock together is abo
 
 Four framework properties, not the if-chains, are the actual ceiling:
 
-- **The tick is a fixed 1000 ms and each pass casts at most one spell.** `PB_UPDATE_INTERVAL` is defined
-  at [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 42, and
-  `UpdateAI` returns early until the timer passes. Nothing GCD-tight is expressible, interrupt reactions
-  land up to a second late, and combinations with tight windows cannot be timed at all.
+- **The tick is a fixed 1000 ms and each pass casts at most one spell.** `PB_UPDATE_INTERVAL` in
+  [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) gates `UpdateAI`.
+  Nothing GCD-tight is expressible, interrupt reactions land up to a second late, and combinations
+  with tight windows cannot be timed at all.
 - **Being mid-cast skips the entire tick.** `if (me->IsNonMeleeSpellCasted(false, false, true)) return;`
   means there is no queue and no way to begin the next cast the instant the current one finishes. The
   only self-interrupt is cancelling a heal whose target reached full health.
@@ -997,20 +874,16 @@ Four framework properties, not the if-chains, are the actual ceiling:
 
 ### Fix spell population before touching any rotation [done]
 
-An audit of `CombatBotBaseAI::PopulateSpellData` found abilities that are missing from the bot's spell struct
-entirely. This matters for sequencing more than for severity: each one presents as *"the AI never uses X"*,
-which is indistinguishable from a rotation bug, so debugging rotations on top of them wastes time chasing
+An audit of `CombatBotBaseAI::PopulateSpellData` found abilities missing from the bot's spell struct
+entirely. This mattered for sequencing more than for severity: each presents as *"the AI never uses
+X"*, indistinguishable from a rotation bug, so debugging rotations on top of them wastes time on
 symptoms whose cause is one layer down.
 
-Population walks `me->GetSpellMap()` and assigns into named struct slots by matching spell **names**, which is
-the root of most of these. Every claim below was re-checked against `spell_template` and
-`skill_line_ability` on the dev server before being fixed, and two of the original findings did not
-survive that check; they are kept, corrected, because the corrected version is the useful record.
-
-**Status.** All of it landed together (`caf3f2494`), along with `.harness spells` and
-`contrib/harness/test_spell_population.py`, and is live-verified on a bot of each of the nine
-classes. The one finding below that is *not* implemented is the mage decurse, because the game
-data contradicts it.
+Population walks `me->GetSpellMap()` and assigns into named struct slots by matching spell **names**,
+which is the root of most of these. All of it landed in `caf3f2494` with `.harness spells` and
+`test_spell_population.py`, live-verified on a bot of each of the nine classes. Every claim was
+re-checked against `spell_template` and `skill_line_ability` first, and two did not survive that
+check; they are kept, corrected, because the corrected version is the useful record.
 
 - **Shaman never dispels.** [fixed] `PartyBotAI::CheckForDispelTargets` reads `m_spells.shaman.pCureDisease`
   and `pCurePoison`, but the shaman branch of population had no matcher for either name, so both stayed null
@@ -1060,12 +933,9 @@ skipped before name matching entirely, so any slot mapped to a passive talent st
 Repopulation is wired correctly for party bots, which set `m_resetSpellData` on learn, supersede, and remove
 packets; BattleBot has no equivalent and keeps stale pointers for its whole session.
 
-One consequence of the Disease Cleansing Totem fix belonged to the next piece of work rather than this one,
-and has since been closed by `677a9cc14`. That slot fed a pool from which the water totem was picked **at
-random**, alongside Fire Resistance Totem, so making it reachable meant a raid shaman sometimes dropped it
-instead of Mana Spring. The pool was already wrong in exactly that way before the fix; see the random-totem
-item under
-[Behaviors that are actively harmful](#behaviors-that-are-actively-harmful-not-merely-suboptimal).
+Filling the Disease Cleansing Totem slot made a pre-existing bug worse before it made anything
+better: that slot fed a pool the water totem was drawn from **at random**, so a reachable slot meant
+a raid shaman sometimes dropped it instead of Mana Spring. Closed by `677a9cc14`, below.
 
 ### Behaviors that are actively harmful, not merely suboptimal
 
@@ -1084,9 +954,9 @@ between a weak raider and a self-sabotaging one:
   spell-populate time and never revisited, so Windfury Totem was one entry in a random pool. The pools were
   not merely unordered, they contained choices no raider would make: Fire Resistance Totem sat in the water
   pool next to Mana Spring, and Disease Cleansing Totem joined it once the population fix made that slot
-  reachable at all. [fixed] **The original prescription here — "role should pick these" — was too weak, and
-  the correction is the useful part.** Role is the right input for the aura and the weapon imbue, which are
-  facts about the shaman or paladin itself. It is the wrong input for the other two.
+  reachable at all. [fixed] **Role is the right input for only two of the four.** The aura and the weapon
+  imbue are facts about the shaman or paladin itself. The other two are not, and the original
+  prescription of "role should pick these" would have got them wrong.
 
   A totem is a question about the group. It reaches the party within
   `TOTEM_AURA_RADIUS` of where it is planted, so the right air totem depends on whether anyone in range
@@ -1152,7 +1022,7 @@ BattleBot alone has Shield Slam cast on self, Polymorph selecting one target and
 thresholds written in display units against a field stored at ten times that scale, so its Bloodrage
 essentially never fires. We do not care about battleground bots, but we do care that fixing a rotation bug
 currently means finding and fixing it in two places, and that the copies drift when someone forgets. This is
-an argument for the Stage C rotation engine being genuinely shared rather than a third copy.
+an argument for the rotation engine being genuinely shared rather than a third copy.
 
 ### The engine
 
@@ -1268,7 +1138,7 @@ the bot can schedule a wake against it.
 human, who has reaction time and relies on the client's roughly 400 ms spell queue window. So the reaction
 delay belongs in the same change as a configurable value: zero while validating that the fix works, then
 set to a human-like value by the competence model. This is the clearest concrete argument for difficulty
-living in Stage C alongside the class work rather than at the end — the very first throughput fix already
+being built alongside the class work rather than at the end — the very first throughput fix already
 overshoots human performance.
 
 #### The same root cause produces worse bugs: early returns create sticky states
@@ -1364,7 +1234,7 @@ uptime across every caster and Sunder stacking for tanks.
 a target selector, and conditions. The condition vocabulary is small and reusable: own and target health
 percent, own resource percent, target casting, nearby enemy count, aura present or absent on self or
 target, aura remaining duration, combo points, stance or form, cooldown readiness, threat headroom, an
-active burn window, and an active encounter directive. That last one is how Stage E's directives reach
+active burn window, and an active encounter directive. That last one is how Phase 3a's directives reach
 combat decisions without every class parsing them.
 
 Keep the tables as static C++ data with lambda conditions for speed and type safety, but expose the
@@ -1390,22 +1260,18 @@ engine it is data entry with a test harness rather than surgery on if-chains.
 
 ## Phase 1a - Playing the class properly [not started]
 
-Originally folded into "generic combat correctness" and badly underscoped. This is now the largest phase
-in the project, and it gates everything: a raid that executes mechanics flawlessly still loses to an
-enrage timer. `PartyBotAI.cpp` is about 3353 lines of per-class rotations that are adequate for a 5-man
-assist bot and thin for a 40-man raid.
+The largest phase in the project, and it gates everything: a raid that executes mechanics flawlessly
+still loses to an enrage timer. The per-class rotations are adequate for a 5-man assist bot and thin
+for a 40-man raid. Everything below is expressed as entries and conditions in the rotation engine
+rather than as new if-chain branches.
 
-Everything below is expressed as entries and conditions in the rotation engine above rather than as new
-if-chain branches.
+**Design goal: each bot should be the best version of its class at all times.** Four testable
+properties follow. Nothing a bot knows goes unused. Every collective duty is assigned rather than
+independently guessed. Anything with a duration is maintained rather than reactively noticed.
+Reactions are driven by events rather than a one-second poll.
 
-**Design goal: each bot should be the best version of its class at all times.** Concretely that means
-four testable properties. Nothing a bot knows goes unused. Every collective duty is assigned rather than
-independently guessed. Anything with a duration is maintained rather than reactively noticed. Reactions
-are driven by events rather than a one-second poll.
-
-An audit found roughly thirty distinct shortcomings, but they are not thirty bugs. They are symptoms of
-five missing mechanisms, and building the mechanisms fixes them in groups. The decision model today is a
-flat if-chain with early returns per class, no state, and no scoring.
+An audit found roughly thirty distinct shortcomings, but they are not thirty bugs. They are symptoms
+of five missing mechanisms, and building each mechanism fixes them in groups.
 
 ### Mechanism 1: A duty roster
 
@@ -1493,8 +1359,8 @@ The rules that follow:
 - **Healers hold a mana reserve.** Buffing may not take a healer below a readiness floor while an
   encounter is pending, and mid-encounter buffing is off entirely below that floor.
 - **Pull control gates on readiness**, so the sequence is buff, drink to full, report ready, and a pull
-  is refused while any healer is below threshold. This is the same readiness check as Phase 3's raid
-  preparation and belongs with pull control in Phase 1b.
+  is refused while any healer is below threshold. This is the same readiness check as the companion
+  document's raid preparation, and belongs with pull control in Phase 1b.
 - **Pre-pull, refresh any buff whose remaining duration is shorter than the expected encounter length**,
   using the duration-aware aura checks from the rotation engine rather than waiting for expiry.
 
@@ -1654,10 +1520,10 @@ The trigger is solved; the behavior is not.
 
 ## Phase 2 - Movement arbitration and hazard avoidance [not started]
 
-An earlier draft of this section assumed bots could largely *perceive* hazards by scanning for
-damaging ground effects, with script-declared zones as a supplement. **That assumption is wrong and the
-two are inverted.** An audit of how the mechanics in this codebase are actually implemented found that
-only roughly a quarter of dangerous raid mechanics exist as observable world objects at all.
+**Only about a quarter of dangerous raid mechanics exist as observable world objects**, so scripts
+declaring hazards is the primary mechanism and perception is the supplement, not the other way
+round. This was assumed backwards until the mechanics were audited against how they are actually
+implemented here, and it inverts a dependency in the roadmap.
 
 ### What is perceivable, and what is not
 
@@ -1674,10 +1540,9 @@ Not perceivable, because no hazard entity is ever created:
   phase.
 - **Whirlwind mechanics** are a boss aura plus range, again with no zone.
 
-So encounter scripts declaring hazards is the **primary** mechanism and perception is the supplement.
-This also reverses the dependency order in the roadmap: the Phase 3a directive layer is a prerequisite
-for most avoidance rather than an enhancement on top of it, because a script broadcasting "the Deep
-Breath lane is here for the next eight seconds" is the only way that hazard becomes knowable.
+The dependency this reverses: the Phase 3a directive layer is a prerequisite for most avoidance
+rather than an enhancement on top of it, because a script broadcasting "the Deep Breath lane is here
+for the next eight seconds" is the only way that hazard becomes knowable at all.
 
 ### The real blocker: nothing owns movement intent
 
@@ -1780,8 +1645,8 @@ dominate 5-man content. Without this, bots stand still through half the game's d
   `GroupEventHappens` ([src/game/Objects/Player.cpp](../src/game/Objects/Player.cpp) lines 20085-20107
   and 13966-13980), but only for members who actually hold the quest, and bots never accept one —
   `CloneFromPlayer` copies spells and gear and not the quest log. Either batch `Player::AddQuest` across
-  the roster or grant the outcome and skip the quest machinery, consistent with the gating decision in
-  Phase 0c.
+  the roster or grant the outcome and skip the quest machinery, consistent with the companion
+  document's attunement decision, which grants the reward rather than running the chain.
 - **Loss of control is a bigger hole than mind control alone.** `PartyBotAI::UpdateAI` returns at the
   top whenever the bot has `UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL`
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 725-728), attempting
@@ -1863,20 +1728,20 @@ content that feels earned and content that feels scripted.
   is precisely the failure Phase 0 exists to remove.
 - Calibrate against harness data. Since the harness reports completion rate across repeated attempts,
   difficulty can be tuned to a target success rate per encounter rather than by feel.
-- Injection points, in increasing granularity: the tick timer `PB_UPDATE_INTERVAL`
-  ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) line 42) for a blunt
+- Injection points, in increasing granularity: the tick timer `PB_UPDATE_INTERVAL` for a blunt
   per-bot reaction delay, `CombatBotBaseAI::CanTryToCastSpell` for probabilistic skips of a specific
-  response, and `DoCastSpell` for mistimed or mistargeted casts. There is existing precedent for
-  per-bot randomization to follow — follow distance and angle are already jittered with `urand` and
-  `frand` (line 890) — so the pattern is established rather than novel.
+  response, and `DoCastSpell` for mistimed or mistargeted casts. There is precedent for per-bot
+  randomization to follow, since follow distance and angle are already jittered with `urand` and
+  `frand`.
 
 ## Phase 5 - Tooling [in progress]
 
-**Status.** The out-of-band half exists: `.harness exec`, `info`, `createchar`, and `login`
-behind `Harness.Enable`, plus a Python SOAP driver and a first test in `contrib/harness`
-(`e04904be4`). Since then: `path`, `graveyard`, `loadmmaps` and `rewardquest` for the corpse
-run work, and `spells` for the combat work. The remaining in-game debugging commands below
-are not started.
+**Status.** The out-of-band half exists: `.harness exec`, `info`, `createchar` and `login` behind
+`Harness.Enable`, plus a Python SOAP driver and seventeen suites in `contrib/harness`. Added since:
+`path`, `graveyard`, `loadmmaps` and `rewardquest` for the corpse-run work, `spells`, `threat` and
+`despawn` for the combat work. `contrib/harness/README.md` documents every command, its output
+fields and the Python client, and is the reference to read before adding another. The in-game
+debugging commands below are not started.
 
 - `.harness spells <character>` reports every named spell slot for the bot's class, what
   population put in it, that spell's rank and level, and whether the bot actually knows it.
@@ -1905,19 +1770,20 @@ are not started.
 
 ## Risks and open items
 
-- Navmesh quality is a real unknown, and it now gates two systems rather than one. Every positional
-  mechanic and every corpse run depends on `MovePoint` with `MOVE_PATHFINDING`, which relies on Detour
-  mmap data. Corpse runs are the harsher test, since they path long distances across open world
-  terrain to an instance portal. Verify early and cheaply: a corpse run out of Deadmines and back
-  exercises the same machinery as one out of Molten Core, at a fraction of the setup cost.
+- Navmesh quality was the largest unknown and is now half answered. Corpse runs were the harsher of
+  the two tests and they pass in all 26 instances, which retires the risk for long open-world routes
+  and leaves it open for the positional mechanics of Phase 2, where a safe point may be a few yards
+  away in a room the mesh describes badly. Six entrances needed a hand-authored offmesh link, so
+  expect the same class of gap indoors.
 - CPU cost of 39 bots at a faster tick, mitigated by per-map hazard caching and event-driven wakes.
+  Healer target selection is quadratic and must be restructured before the tick is shortened.
 - Maintenance coupling: directives keep boss scripts authoritative, but every new directive is still
   an edit inside a boss script. Keep the directive vocabulary small and generic.
 - The 1000ms tick means some mechanics may never be cleanly solvable without a larger movement
   refactor. Decide per encounter whether to simplify rather than chase precision.
-- Phase 0 is on the critical path for everything. If wipe recovery turns out to be harder than
-  expected, consider an interim GM-driven mass-resurrect command purely to unblock testing, and treat
-  the spirit healer path as the shippable fallback if corpse-run pathing proves unreliable.
+- The rotation engine is now what Phase 0 was: on the critical path for everything after it, and
+  large. If it stalls, the coordination mechanisms of Phase 1a have nowhere to be expressed and the
+  content rollout has nothing to run on.
 - Whole-game scope is large and the tier assignments are estimates from reading scripts, not from
   observed behavior. Expect encounters to move between tiers once bots actually attempt them, and
   treat Tier 0 completion across several dungeons as the checkpoint that validates the generic layer
