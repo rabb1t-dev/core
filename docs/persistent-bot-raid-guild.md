@@ -22,6 +22,7 @@ Status key: **not started** / **in progress** / **done**.
 | `09bae86c1` | The roster table, `RaidGuildMgr`, and `.raidguild` provisioning |
 | `547a3416c` | Talent specs are asked for by name instead of drawn at random, plus the six level 60 builds that did not exist |
 | `b2d572839` | Those six builds rebuilt on the published vanilla specs, and a template audit that applies a spec rather than counting it |
+| `8819f45db` | Specs are spent in a recorded order, so one build fits every level instead of only the one it was authored for |
 
 `a19dc86dc` closes the "Joining the group" section of Phase 0 below in full: the group is
 promoted to a raid when it fills, `AddMember`'s return value is checked, a bot that fails to
@@ -1379,9 +1380,16 @@ before the shallower Discipline tree, and the cat druid spends Restoration befor
 as early as the build can afford it. At the full level every ordering produces the same build, so this
 costs nothing at 60.
 
+Selection had to learn the same thing. It considered a template only at the bot's exact level, falling
+back to the highest one below it, which meant an ordered level 60 spec was invisible to a level 45 bot
+that had not named it. An ordered spec is now eligible at any level up to its own, so `.partybot add mage
+45` produces a fire mage spending all 36 of its points rather than a level 39 twink spending 30. A class
+with no ordered spec — paladin, hunter, shaman — still falls back to the old under-spending behaviour.
+
 `test_premade_specs.py --only levels` applies all six at levels 22, 45 and 60 and asserts the character is
 still the level it was asked for, spends its whole budget, holds nothing illegal, and at 60 still matches
-the authored build.
+the authored build. It also spawns a mage and a druid at 45 with no spec named, which is the case that
+reached the twink build.
 - A `.raidguild report` command showing per-member gear score, resistance totals, durability,
   enchantment coverage, and consumable stock, which doubles as the readiness check before a raid
   attempt.
