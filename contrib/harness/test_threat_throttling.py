@@ -38,14 +38,16 @@ STAGING = (-600.0, -2515.0, 92.0, 1)
 PUNCHING_BAG = 11080
 
 # Where the mob changes its mind, as a share of the current victim's threat: 110 percent for an
-# attacker it can reach with a melee swing, 130 for one at range. Reported against rather than
-# asserted against, because crossing the line briefly is allowed and holding the mob is what is
-# actually required.
+# attacker it can reach with a melee swing, 130 for one at range. Which of the two applies is
+# read off the mob per sample rather than guessed from the class, because the rule follows
+# position and not role: a caster that has wandered into reach is judged at 110 like everyone
+# else, and calling it ranged declares it safe at 129 when it is already taking the mob.
+# Reported against rather than asserted against, because crossing the line briefly is allowed
+# and holding the mob is what is actually required.
 PULL_RATIO_MELEE = 1.10
 PULL_RATIO_RANGED = 1.30
 
 CLASS_WARRIOR = 1
-MELEE_CLASSES = {1, 4, 7, 11}   # warrior, rogue, shaman, druid: assume the harder threshold
 
 # Must match PB_THREAT_PULL_HOLD_SECONDS in PartyBotAI.cpp.
 PULL_HOLD = 8
@@ -197,6 +199,8 @@ def run(harness, size, duration):
     tank = warriors[0]
 
     peak = {}
+    in_reach = {}
+    seen_at = {}
     opening_done = False
     lead = {}
     first_seen = None
@@ -273,6 +277,13 @@ def run(harness, size, duration):
             peak[hostile["name"]] = max(peak.get(hostile["name"], 0.0),
                                         hostile["percent"] / 100.0)
 
+            # Which rule the mob is judging this one by, taken from the mob rather than guessed
+            # from the class. A caster that has drifted inside melee reach flips at 110 percent
+            # like anything else, and reading that off the class calls it safe at 129.
+            if hostile["melee"]:
+                in_reach[hostile["name"]] = in_reach.get(hostile["name"], 0) + 1
+            seen_at[hostile["name"]] = seen_at.get(hostile["name"], 0) + 1
+
         # Watch the opening closely, then closely enough that a brief loss of the target is a
         # measurement rather than a rounding error.
         time.sleep(0.5 if not opening_done else POLL)
@@ -282,11 +293,15 @@ def run(harness, size, duration):
         if name == tank:
             marker = " <- the tank"
         elif name in classes:
-            flip = (PULL_RATIO_MELEE if classes[name] in MELEE_CLASSES else PULL_RATIO_RANGED)
+            # The strict rule applies if the mob was ever able to swing at it, since one
+            # reading inside reach at the wrong moment is all a handover needs.
+            flip = PULL_RATIO_MELEE if in_reach.get(name) else PULL_RATIO_RANGED
             marker = f" <- past its {flip * 100:.0f}% flip" if peak[name] >= flip else ""
         else:
             marker = ""
-        print(f"    {name:<22} {what:<8} peaked at {peak[name] * 100:5.0f}%{marker}",
+        share = in_reach.get(name, 0) / max(seen_at.get(name, 1), 1)
+        reach = f"  in reach {share * 100:3.0f}% of the time" if share else ""
+        print(f"    {name:<22} {what:<8} peaked at {peak[name] * 100:5.0f}%{reach}{marker}",
               flush=True)
 
     # Said before the opening verdict rather than after it, because arriving late makes that

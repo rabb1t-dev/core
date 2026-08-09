@@ -573,10 +573,17 @@ bool ChatHandler::HandleHarnessThreatCommand(char* args)
         if (!pUnit)
             continue;
 
-        PSendSysMessage("hostile threat=%.0f percent=%.0f top=%u name=%s",
+        // Whether the mob can swing at this one decides its flip threshold: 110 percent of the
+        // current victim if it can reach it, 130 if it cannot. A caster reading 1 here is being
+        // judged by the melee rule whatever its class says, so a percentage that looks safe
+        // against 130 is not, and the two numbers together are the only way to tell from
+        // outside which of the rules a bot is actually up against.
+        PSendSysMessage("hostile threat=%.0f percent=%.0f top=%u melee=%u dist=%.1f name=%s",
             pRef->getThreat(),
             topThreat > 0.0f ? (pRef->getThreat() * 100.0f / topThreat) : 0.0f,
-            pRef == pTop ? 1 : 0, pUnit->GetName());
+            pRef == pTop ? 1 : 0,
+            pEnemy->CanReachWithMeleeAutoAttack(pUnit) ? 1 : 0,
+            pEnemy->GetDistance(pUnit), pUnit->GetName());
     }
 
     return true;

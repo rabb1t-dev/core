@@ -268,13 +268,18 @@ class Harness:
             line = line.strip()
 
             match = re.match(
-                r"^hostile threat=(\S+) percent=(\S+) top=(\d+) name=(.*)$", line)
+                r"^hostile threat=(\S+) percent=(\S+) top=(\d+) melee=(\d+) dist=(\S+) "
+                r"name=(.*)$", line)
             if match:
                 hostiles.append({
                     "threat": float(match.group(1)),
                     "percent": float(match.group(2)),
                     "top": match.group(3) == "1",
-                    "name": match.group(4),
+                    # Which flip rule this one is actually subject to, 110 percent when the mob
+                    # can swing at it and 130 when it cannot, rather than what its class implies.
+                    "melee": match.group(4) == "1",
+                    "distance": float(match.group(5)),
+                    "name": match.group(6),
                 })
                 continue
 

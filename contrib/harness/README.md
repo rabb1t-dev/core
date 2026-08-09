@@ -86,12 +86,19 @@ Fields worth knowing rather than guessing:
 ### `.harness threat <character>`
 
 The threat list of whatever this character is currently attacking, highest first: a summary line
-of `entries topthreat combat victim`, then one `hostile` line each of `threat percent top name`.
+of `entries topthreat combat victim`, then one `hostile` line each of
+`threat percent top melee dist name`.
 
 Threat decides who a boss hits and is invisible from every other angle. Percentages are of the
 current victim's threat rather than absolute, because the rule that decides the target is written
 as a ratio: `ThreatContainer::selectNextVictim` switches above 130 percent, or above 110 percent
 when the creature can reach the candidate with a melee swing.
+
+`melee` is which of those two a given hostile is actually being judged by, asked of the creature
+rather than inferred. The rule follows position and not class, so a caster that has drifted into
+reach flips at 110 like anything else, and a mage sitting at 117 percent reads as comfortably
+safe until you notice `melee=1`. Do not guess this from the class; that mistake hid a real
+handover for an afternoon.
 
 Note the character has to be *attacking* something, not merely in combat with it. The leader is
 the usual mistake here: nothing drives it, so it never has a victim and the whole group reads as
