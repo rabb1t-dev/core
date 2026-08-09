@@ -68,18 +68,27 @@ static constexpr float PB_GHOST_ENTRANCE_MATCH = 10.0f;
 // server rather than a policy.
 static constexpr float PB_THREAT_PULL_RATIO_MELEE = 1.10f;
 static constexpr float PB_THREAT_PULL_RATIO_RANGED = 1.30f;
-// How far below the flip to hold, which is a tuning choice and was measured rather than
-// guessed. The ceiling is tested before a cast and crossed by the threat that cast then makes,
-// so aiming at the line steps over it every time. Ten bots on one target overshot by six to
-// sixteen points of the tank's threat at a fifth, and a warlock pulled anyway: damage over
-// time keeps arriving for another fifteen seconds after the decision to stop casting, so the
-// worst case is not one cast but everything already in flight.
-static constexpr float PB_THREAT_HEADROOM = 0.30f;
-// How long a damage dealer leaves the tank alone at the start of a fight. The ratio test above
-// cannot govern the opening, because at the moment of the pull the tank's threat is near zero
-// and any share of near zero is a number a single spell steps straight over. Real raids solve
-// this the same way, by holding damage for the first few seconds, and the number wanted is
-// however long it takes the tank to out-threat one opener by the pull margin.
+// How far below the flip to stop, which is overshoot rather than caution: the ceiling is tested
+// before a cast and then crossed by the threat that cast makes, so whatever is already committed
+// when the answer comes back has to fit underneath. Both numbers are measured. Melee overshoot
+// about fifteen points of the tank's threat, because their abilities are instant and small.
+// Casters overshoot about twice that, because a nuke is worth several of those and its damage
+// over time keeps arriving for another fifteen seconds after the decision to stop.
+//
+// They are deliberately no wider than that. Room left over here is damage not done, and the aim
+// is a raid that holds its target rather than one whose damage dealers are all idling at half
+// the tank's threat.
+static constexpr float PB_THREAT_HEADROOM_MELEE = 0.20f;
+static constexpr float PB_THREAT_HEADROOM_RANGED = 0.30f;
+// How long a damage dealer leaves the tank alone at the start of a fight. The ratio above cannot
+// govern the opening, because at the moment of the pull the tank's threat is near zero and any
+// share of near zero is a number a single spell steps straight over. Real raids solve this the
+// same way, and this is the one part of the scheme that costs every bot rather than only the
+// ones near their ceiling, so five seconds was tried. It is not enough here and the reason is
+// worth keeping: a bot tank does not open like a player one, and at five seconds into a
+// twenty-five bot pull it held 215 threat and was behind a rogue's auto-attacks, where at eight
+// it held 966. Releasing onto a tank that low is worse for damage as well as for safety, since
+// every ceiling is a share of it and the whole raid stalls at once waiting for it to catch up.
 static constexpr time_t PB_THREAT_PULL_HOLD_SECONDS = 8;
 // How much bigger than the bot the target has to be before any of that ramp applies. A raid
 // target carries tens of times a player's health and an ordinary one carries less than its
@@ -721,9 +730,9 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
     if (topThreat <= 0.0f)
         return false;
 
-    float const ceiling = (m_role == ROLE_MELEE_DPS ? PB_THREAT_PULL_RATIO_MELEE
-                                                    : PB_THREAT_PULL_RATIO_RANGED)
-                          - PB_THREAT_HEADROOM;
+    float const ceiling = m_role == ROLE_MELEE_DPS
+        ? PB_THREAT_PULL_RATIO_MELEE - PB_THREAT_HEADROOM_MELEE
+        : PB_THREAT_PULL_RATIO_RANGED - PB_THREAT_HEADROOM_RANGED;
 
     return threat.getThreat(me) >= (topThreat * ceiling);
 }

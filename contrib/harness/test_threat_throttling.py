@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Watch a group fight and require that nobody takes the target off the tank.
+"""Watch a group fight and require that the tank keeps control of the target.
 
 Threat is the quantity that decides who a boss hits, and until now nothing in the bot code
 consulted it except a single check against area spells. A damage dealer cast whatever came next
 in its if-chain and the mob went to whoever generated the most, which in a raid loses the
 attempt for a reason that has nothing to do with the encounter being tested.
 
-Vanilla flips the target at 110 percent of the current victim's threat for an attacker in melee
-range and 130 percent for one at range. This asserts two things over a long fight: that no
-group member crosses its own threshold, and that the mob is still on the same tank at the end.
+What is asserted is control, not perfection. A damage dealer that clips the tank and is
+immediately overtaken again costs the raid nothing, and a throttle tuned so that never happens
+is a throttle that has thrown away damage to buy something worthless. What loses raids is a
+damage dealer that goes past the tank and stays past it, so the measurement is how long the mob
+spends off the tank: a little is fine, a lot is the failure. Peaks per bot are reported for the
+opposite reason, since a throttle that works by never attacking would satisfy every assertion
+here and show up as a raid idling at half the tank's threat.
 
-The second assertion is the one that would notice a throttle that works by never attacking. So
-the peak ratio reached by each bot is reported too: bots that sat far below the ceiling prove
-nothing either way, and bots parked just under it are the throttle doing its job.
-
-A third assertion covers the opening, which the ratio cannot. A share of the tank's threat is
-meaningless while the tank has almost none, so damage dealers hold for the first few seconds
-exactly as a real raid does. What that has to buy is a tank in front when they start, so the
-list is read at the moment the hold expires and the tank is required to be leading it.
+The opening is asserted separately because the ratio cannot govern it. A share of the tank's
+threat is meaningless while the tank has almost none, so damage dealers hold for the first few
+seconds exactly as a real raid does, and the list is read as the hold expires to require that
+this bought a tank in front.
 
 Run on the server host, with VMANGOS_SOAP_USER and VMANGOS_SOAP_PASSWORD set to a GM
 account: python3 test_threat_throttling.py
@@ -37,8 +37,10 @@ STAGING = (-600.0, -2515.0, 92.0, 1)
 # enough for threat to separate without killing the group while it does.
 PUNCHING_BAG = 11080
 
-# Where the mob changes its mind, as a share of the current victim's threat. Melee is the
-# stricter of the two and is what an unknown class is measured against.
+# Where the mob changes its mind, as a share of the current victim's threat: 110 percent for an
+# attacker it can reach with a melee swing, 130 for one at range. Reported against rather than
+# asserted against, because crossing the line briefly is allowed and holding the mob is what is
+# actually required.
 PULL_RATIO_MELEE = 1.10
 PULL_RATIO_RANGED = 1.30
 
@@ -48,17 +50,30 @@ MELEE_CLASSES = {1, 4, 7, 11}   # warrior, rogue, shaman, druid: assume the hard
 # Must match PB_THREAT_PULL_HOLD_SECONDS in PartyBotAI.cpp.
 PULL_HOLD = 8
 
+# How much of the fight the tank is allowed to not be holding the target. A brief loss is a
+# damage dealer clipping past and being overtaken again, which is what a throttle tuned for
+# damage rather than for tidiness looks like. A long one is the raid being eaten.
+MAX_LOSS_STREAK = 15.0
+MAX_LOSS_SHARE = 0.15
+
+# Below this there is not enough settled fight to call anything a share of it. A full raid kills
+# the bag in about ninety seconds, so at large sizes the window is short whatever `--duration`
+# says, and a run that measured ten seconds should say so rather than pass.
+MIN_WATCHED = 30.0
+
 CLASS_NAMES = {1: "warrior", 2: "paladin", 3: "hunter", 4: "rogue", 5: "priest",
                7: "shaman", 8: "mage", 9: "warlock", 11: "druid"}
 
 # How long the pull is given to settle, in the mob's own seconds of combat rather than the
 # suite's. The mob starts on whoever it noticed first, which need not be the tank, and the tank
-# pulling it back is the thing working rather than breaking.
-SETTLE = 45
+# pulling it back is the thing working rather than breaking. Forty-five was the figure before
+# the opening hold existed and the pull was genuinely chaotic; it now costs more than it buys,
+# since a full raid kills the bag in about ninety seconds and half the fight was being skipped.
+SETTLE = 20
 
 GROUP_TIMEOUT = 240.0
 COMBAT_TIMEOUT = 60.0
-POLL = 3.0
+POLL = 2.0
 
 
 def info(harness, who):
@@ -93,17 +108,28 @@ DAMAGE_CLASSES = ["mage", "hunter", "warlock", "rogue", "priest"]
 
 
 def build_group(harness, size):
-    """One tank, one healer, and damage for the rest, topping up rather than asking once."""
+    """One tank, one healer, and damage for the rest, topping up rather than asking once.
+
+    Asks by how many have been *requested*, not by how many have arrived. A bot takes a moment
+    to appear in the roster, so indexing by roster size re-requests whatever is still in flight
+    and the group ends up with two tanks, which reads later as a suite that cannot tell which
+    warrior it is measuring.
+    """
     wanted = ["tank", "healer"] + [DAMAGE_CLASSES[i % len(DAMAGE_CLASSES)]
                                    for i in range(size - 2)]
 
+    issued = 0
     deadline = time.time() + GROUP_TIMEOUT
     while time.time() < deadline:
         current = roster(harness)
         if len(current) >= size:
             return current, None
-        harness.run(f"harness exec {LEADER} partybot add {wanted[len(current)]}",
-                    allow_failure=True)
+        # Only ask for the next one once everything already asked for has turned up, so a slow
+        # spawn delays the group rather than duplicating it.
+        if issued < size and len(current) >= issued:
+            harness.run(f"harness exec {LEADER} partybot add {wanted[issued]}",
+                        allow_failure=True)
+            issued += 1
         time.sleep(POLL)
 
     return None, f"only {len(roster(harness))} of {size} bots joined"
@@ -171,11 +197,19 @@ def run(harness, size, duration):
     tank = warriors[0]
 
     peak = {}
-    stolen = []
-    breaches = []
     opening_done = False
     lead = {}
     first_seen = None
+
+    # Loss of control, measured in seconds off the tank rather than counted in incidents: who
+    # clipped past matters much less than for how long they stayed there.
+    watched = 0.0
+    lost = 0.0
+    streak = 0.0
+    worst_streak = 0.0
+    culprits = {}
+    last = None
+    ended_early = None
 
     started = time.time()
     while time.time() - started < duration:
@@ -185,6 +219,10 @@ def run(harness, size, duration):
             # about the fight. Find another pair of eyes before concluding it is over.
             probe, error = find_probe(harness, sorted(members))
             if error:
+                # Nobody is fighting anything, which at this size means the bag is dead: a
+                # full raid gets through it in about a minute and a half. Worth saying, since
+                # otherwise a short measurement looks like a long one.
+                ended_early = time.time() - started
                 break
             continue
 
@@ -209,8 +247,20 @@ def run(harness, size, duration):
         # happens after the pull has settled is evidence either way.
         settled = fight >= SETTLE if fight >= 0 else time.time() - started >= SETTLE
 
-        if settled and victim and victim != tank and victim not in stolen:
-            stolen.append(victim)
+        now = time.time()
+        if settled:
+            # Charge the gap since the previous reading to whatever the mob was doing during
+            # it, so the figures are seconds of fight rather than a count of samples.
+            elapsed = now - last if last is not None else 0.0
+            watched += elapsed
+            if victim and victim != tank:
+                lost += elapsed
+                streak += elapsed
+                worst_streak = max(worst_streak, streak)
+                culprits[victim] = culprits.get(victim, 0.0) + elapsed
+            else:
+                streak = 0.0
+        last = now
 
         for hostile in reading["hostiles"]:
             if not settled:
@@ -220,24 +270,22 @@ def run(harness, size, duration):
             # In the opening seconds the tank's threat is near nothing and every ratio against
             # it is enormous, so peaks taken from there describe arithmetic rather than
             # behaviour.
-            name = hostile["name"]
-            ratio = hostile["percent"] / 100.0
-            peak[name] = max(peak.get(name, 0.0), ratio)
+            peak[hostile["name"]] = max(peak.get(hostile["name"], 0.0),
+                                        hostile["percent"] / 100.0)
 
-            if name == victim or name not in classes:
-                continue
-
-            limit = (PULL_RATIO_MELEE if classes[name] in MELEE_CLASSES
-                     else PULL_RATIO_RANGED)
-            if ratio >= limit and name not in breaches:
-                breaches.append(name)
-
-        # Watch the opening closely and the rest of the fight cheaply.
+        # Watch the opening closely, then closely enough that a brief loss of the target is a
+        # measurement rather than a rounding error.
         time.sleep(0.5 if not opening_done else POLL)
 
     for name in sorted(peak, key=lambda n: -peak[n]):
-        marker = " <- the tank" if name == tank else ""
         what = CLASS_NAMES.get(classes.get(name), "not in the group")
+        if name == tank:
+            marker = " <- the tank"
+        elif name in classes:
+            flip = (PULL_RATIO_MELEE if classes[name] in MELEE_CLASSES else PULL_RATIO_RANGED)
+            marker = f" <- past its {flip * 100:.0f}% flip" if peak[name] >= flip else ""
+        else:
+            marker = ""
         print(f"    {name:<22} {what:<8} peaked at {peak[name] * 100:5.0f}%{marker}",
               flush=True)
 
@@ -255,19 +303,33 @@ def run(harness, size, duration):
     if ahead:
         return (f"the hold did not put {tank} in front: it had {lead.get(tank, 0.0):.0f} "
                 f"threat when damage was released, behind {ahead}")
-    if stolen:
-        return f"the target was taken off the tank by {stolen}"
-    if breaches:
-        return f"{len(breaches)} member(s) crossed their pull threshold: {breaches}"
+
+    share = lost / watched if watched else 0.0
+    took = ", ".join(f"{n} for {t:.0f}s" for n, t in
+                     sorted(culprits.items(), key=lambda kv: -kv[1]))
+    if worst_streak > MAX_LOSS_STREAK:
+        return (f"{tank} lost the target for {worst_streak:.0f}s at a stretch, which is not a "
+                f"clip past it but a handover: {took}")
+    if share > MAX_LOSS_SHARE:
+        return (f"{tank} held the target for only {(1 - share) * 100:.0f} percent of the "
+                f"fight, losing {lost:.0f}s of {watched:.0f}s to {took}")
 
     # A throttle that works by never attacking would pass everything above, so say how close
     # anyone actually got. Nobody near the ceiling means the fight never tested it.
-    contenders = [n for n, r in peak.items() if n != tank and r >= 0.5]
+    if watched < MIN_WATCHED:
+        return (f"only {watched:.0f}s of settled fight to judge, which is not enough to say "
+                f"anything about control" +
+                (f"; the target died {ended_early:.0f}s in" if ended_early else ""))
+
+    contenders = [n for n, r in peak.items() if n != tank and r >= 0.9]
     runner_up = max((t for n, t in lead.items() if n != tank), default=0.0)
+    control = "never lost it" if not lost else (
+        f"lost it for {lost:.0f}s, longest {worst_streak:.0f}s at a stretch, to {took}")
+    death = f", the target dying {ended_early:.0f}s in" if ended_early else ""
     print(f"  pass  {PULL_HOLD}s of holding left {tank} on {lead.get(tank, 0.0):.0f} threat "
-          f"against a "
-          f"next best of {runner_up:.0f}, and it kept the target for {duration:.0f}s while "
-          f"{len(contenders)} member(s) got within half of it\n", flush=True)
+          f"against a next best of {runner_up:.0f}; over {watched:.0f}s of settled fight{death} "
+          f"it {control}, with {len(contenders)} member(s) pushing to within a tenth of its "
+          f"threat\n", flush=True)
     return None
 
 

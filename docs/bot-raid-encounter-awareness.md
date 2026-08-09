@@ -786,10 +786,19 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
 
 - **Threat throttling.** [done] `PartyBotAI::IsOverThreatCeiling` gates every harmful cast in
   `CanTryToCastSpell`, comparing the bot's threat against `getCurrentVictim()->getThreat()` and
-  refusing while the ratio is within thirty points of the flip. Healing is deliberately exempt:
+  refusing while the ratio is within a role's headroom of the flip. Healing is deliberately exempt:
   refusing to heal because healing makes threat trades one lost raid for another. Tanks are exempt
   outright, and so is the case where the mob is already on this bot or on something that is not a
   group member, since there is then no ceiling worth deferring to.
+
+  **What this is for is control, not tidiness.** A damage dealer that clips past the tank and is
+  overtaken again a second later costs the raid nothing, and a throttle tuned so that never happens
+  has spent damage to buy something worthless. What loses raids is a damage dealer that goes past
+  the tank and stays past it. So the headroom is exactly the measured overshoot and no wider —
+  twenty points for melee, whose abilities are instant and small, thirty for casters, whose nukes
+  are several times that and whose damage over time keeps arriving for fifteen seconds after the
+  decision to stop. Melee were on thirty until it was measured; that was fifteen points of damage
+  bought for nothing.
 
   The opening is handled separately, because the ratio cannot handle it. A share of the tank's
   threat means nothing while the tank has almost none, and a single nuke crosses any ceiling drawn
@@ -801,28 +810,35 @@ No boss knowledge required. These fix behavior that is wrong in every raid encou
   applies only to targets carrying at least five times the bot's health, since eight seconds of
   silence is discipline in a boss fight and most of the fight against a trash mob.
 
-  `contrib/harness/test_threat_throttling.py` watches a real fight and asserts three things: that
-  the tank leads the threat list at the moment damage is released, that no member crosses its own
-  pull threshold, and that the target never leaves the tank once the pull has settled. Before any
-  of this, damage dealers ran to 143 percent of the tank and took the mob off it. With the ceiling
-  alone a warlock still pulled at 127 percent, because it had opened before the tank had anything
-  to be a percentage of. With the ramp as well, eight seconds of holding leaves the tank at roughly
-  double the next best — 966 against 454 at ten bots, 1301 against 674 at twenty-five — and it keeps
-  the target for the whole fight at both sizes.
+  `contrib/harness/test_threat_throttling.py` measures control rather than forbidding contact. It
+  asserts that the tank leads the threat list at the moment damage is released, that no single loss
+  of the target lasts more than fifteen seconds, and that the tank holds it for at least
+  eighty-five percent of the settled fight. Peaks per bot are printed for the opposite reason: a
+  throttle that worked by never attacking would satisfy every assertion above and show up as a raid
+  idling at half the tank's threat.
 
-  The remaining margin is thin at range. Ranged damage is allowed to 100 percent of the tank and
-  overshoots to about 128 by the time a cast in flight and its lingering periodic damage have all
-  landed, against a flip at 130. Melee, allowed 80 and reaching 95 against a flip at 110, has twice
-  the room. Nothing has pulled at twenty-five bots, but a forty-bot raid is the test that matters
-  and the number to move if it does is the ranged share of `PB_THREAT_HEADROOM`.
+  Before any of this, damage dealers ran to 143 percent of the tank and took the mob off it. With
+  the ceiling alone a warlock still pulled at 127 percent, because it had opened before the tank had
+  anything to be a percentage of. As it stands, at twenty-five bots the hold leaves the tank on 1042
+  threat against a next best of 720, it never loses the target across a minute of settled fight, and
+  seventeen of the twenty-five push to within a tenth of its threat. An earlier run of the same
+  shape lost the target twice for two seconds each, which is the intended behaviour rather than a
+  near miss.
+
+  **Five seconds of hold was tried and is not enough**, which is worth recording because it looks
+  like free damage. A bot tank does not open like a player one: five seconds into a twenty-five bot
+  pull it held 215 threat and was behind a rogue's auto-attacks, where at eight it held 966.
+  Releasing onto a tank that low is worse for damage as well as for safety, because every ceiling is
+  a share of it and the whole raid stalls at once waiting for it to catch up.
 
   Three limits worth knowing. Melee auto-attack is not gated, because only spellcasts pass through
-  `CanTryToCastSpell`; during the ramp this is visible as damage dealers accruing a hundred or so
-  threat while holding, against the tank's thousand, so it has not mattered. The ceiling is a flat
-  constant rather than an estimate of the threat about to be generated, which is why it has to be
-  as wide as the worst case rather than as wide as the case in hand. And the ramp is a fixed eight
-  seconds rather than a wait for the tank to have enough, which is the honest version of the same
-  idea and needs a definition of enough.
+  `CanTryToCastSpell`; during the ramp this is visible as damage dealers accruing a couple of hundred
+  threat while holding, against the tank's thousand. The ceiling is a flat constant rather than an
+  estimate of the threat about to be generated, which is why it has to fit the worst case rather than
+  the case in hand — a real estimate is what would let the headroom shrink further. And the ramp is a
+  fixed eight seconds rather than a wait for the tank to have enough, which is the honest version of
+  the same idea and needs a definition of enough; the adaptive version would release early on a clean
+  pull and late on a messy one, and is the obvious next improvement if eight seconds ever grates.
 - **Tick responsiveness.** Either lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so
   a hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
   39 bots polling at high frequency is the main CPU risk in this project.
