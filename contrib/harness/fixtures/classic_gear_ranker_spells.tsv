@@ -1,0 +1,499 @@
+spell_id	stat	amount	name
+7597	Crit	1	Increased Critical 1
+7598	Crit	2	Increased Critical 2
+7599	Crit	3	Increased Critical 3
+7600	Crit	4	Increased Critical 4
+9405	Crit	5	Increased Critical 5
+15464	Hit	1	Increased Hit Chance 1
+15465	Hit	2	Increased Hit Chance 2
+15466	Hit	3	Increased Hit Chance 3
+15467	Hit	4	Increased Hit Chance 4
+15468	Hit	5	Increased Hit Chance 5
+9136	AP	2	Attack Power 02
+9137	AP	4	Attack Power 04
+9138	AP	6	Attack Power 06
+9139	AP	8	Attack Power 08
+9140	AP	10	Attack Power 10
+28735	AP	100	Attack Power 100
+9141	AP	12	Attack Power 12
+9142	AP	14	Attack Power 14
+20732	AP	15	Attack Power 15
+9329	AP	16	Attack Power 16
+9330	AP	18	Attack Power 18
+9331	AP	20	Attack Power 20
+18060	AP	200	Attack Power 200
+9332	AP	22	Attack Power 22
+14027	AP	24	Attack Power 24
+9334	AP	26	Attack Power 26
+9335	AP	28	Attack Power 28
+9336	AP	30	Attack Power 30
+15807	AP	32	Attack Power 32
+15806	AP	34	Attack Power 34
+14089	AP	36	Attack Power 36
+15808	AP	38	Attack Power 38
+14049	AP	40	Attack Power 40
+15809	AP	42	Attack Power 42
+15810	AP	44	Attack Power 44
+15811	AP	46	Attack Power 46
+9333	AP	48	Attack Power 48
+14056	AP	50	Attack Power 50
+15812	AP	52	Attack Power 52
+15813	AP	54	Attack Power 54
+15814	AP	56	Attack Power 56
+15815	AP	58	Attack Power 58
+14052	AP	60	Attack Power 60
+15816	AP	62	Attack Power 62
+15817	AP	64	Attack Power 64
+15818	AP	66	Attack Power 66
+15819	AP	68	Attack Power 68
+15820	AP	70	Attack Power 70
+15821	AP	72	Attack Power 72
+15823	AP	74	Attack Power 74
+15824	AP	76	Attack Power 76
+15825	AP	78	Attack Power 78
+15826	AP	80	Attack Power 80
+15827	AP	82	Attack Power 82
+15828	AP	84	Attack Power 84
+15829	AP	86	Attack Power 86
+15830	AP	88	Attack Power 88
+15831	AP	90	Attack Power 90
+15832	AP	92	Attack Power 92
+28840	AP	98	Attack Power 98
+7511	Defense	1	Increased Defense
+7513	Defense	1	Increased Defense
+7514	Defense	2	Increased Defense
+7515	Defense	3	Increased Defense
+7516	Defense	3	Increased Defense
+7517	Defense	4	Increased Defense
+7518	Defense	5	Increased Defense
+13383	Defense	5	Increased Defense
+13384	Defense	6	Increased Defense
+13385	Defense	7	Increased Defense
+13386	Defense	7	Increased Defense
+13387	Defense	8	Increased Defense
+13388	Defense	9	Increased Defense
+13389	Defense	17	Increased Defense
+13390	Defense	10	Increased Defense
+14249	Defense	13	Increased Defense
+15804	Defense	67	Increased Defense
+17513	Defense	21	Increased Defense
+18185	Defense	11	Increased Defense
+18196	Defense	15	Increased Defense
+18369	Defense	9	Increased Defense
+21407	Defense	11	Increased Defense
+21408	Defense	12	Increased Defense
+21409	Defense	13	Increased Defense
+21410	Defense	14	Increased Defense
+21411	Defense	15	Increased Defense
+21412	Defense	16	Increased Defense
+21413	Defense	18	Increased Defense
+21414	Defense	19	Increased Defense
+21415	Defense	19	Increased Defense
+21416	Defense	20	Increased Defense
+21417	Defense	21	Increased Defense
+21418	Defense	22	Increased Defense
+21419	Defense	23	Increased Defense
+21420	Defense	23	Increased Defense
+21421	Defense	24	Increased Defense
+21422	Defense	25	Increased Defense
+21423	Defense	25	Increased Defense
+21424	Defense	17	Increased Defense
+24774	Defense	120	Increased Defense
+24775	Defense	80	Increased Defense
+13669	Dodge	1	Increased Dodge 1
+13670	Dodge	2	Increased Dodge 2
+13671	Dodge	3	Increased Dodge 3
+13672	Dodge	4	Increased Dodge 4
+13673	Dodge	5	Increased Dodge 5
+18062	Dodge	8	Increased Dodge 8
+13665	Parry	1	Increased Parry 1
+13667	Parry	2	Increased Parry 2
+13668	Parry	3	Increased Parry 3
+18063	Parry	5	Increased Parry 5
+7538	Weapon	1	Increased 1H Axe
+7540	Weapon	2	Increased 1H Axe
+13500	Weapon	8	Increased 1H Axe
+14048	Weapon	6	Increased 1H Axe
+15758	Weapon	4	Increased 1H Axe
+15759	Weapon	10	Increased 1H Axe
+15871	Weapon	3	Increased 1H Axe
+15873	Weapon	5	Increased 1H Axe
+15874	Weapon	7	Increased 1H Axe
+15875	Weapon	9	Increased 1H Axe
+15877	Weapon	11	Increased 1H Axe
+15879	Weapon	12	Increased 1H Axe
+15880	Weapon	13	Increased 1H Axe
+15881	Weapon	14	Increased 1H Axe
+15882	Weapon	15	Increased 1H Axe
+15883	Weapon	16	Increased 1H Axe
+15884	Weapon	17	Increased 1H Axe
+15885	Weapon	18	Increased 1H Axe
+24362	Weapon	4	Increased 1H Fist Weapons
+7532	Weapon	1	Increased 1H Mace
+7544	Weapon	3	Increased 1H Mace
+7546	Weapon	2	Increased 1H Mace
+7548	Weapon	7	Increased 1H Mace
+15694	Weapon	6	Increased 1H Mace
+15760	Weapon	4	Increased 1H Mace
+15761	Weapon	8	Increased 1H Mace
+15762	Weapon	10	Increased 1H Mace
+15886	Weapon	5	Increased 1H Mace
+15887	Weapon	9	Increased 1H Mace
+15888	Weapon	11	Increased 1H Mace
+15889	Weapon	12	Increased 1H Mace
+15890	Weapon	13	Increased 1H Mace
+15891	Weapon	14	Increased 1H Mace
+15892	Weapon	15	Increased 1H Mace
+15893	Weapon	16	Increased 1H Mace
+15894	Weapon	17	Increased 1H Mace
+15895	Weapon	18	Increased 1H Mace
+7520	Weapon	1	Increased 1H Sword
+7523	Weapon	3	Increased 1H Sword
+7525	Weapon	2	Increased 1H Sword
+7527	Weapon	7	Increased 1H Sword
+14121	Weapon	4	Increased 1H Sword
+15763	Weapon	6	Increased 1H Sword
+15764	Weapon	8	Increased 1H Sword
+15765	Weapon	10	Increased 1H Sword
+15896	Weapon	5	Increased 1H Sword
+15897	Weapon	9	Increased 1H Sword
+15898	Weapon	11	Increased 1H Sword
+15899	Weapon	12	Increased 1H Sword
+15900	Weapon	13	Increased 1H Sword
+15901	Weapon	14	Increased 1H Sword
+15902	Weapon	15	Increased 1H Sword
+15903	Weapon	16	Increased 1H Sword
+15904	Weapon	17	Increased 1H Sword
+15905	Weapon	18	Increased 1H Sword
+18061	Weapon	40	Increased 1H Sword
+7549	Weapon	1	Increased 2H Axe
+7550	Weapon	3	Increased 2H Axe
+7552	Weapon	2	Increased 2H Axe
+7554	Weapon	7	Increased 2H Axe
+14817	Weapon	8	Increased 2H Axe
+15766	Weapon	4	Increased 2H Axe
+15767	Weapon	6	Increased 2H Axe
+15768	Weapon	10	Increased 2H Axe
+15907	Weapon	5	Increased 2H Axe
+15909	Weapon	9	Increased 2H Axe
+15912	Weapon	11	Increased 2H Axe
+15913	Weapon	12	Increased 2H Axe
+15914	Weapon	13	Increased 2H Axe
+15916	Weapon	14	Increased 2H Axe
+15917	Weapon	15	Increased 2H Axe
+15919	Weapon	16	Increased 2H Axe
+15920	Weapon	17	Increased 2H Axe
+15921	Weapon	18	Increased 2H Axe
+7533	Weapon	1	Increased 2H Mace
+7556	Weapon	3	Increased 2H Mace
+7558	Weapon	2	Increased 2H Mace
+7560	Weapon	7	Increased 2H Mace
+14124	Weapon	10	Increased 2H Mace
+15773	Weapon	4	Increased 2H Mace
+15774	Weapon	6	Increased 2H Mace
+15775	Weapon	8	Increased 2H Mace
+15922	Weapon	5	Increased 2H Mace
+15923	Weapon	9	Increased 2H Mace
+15924	Weapon	11	Increased 2H Mace
+15925	Weapon	12	Increased 2H Mace
+15926	Weapon	13	Increased 2H Mace
+15927	Weapon	14	Increased 2H Mace
+15928	Weapon	15	Increased 2H Mace
+15929	Weapon	16	Increased 2H Mace
+15930	Weapon	17	Increased 2H Mace
+15931	Weapon	18	Increased 2H Mace
+7529	Weapon	1	Increased 2H Sword
+7562	Weapon	3	Increased 2H Sword
+7564	Weapon	2	Increased 2H Sword
+7566	Weapon	7	Increased 2H Sword
+15769	Weapon	4	Increased 2H Sword
+15770	Weapon	6	Increased 2H Sword
+15771	Weapon	8	Increased 2H Sword
+15772	Weapon	10	Increased 2H Sword
+15937	Weapon	5	Increased 2H Sword
+15938	Weapon	9	Increased 2H Sword
+15939	Weapon	11	Increased 2H Sword
+15940	Weapon	12	Increased 2H Sword
+15941	Weapon	13	Increased 2H Sword
+15942	Weapon	14	Increased 2H Sword
+15943	Weapon	15	Increased 2H Sword
+15944	Weapon	16	Increased 2H Sword
+15945	Weapon	17	Increased 2H Sword
+15946	Weapon	18	Increased 2H Sword
+7535	Ranged	1	Increased Bow
+7568	Ranged	3	Increased Bow
+7569	Ranged	4	Increased Bow
+7570	Ranged	2	Increased Bow
+7571	Ranged	6	Increased Bow
+7572	Ranged	7	Increased Bow
+15947	Ranged	5	Increased Bow
+17369	Ranged	11	Increased Bow
+17818	Ranged	8	Increased Bow
+22188	Ranged	4	Increased Crossbow
+22811	Ranged	2	Increased Crossbow
+27744	Ranged	8	Increased Crossbow
+7534	Weapon	1	Increased Dagger
+7573	Weapon	2	Increased Dagger
+7574	Weapon	3	Increased Dagger
+7576	Weapon	5	Increased Dagger
+7578	Weapon	7	Increased Dagger
+14051	Weapon	9	Increased Dagger
+15717	Weapon	6	Increased Dagger
+15776	Weapon	4	Increased Dagger
+15777	Weapon	8	Increased Dagger
+15778	Weapon	10	Increased Dagger
+15948	Weapon	11	Increased Dagger
+15949	Weapon	12	Increased Dagger
+15950	Weapon	13	Increased Dagger
+15951	Weapon	14	Increased Dagger
+15952	Weapon	15	Increased Dagger
+15953	Weapon	16	Increased Dagger
+15954	Weapon	17	Increased Dagger
+15955	Weapon	18	Increased Dagger
+14249	Weapon	13	Increased Defense
+7536	Ranged	1	Increased Gun
+7579	Ranged	5	Increased Gun
+7580	Ranged	3	Increased Gun
+7581	Ranged	4	Increased Gun
+7582	Ranged	2	Increased Gun
+7583	Ranged	6	Increased Gun
+7584	Ranged	7	Increased Gun
+27743	Ranged	8	Increased Gun
+20607	Weapon	2	Increased Staff
+24921	Weapon	7	Increased Staff
+21539	Block Value	2	Block Value 02
+23172	Block Value	10	Block Value 10
+25036	Block Value	12	Block Value 12
+23515	Block Value	14	Block Value 14
+23203	Block Value	15	Block Value 15
+22912	Block Value	18	Block Value 18
+23731	Block Value	19	Block Value 19
+28112	Block Value	21	Block Value 21
+22852	Block Value	23	Block Value 23
+23181	Block Value	24	Block Value 24
+23516	Block Value	27	Block Value 27
+23562	Block Value	30	Block Value 30
+28113	Block Value	30	Block Value 30
+28325	Block Value	32	Block Value 32
+13674	Block	1	Increased Block 1
+21466	Block	1	Increased Block 1
+21467	Block	1	Increased Block 1
+21468	Block	1	Increased Block 1
+21469	Block	1	Increased Block 1
+21470	Block	1	Increased Block 1
+13675	Block	2	Increased Block 2
+21471	Block	2	Increased Block 2
+21472	Block	2	Increased Block 2
+21473	Block	2	Increased Block 2
+21474	Block	2	Increased Block 2
+18064	Block	20	Increased Block 20
+13676	Block	3	Increased Block 3
+21475	Block	3	Increased Block 3
+21476	Block	3	Increased Block 3
+21477	Block	3	Increased Block 3
+13677	Block	4	Increased Block 4
+21478	Block	4	Increased Block 4
+21479	Block	4	Increased Block 4
+21480	Block	4	Increased Block 4
+21481	Block	4	Increased Block 4
+21482	Block	5	Increased Block 5
+21483	Block	5	Increased Block 5
+21484	Block	5	Increased Block 5
+21485	Block	5	Increased Block 5
+13678	Block	6	Increased Block 6
+21486	Block	6	Increased Block 6
+21487	Block	6	Increased Block 6
+21488	Block	6	Increased Block 6
+21489	Block	6	Increased Block 6
+21490	Block	7	Increased Block 7
+21491	Block	7	Increased Block 7
+21492	Block	7	Increased Block 7
+21493	Block	7	Increased Block 7
+21494	Block	8	Increased Block 8
+21495	Block	8	Increased Block 8
+21496	Block	8	Increased Block 8
+21497	Block	8	Increased Block 8
+21498	Block	8	Increased Block 8
+9392	SpDmg	1	Increase Spell Dam 1
+9416	SpDmg	11	Increase Spell Dam 11
+28841	SpDmg	113	Increase Spell Dam 113
+9417	SpDmg	12	Increase Spell Dam 12
+28792	SpDmg	126	Increase Spell Dam 126
+9342	SpDmg	13	Increase Spell Dam 13
+28530	SpDmg	132	Increase Spell Dam 132
+9343	SpDmg	14	Increase Spell Dam 14
+9344	SpDmg	15	Increase Spell Dam 15
+28141	SpDmg	150	Increase Spell Dam 150
+25110	SpDmg	16	Increase Spell Dam 16
+9345	SpDmg	16	Increase Spell Dam 16
+9346	SpDmg	18	Increase Spell Dam 18
+14254	SpDmg	19	Increase Spell Dam 19
+9393	SpDmg	2	Increase Spell Dam 2
+14799	SpDmg	20	Increase Spell Dam 20
+14248	SpDmg	21	Increase Spell Dam 21
+15714	SpDmg	22	Increase Spell Dam 22
+14047	SpDmg	23	Increase Spell Dam 23
+30779	SpDmg	23	Increase Spell Dam 23 - Devout
+30778	SpDmg	23	Increase Spell Dam 23 - Dreadmist
+30780	SpDmg	23	Increase Spell Dam 23 - Elements
+30777	SpDmg	23	Increase Spell Dam 23 - Magister
+25111	SpDmg	24	Increase Spell Dam 24
+24595	SpDmg	24	Increase Spell Dam 24
+15715	SpDmg	25	Increase Spell Dam 25
+18049	SpDmg	26	Increase Spell Dam 26
+14054	SpDmg	27	Increase Spell Dam 27
+14127	SpDmg	28	Increase Spell Dam 28
+13881	SpDmg	29	Increase Spell Dam 29
+14798	SpDmg	30	Increase Spell Dam 30
+22747	SpDmg	30	Increase Spell Dam 30
+17367	SpDmg	32	Increase Spell Dam 32
+18050	SpDmg	33	Increase Spell Dam 33
+18052	SpDmg	34	Increase Spell Dam 34
+14055	SpDmg	35	Increase Spell Dam 35
+18053	SpDmg	36	Increase Spell Dam 36
+25113	SpDmg	61	Increase Spell Dam 36 and 1% Crit
+18054	SpDmg	37	Increase Spell Dam 37
+18055	SpDmg	39	Increase Spell Dam 39
+9394	SpDmg	4	Increase Spell Dam 4
+18056	SpDmg	40	Increase Spell Dam 40
+18057	SpDmg	41	Increase Spell Dam 41
+18058	SpDmg	42	Increase Spell Dam 42
+17280	SpDmg	43	Increase Spell Dam 43
+17493	SpDmg	44	Increase Spell Dam 44
+28264	SpDmg	46	Increase Spell Dam 46
+24196	SpDmg	47	Increase Spell Dam 47
+28360	SpDmg	49	Increase Spell Dam 49
+9395	SpDmg	5	Increase Spell Dam 5
+28767	SpDmg	51	Increase Spell Dam 51
+26142	SpDmg	53	Increase Spell Dam 53
+23732	SpDmg	56	Increase Spell Dam 56
+23213	SpDmg	57	Increase Spell Dam 57
+26155	SpDmg	59	Increase Spell Dam 59
+9396	SpDmg	6	Increase Spell Dam 6
+26158	SpDmg	60	Increase Spell Dam 60
+23730	SpDmg	64	Increase Spell Dam 64
+26227	SpDmg	68	Increase Spell Dam 68
+9397	SpDmg	7	Increase Spell Dam 7
+23929	SpDmg	71	Increase Spell Dam 71
+26395	SpDmg	72	Increase Spell Dam 72
+26460	SpDmg	76	Increase Spell Dam 76
+25109	SpDmg	8	Increase Spell Dam 8
+9398	SpDmg	8	Increase Spell Dam 8
+26459	SpDmg	80	Increase Spell Dam 80
+23728	SpDmg	84	Increase Spell Dam 84
+24243	SpDmg	840	Increase Spell Dam 840
+28687	SpDmg	85	Increase Spell Dam 85
+9415	SpDmg	9	Increase Spell Dam 9
+28693	SpDmg	95	Increase Spell Dam 95
+25717	SpPen	-300	Spell Penetration
+25718	SpPen	-300	Spell Penetration
+25766	SpPen	-30	Spell Penetration
+28680	SpPen	-13	Spell Penetration 13
+28869	SpPen	-13	Spell Penetration 15
+26203	SpPen	-150	Spell Penetration 150 Fire Resist
+26204	SpPen	-150	Spell Penetration 150 Frost Resist
+25975	SpPen	-10	Increased Spell Penetration 10
+26283	SpPen	-20	Increased Spell Penetration 20
+28799	SpPen	-25	Increased Spell Penetration 25
+26175	SpPen	-10	Increased Spell Penetration 38
+27516	SpPen	-6	Increased Spell Penetration 6
+23727	SpHit	1	Increased Spell Hit Chance 1
+23729	SpHit	2	Increased Spell Hit Chance 2
+25975	SpPen	-10	Increased Spell Penetration 10
+26283	SpPen	-20	Increased Spell Penetration 20
+28799	SpPen	-25	Increased Spell Penetration 25
+26175	SpPen	-10	Increased Spell Penetration 38
+27516	SpPen	-6	Increased Spell Penetration 6
+18384	SpCrit	1	Increased Critical Spell
+18382	SpCrit	2	Increased Critical Spell
+29069	SpCrit	2	Increased Critical Spell
+23264	SpHeal	106	Increase Healing 106
+26225	SpHeal	106	Increase Healing 106
+7679	SpHeal	11	Increase Healing 11
+26690	SpHeal	110	Increase Healing 110
+26228	SpHeal	121	Increase Healing 121
+7680	SpHeal	13	Increase Healing 13
+29369	SpHeal	134	Increase Healing 134
+26461	SpHeal	143	Increase Healing 143
+7681	SpHeal	15	Increase Healing 15
+28686	SpHeal	161	Increase Healing 161
+28736	SpHeal	178	Increase Healing 178
+9406	SpHeal	18	Increase Healing 18
+26814	SpHeal	187	Increase Healing 187
+7675	SpHeal	2	Increase Healing 2
+9407	SpHeal	20	Increase Healing 20
+9408	SpHeal	22	Increase Healing 22
+28805	SpHeal	238	Increase Healing 238
+9314	SpHeal	24	Increase Healing 24
+23796	SpHeal	24	Increase Healing 24
+9315	SpHeal	26	Increase Healing 26
+28151	SpHeal	280	Increase Healing 280
+9316	SpHeal	29	Increase Healing 29
+25067	SpHeal	30	Increase Healing 30
+28152	SpHeal	300	Increase Healing 300
+9317	SpHeal	31	Increase Healing 31
+9318	SpHeal	33	Increase Healing 33
+18029	SpHeal	35	Increase Healing 35
+18030	SpHeal	37	Increase Healing 37
+7676	SpHeal	4	Increase Healing 4
+18031	SpHeal	40	Increase Healing 40
+18032	SpHeal	42	Increase Healing 42
+17371	SpHeal	44	Increase Healing 44
+18033	SpHeal	46	Increase Healing 46
+18034	SpHeal	48	Increase Healing 48
+18035	SpHeal	51	Increase Healing 51
+15696	SpHeal	53	Increase Healing 53
+18036	SpHeal	55	Increase Healing 55
+22748	SpHeal	55	Increase Healing 55
+18037	SpHeal	57	Increase Healing 57
+18038	SpHeal	59	Increase Healing 59
+18039	SpHeal	62	Increase Healing 62
+18040	SpHeal	64	Increase Healing 64
+18041	SpHeal	66	Increase Healing 66
+18042	SpHeal	68	Increase Healing 68
+7677	SpHeal	7	Increase Healing 7
+18043	SpHeal	70	Increase Healing 70
+18044	SpHeal	73	Increase Healing 73
+18045	SpHeal	75	Increase Healing 75
+18046	SpHeal	77	Increase Healing 77
+18047	SpHeal	79	Increase Healing 79
+18048	SpHeal	81	Increase Healing 81
+17320	SpHeal	84	Increase Healing 84
+7678	SpHeal	9	Increase Healing 9
+26154	SpHeal	90	Increase Healing 90
+23593	SpHeal	92	Increase Healing 92
+21624	Mp5	2	Increased Mana Regen
+21625	Mp5	3	Increased Mana Regen
+21626	Mp5	6	Increased Mana Regen
+21627	Mp5	6	Increased Mana Regen
+21628	Mp5	7	Increased Mana Regen
+21629	Mp5	8	Increased Mana Regen
+21630	Mp5	8	Increased Mana Regen
+21631	Mp5	9	Increased Mana Regen
+21632	Mp5	10	Increased Mana Regen
+21633	Mp5	10	Increased Mana Regen
+21634	Mp5	11	Increased Mana Regen
+21635	Mp5	12	Increased Mana Regen
+21636	Mp5	12	Increased Mana Regen
+21637	Mp5	12	Increased Mana Regen
+21638	Mp5	13	Increased Mana Regen
+21639	Mp5	13	Increased Mana Regen
+21640	Mp5	14	Increased Mana Regen
+21641	Mp5	14	Increased Mana Regen
+21642	Mp5	14	Increased Mana Regen
+21643	Mp5	15	Increased Mana Regen
+21644	Mp5	15	Increased Mana Regen
+23211	Mp5	15	Copy of Increased Mana Regen
+23212	Mp5	16	Increased Mana Regen
+23795	Mp5	4	Increased Mana Regen
+25114	Mp5	4	Increased Mana Regen
+25115	Mp5	8	Increased Mana Regen
+26647	Mp5	16	Increased Mana Regen
+21359	Mp5	1	Increased Mana Regen
+21360	Mp5	2	Increased Mana Regen
+21361	Mp5	3	Increased Mana Regen
+21362	Mp5	4	Increased Mana Regen
+21363	Mp5	5	Increased Mana Regen
+21364	Mp5	7	Increased Mana Regen
+21365	Mp5	9	Increased Mana Regen
+21366	Mp5	11	Increased Mana Regen

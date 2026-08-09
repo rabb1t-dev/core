@@ -230,9 +230,13 @@ Run from the repo root on the server host. Times are for the dev box.
 | `test_raid_group.py` | A roster grows past five and stops at the raid ceiling | |
 | `test_raid_guild_roster.py` | An authored roster becomes real characters that can log in | |
 | `test_raid_guild_summon.py` | A provisioned roster can be summoned as a raid and sent home | |
+| `test_bot_gear_preservation.py` | Handing a bot an upgrade does not destroy what it was wearing | |
+| `test_item_evaluator.py` | The engine reads all 2475 items and 498 equip spells the way Classic Gear Ranker does | ~2 min. Writes every disagreement to `/tmp/item_evaluator_failures.txt` |
+| `test_item_evaluator_behaviour.py` | A bot wears the better of two necks, declines the worse, and keeps both | |
 | `sweep_corpse_runs.py` | Cheap survey: could a ghost *in principle* walk each route | Superseded by the live suite; a route existing and a bot walking it are different claims |
 | `audit_premade_specs.py` | Reports what each level 60 premade build actually is | Not a pass/fail test |
 | `talent_dbc.py` | Reads `Talent.dbc` so builds can be authored against real data | Library and CLI |
+| `roster_fixture.py` | Leader plus bot roster and inventory helpers shared by the two gear suites | Library |
 
 ## Traps
 

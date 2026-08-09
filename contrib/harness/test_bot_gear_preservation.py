@@ -13,20 +13,20 @@ There is no way to conduct a trade over SOAP, which is why this path had no test
 ended up, including the mail, since gear the bags will not take is mailed and a test that
 looked only at bags and equipment could not tell that from destruction.
 
-Worth being clear about what is *not* claimed. This pass has no notion of better: it equips
-whatever it can, in bag order, so the last thing it looks at is what ends up worn. Choosing
-between two usable items is the evaluator's job and the evaluator does not exist yet. Each
-case here therefore strips the bot first, so that what it is being offered is unambiguous.
+This file asks only whether gear survives. Which of two usable items a bot picks is the
+evaluator's question and `test_item_evaluator_behaviour.py` asks it. The two are not fully
+separable, though, since the pass now chooses rather than equipping whatever it sees last:
+every case below is built so the item meant to be worn is also the one the evaluator
+prefers, and the scores are quoted where that is not obvious.
 
 Run on the server host, with VMANGOS_SOAP_USER and VMANGOS_SOAP_PASSWORD set to a GM
 account: python3 test_bot_gear_preservation.py
 """
 
-import re
 import sys
-import time
 
-from vmangos_harness import CommandError, Harness
+from roster_fixture import cleanup, give, holds, inventory, strip, summon_roster
+from vmangos_harness import Harness
 
 # Two orc warriors: one to stand in the world so there is something to summon a roster to,
 # and one to be the bot. Warrior because the last case is about the weapon and shield rules,
@@ -37,10 +37,15 @@ MEMBERS = [(LEADER, 2, 1), (BOT, 2, 1)]
 
 # One-handed swords, a shield and a two-handed sword, none of which ask for a level or a
 # class, so the only thing between the bot and any of them is the code being tested.
-SWORD = 3455            # Deathstalker Shortsword
-OTHER_SWORD = 15335     # Briarsteel Shortsword
-SHIELD = 4911           # Thick Bark Buckler
-TWO_HANDER = 5779       # Forsaken Bastard Sword
+SWORD = 3455            # Deathstalker Shortsword, 5.0 dps, scores 35 for a tank
+OTHER_SWORD = 15335     # Briarsteel Shortsword, 7.2 dps, scores 60
+SHIELD = 4911           # Thick Bark Buckler, 55 armour, scores 5
+
+# Warblade of Caer Darrow, 57 dps and no level requirement, scoring 610 against the 40 of
+# the sword and buckler together. It has to beat both of them at once, since for a tank a
+# shield and a fast one-hander are worth more than a merely adequate two-hander, and one the
+# evaluator declines proves nothing about the off-hand rule.
+TWO_HANDER = 13982
 
 # Holy War Sword, which asks for level 60. The bot is level 1, so equipping it would mean the
 # restriction was never checked. The old code asked FindEquipSlot, which only answers where a
@@ -54,106 +59,14 @@ EQUIPMENT_SLOT_MAINHAND = 15
 EQUIPMENT_SLOT_OFFHAND = 16
 
 
-def inventory(harness, name):
-    """Where everything on a character is: worn, carried, or waiting in the mail.
-
-    The mail is not an afterthought. It is the difference between an item moved out of the
-    way and one destroyed, which is the whole question this file asks.
-    """
-    text = harness.run(f"harness items {name}")
-
-    equipped, bag, mailed = {}, [], []
-    for line in text.splitlines():
-        line = line.strip()
-        fields = dict(re.findall(r"(\w+)=(\S+)", line))
-        if line.startswith("equipped "):
-            equipped[int(fields["slot"])] = int(fields["entry"])
-        elif line.startswith("bag "):
-            bag.append((int(fields["entry"]), int(fields["count"])))
-        elif line.startswith("mailed "):
-            mailed.append(int(fields["entry"]))
-
-    return equipped, bag, mailed
-
-
-def holds(equipped, bag, mailed, entry):
-    """Whether the character still has the item at all, wherever it ended up."""
-    return (entry in equipped.values()
-            or any(e == entry for e, _ in bag)
-            or entry in mailed)
-
-
-def give(harness, name, entry):
-    harness.run(f"harness exec {name} additem {entry}")
-
-
-def strip(harness, name):
-    """Take everything off the bot and out of its bags.
-
-    Each case needs the bot to be offered exactly one thing, because the pass equips
-    everything it can rather than choosing, and starting kit alone is enough to make the
-    result depend on which bag slot a sword happened to land in.
-    """
-    equipped, bag, _ = inventory(harness, name)
-
-    counts = {}
-    for entry in equipped.values():
-        counts[entry] = counts.get(entry, 0) + 1
-    for entry, count in bag:
-        counts[entry] = counts.get(entry, 0) + count
-
-    for entry, count in counts.items():
-        harness.run(f"harness exec {name} additem {entry} -{count}", allow_failure=True)
-
-
-def cleanup(harness):
-    harness.run("raidguild resetbinds", allow_failure=True)
-
-    for name, _, _ in MEMBERS:
-        harness.run(f"raidguild remove {name}", allow_failure=True)
-        harness.logout(name)
-
-    for name, _, _ in MEMBERS:
-        # Erasing resolves the name through the player cache, so erasing one still on its way
-        # out of the world can miss and leave the row behind for the next run to trip over.
-        deadline = time.time() + 30.0
-        while time.time() < deadline and harness.info(name) is not None:
-            time.sleep(1.0)
-
-        harness.run(f"character erase {name}", allow_failure=True)
-
-
 def main():
     harness = Harness.from_env()
     failures = []
 
-    cleanup(harness)
-    harness.run("raidguild reload")
-
-    for name, race, class_id in MEMBERS:
-        harness.run(f"raidguild add {name} {race} {class_id} 0 tank 1")
-
-    harness.run("raidguild provision")
-    harness.login(LEADER, timeout=60)
-    harness.run(f"raidguild summon {LEADER}")
-
-    deadline = time.time() + 90.0
-    while time.time() < deadline and harness.info(BOT) is None:
-        time.sleep(2.0)
-
-    if harness.info(BOT) is None:
-        print(f"FAIL: {BOT} never reached the world", file=sys.stderr)
-        cleanup(harness)
-        return 1
-
-    # A summoned member runs a party bot AI, which is what carries the pass under test. The
-    # leader came in through the plain login path and has no AI at all, so it cannot be used
-    # for this even though it is the same kind of character.
-    try:
-        harness.run(f"harness equipnew {BOT}")
-    except CommandError as exc:
-        print(f"FAIL: cannot drive the equip pass: {exc}", file=sys.stderr)
-        cleanup(harness)
+    problem = summon_roster(harness, MEMBERS, LEADER, BOT)
+    if problem:
+        print(f"FAIL: {problem}", file=sys.stderr)
+        cleanup(harness, MEMBERS)
         return 1
 
     # One: the displaced item survives. This is the case that used to delete the sword a
@@ -235,7 +148,7 @@ def main():
 
     print(f"consumable kept={kept}")
 
-    cleanup(harness)
+    cleanup(harness, MEMBERS)
 
     if failures:
         for failure in failures:
