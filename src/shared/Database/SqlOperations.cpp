@@ -62,6 +62,12 @@ bool SqlTransaction::Execute(SqlConnection* conn)
 
         if(!pStmt->Execute(conn))
         {
+            // The rollback throws away every statement in this transaction, not just the one that
+            // failed, and nothing retries it. For a character save that is the whole session's
+            // progress, so say so here: the individual statement error logged above the line reads
+            // like a single skipped write, and it is worth knowing how much went with it.
+            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "Statement %i of %i failed in transaction (serial id %u). Rolling back, discarding all %i statements.",
+                     i + 1, nItems, GetSerialId(), nItems);
             conn->RollbackTransaction();
             return false;
         }
@@ -188,15 +194,17 @@ bool SqlQueryHolder::SetQuery(size_t index, std::string const& sql)
         return false;
     }
 
-    if(!m_queries[index].first.empty())
+    if(!m_queries[index].sql.empty())
     {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "Attempt assign query to holder index (" SIZEFMTD ") where other query stored (Old: [%s] New: [%s])",
-            index,m_queries[index].first.c_str(), sql.c_str());
+            index,m_queries[index].sql.c_str(), sql.c_str());
         return false;
     }
 
     // not executed yet, just stored (it's not called a holder for nothing)
-    m_queries[index] = SqlResultPair(sql, nullptr);
+    m_queries[index].sql = sql;
+    m_queries[index].result = nullptr;
+    m_queries[index].failed = false;
     return true;
 }
 
@@ -232,20 +240,29 @@ std::unique_ptr<QueryResult> SqlQueryHolder::TakeResult(size_t index)
     }
 
     auto& entry = m_queries[index];
-    if (entry.first.empty()) {
+    if (entry.sql.empty()) {
         sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "SqlQueryHolder: TakeResult(" SIZEFMTD ") is already empty", index);
         return nullptr;
     }
 
-    entry.first.clear();
-    return std::move(entry.second);
+    entry.sql.clear();
+    return std::move(entry.result);
+}
+
+bool SqlQueryHolder::HasFailedQuery() const
+{
+    for (auto const& entry : m_queries)
+        if (entry.failed)
+            return true;
+
+    return false;
 }
 
 void SqlQueryHolder::SetResult(size_t index, std::unique_ptr<QueryResult> result)
 {
     // store the result in the holder
     if(index < m_queries.size())
-        m_queries[index].second = std::move(result);
+        m_queries[index].result = std::move(result);
 }
 
 void SqlQueryHolder::DeleteAllResults()
@@ -254,7 +271,7 @@ void SqlQueryHolder::DeleteAllResults()
     {
         // if the result was never used, free the resources
         // results used already (getresult called) are expected to be deleted
-        m_queries[i].second.reset();
+        m_queries[i].result.reset();
     }
 }
 
@@ -271,13 +288,14 @@ bool SqlQueryHolderEx::Execute(SqlConnection* conn)
 
     LOCK_DB_CONN(conn);
     // we can do this, we are friends
-    std::vector<SqlQueryHolder::SqlResultPair>& queries = m_holder->m_queries;
+    std::vector<SqlQueryHolder::SqlQueryEntry>& queries = m_holder->m_queries;
     for (size_t i = 0; i < queries.size(); i++)
     {
         // execute all queries in the holder and pass the results
-        std::string const& sql = queries[i].first;
+        std::string const& sql = queries[i].sql;
         if (!sql.empty()) {
-            std::unique_ptr<QueryResult> result = conn->Query(sql);
+            std::unique_ptr<QueryResult> result;
+            queries[i].failed = !conn->QueryChecked(sql, result);
             m_holder->SetResult(i, std::move(result));
         }
     }

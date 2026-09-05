@@ -176,6 +176,16 @@ bool MySQLConnection::HandleMySQLError(uint32 errNo)
         case ER_DUP_ENTRY:
             return false;
 
+        // The table is there but cannot be read right now: damaged, or held by someone
+        // else for longer than we are willing to wait. Neither says anything about the
+        // rest of the server, so fail the one query and let its caller decide.
+        case ER_CRASHED_ON_USAGE:
+        case ER_CRASHED_ON_REPAIR:
+        case ER_NOT_KEYFILE:
+        case ER_LOCK_WAIT_TIMEOUT:
+            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "Table temporarily unusable (errno %u). Query abandoned.", errNo);
+            return false;
+
         // Outdated table or database structure - terminate core
         case ER_BAD_FIELD_ERROR:
         case ER_NO_SUCH_TABLE:
@@ -187,14 +197,22 @@ bool MySQLConnection::HandleMySQLError(uint32 errNo)
             ASSERT(false);
             return false;
         default:
-            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "Unhandled MySQL errno %u. Unexpected behaviour possible.", errNo);
-            ASSERT(false);
+            // Deliberately not fatal. This runs on the database worker thread, which has no
+            // handler for the exception an assertion throws, so asserting here takes the
+            // whole world down; an error nobody has classified yet is a poor reason to do
+            // that to everyone online. Abandoning the query leaves the caller to notice.
+            sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "Unhandled MySQL errno %u. Query abandoned.", errNo);
             return false;
     }
 }
 
-bool MySQLConnection::_Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_FIELD** pFields, uint64* pRowCount, uint32* pFieldCount)
+bool MySQLConnection::_Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_FIELD** pFields, uint64* pRowCount, uint32* pFieldCount, bool* pFailed)
 {
+    // Assumed broken until the query is known to have run. Every path out of here that is
+    // an ordinary empty result says so explicitly.
+    if (pFailed)
+        *pFailed = true;
+
     if (!mMysql && !Reconnect())
         return false;
 
@@ -208,7 +226,7 @@ bool MySQLConnection::_Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_
         sLog.Out(LOG_DBERROR, LOG_LVL_MINIMAL, "[%u] %s", lErrno, mysql_error(mMysql));
 
         if (HandleMySQLError(lErrno)) // If error is handled, just try again
-            return _Query(sql, pResult, pFields, pRowCount, pFieldCount);
+            return _Query(sql, pResult, pFields, pRowCount, pFieldCount, pFailed);
 
         return false;
     }
@@ -222,32 +240,54 @@ bool MySQLConnection::_Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_
     *pFieldCount = mysql_field_count(mMysql);
 
     if (!*pResult)
+    {
+        // A null result set means the statement produced none, which is normal for anything
+        // that is not a SELECT, unless the server said it had fields to return: then the
+        // set went missing between the query and the fetch.
+        if (pFailed && !*pFieldCount)
+            *pFailed = false;
         return false;
+    }
 
     if (!*pRowCount)
     {
         mysql_free_result(*pResult);
+        if (pFailed)
+            *pFailed = false;
         return false;
     }
 
     *pFields = mysql_fetch_fields(*pResult);
+    if (pFailed)
+        *pFailed = false;
+    return true;
+}
+
+bool MySQLConnection::QueryChecked(std::string const& sql, std::unique_ptr<QueryResult>& result)
+{
+    MYSQL_RES* mysqlResult = nullptr;
+    MYSQL_FIELD* fields = nullptr;
+    uint64 rowCount = 0;
+    uint32 fieldCount = 0;
+    bool failed = false;
+
+    result = nullptr;
+
+    if (!_Query(sql, &mysqlResult, &fields, &rowCount, &fieldCount, &failed))
+        return !failed;
+
+    std::unique_ptr<QueryResultMysql> queryResult(new QueryResultMysql(mysqlResult, fields, rowCount, fieldCount));
+
+    queryResult->NextRow();
+    result = std::move(queryResult);
     return true;
 }
 
 std::unique_ptr<QueryResult> MySQLConnection::Query(std::string const& sql)
 {
-    MYSQL_RES* result = nullptr;
-    MYSQL_FIELD* fields = nullptr;
-    uint64 rowCount = 0;
-    uint32 fieldCount = 0;
-
-    if(!_Query(sql, &result, &fields, &rowCount, &fieldCount))
-        return nullptr;
-
-    std::unique_ptr<QueryResultMysql> queryResult(new QueryResultMysql(result, fields, rowCount, fieldCount));
-
-    queryResult->NextRow();
-    return queryResult;
+    std::unique_ptr<QueryResult> result;
+    QueryChecked(sql, result);
+    return result;
 }
 
 std::unique_ptr<QueryNamedResult> MySQLConnection::QueryNamed(std::string const& sql)

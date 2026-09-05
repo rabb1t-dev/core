@@ -7953,6 +7953,12 @@ void ObjectMgr::SetHighestGuids()
     CharacterDatabase.PExecute("DELETE FROM `item_loot` WHERE `guid` >= '%u'", m_ItemGuids.GetNextAfterMaxUsed());
     CharacterDatabase.PExecute("DELETE FROM `mail_items` WHERE `item_guid` >= '%u'", m_ItemGuids.GetNextAfterMaxUsed());
     CharacterDatabase.PExecute("DELETE FROM `petition` WHERE `charter_guid` >= '%u'", m_ItemGuids.GetNextAfterMaxUsed());
+
+    // An inventory row whose item is gone from `item_instance` describes nothing: the loader
+    // deletes such rows when it meets them, so clear them out before anyone logs in. Left alone
+    // they are worse than dead weight, because item guids get recycled and the row will collide
+    // with whichever item is handed that guid next, failing that character's save.
+    CharacterDatabase.Execute("DELETE `ci` FROM `character_inventory` `ci` LEFT JOIN `item_instance` `ii` ON `ii`.`guid` = `ci`.`item_guid` WHERE `ii`.`guid` IS NULL");
     CharacterDatabase.CommitTransaction();
 
     std::unique_ptr<QueryResult> result = WorldDatabase.Query("SELECT MAX(`guid`) FROM `creature`");

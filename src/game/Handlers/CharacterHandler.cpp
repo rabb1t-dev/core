@@ -484,7 +484,20 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
         pCurrChar->SendPacketsAtRelogin();
     else if (!pCurrChar->LoadFromDB(playerGuid, holder))
     {
-        KickPlayer();                                       // disconnect client, player no set to session and it will not deleted or saved at kick
+        // A database that could not answer is worth another try, and the character is fine
+        // where it is: tell a real client so it falls back to the character screen with its
+        // connection intact. Anything else is a character that will not load however often
+        // it is asked for. A headless session has no character screen to fall back to and
+        // nothing would ever collect it, so it is torn down either way.
+        if (holder->HasFailedQuery() && GetSocket())
+        {
+            auto loginFailedPacket = std::make_unique<WorldPackets::Character::CharacterLoginFailed>();
+            loginFailedPacket->result = CHAR_LOGIN_FAILED;
+            SendPacket(std::move(loginFailedPacket));
+        }
+        else
+            KickPlayer();                                   // disconnect client, player no set to session and it will not deleted or saved at kick
+
         delete pCurrChar;                                   // delete it manually
         delete holder;                                      // delete all unprocessed queries
         m_playerLoading = false;

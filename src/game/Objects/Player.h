@@ -1150,6 +1150,9 @@ class Player final: public Unit
         QuestStatusData const* GetQuestStatusData(uint32 questId) const;
         QuestStatus GetQuestStatus(uint32 questId) const;
         void SetQuestStatus(uint32 questId, QuestStatus status);
+        // Records that a quest's stored state has moved on and needs writing. Also brings the
+        // next save forward, because until it happens the progress exists only in memory.
+        void MarkQuestStatusChanged(QuestStatusData& questStatus);
 
         void SwapQuestSlot(uint16 slot1,uint16 slot2)
         {
@@ -1272,6 +1275,7 @@ class Player final: public Unit
 
         uint32 GetSaveTimer() const { return m_nextSave; }
         void   SetSaveTimer(uint32 timer) { m_nextSave = timer; }
+        void   ScheduleSave();
         bool   IsSavingDisabled() const { return m_saveDisabled; }
 
         /*********************************************************/

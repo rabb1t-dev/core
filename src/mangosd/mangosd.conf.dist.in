@@ -168,6 +168,14 @@ BindIP = "0.0.0.0"
 #        Player save interval (in milliseconds)
 #        Default: 900000 (15 min)
 #
+#    PlayerSave.ProgressDelay
+#        How soon to save a character after progress that would hurt to lose, such as a
+#        quest objective, a turn-in or a level. Only ever brings the next save forward, so
+#        a run of them costs one save and not one save each. A client or server that dies
+#        loses at most this much, instead of the rest of PlayerSave.Interval.
+#        Default: 30000 (30 sec)
+#                 0 (off, save on PlayerSave.Interval and logout only)
+#
 #    PlayerSave.Stats.MinLevel
 #        Minimum level for saving character stats for external usage in database
 #        Default: 0  (do not save character stats)
@@ -268,6 +276,7 @@ CleanupTerrain = 1
 MapUpdateInterval = 100
 ChangeWeatherInterval = 600000
 PlayerSave.Interval = 900000
+PlayerSave.ProgressDelay = 30000
 PlayerSave.Stats.MinLevel = 0
 PlayerSave.Stats.SaveOnlyOnLogout = 1
 Terrain.Preload.Continents = 0

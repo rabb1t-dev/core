@@ -3091,6 +3091,8 @@ void Player::GiveXP(uint32 xp, Unit const* victim)
     }
 
     SetUInt32Value(PLAYER_XP, newXP);
+
+    ScheduleSave();
 }
 
 // Update player to next level
@@ -3254,6 +3256,8 @@ void Player::GiveLevel(uint32 level)
     // update level to hunter/summon pet
     if (Pet* pet = GetPet())
         pet->SynchronizeLevelWithOwner();
+
+    ScheduleSave();
 }
 
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
@@ -12980,8 +12984,7 @@ void Player::AddQuest(Quest const* pQuest, Object* questGiver)
 
     SetQuestSlot(log_slot, questId, qtime);
 
-    if (questStatusData.uState != QUEST_NEW)
-        questStatusData.uState = QUEST_CHANGED;
+    MarkQuestStatusChanged(questStatusData);
 
     // quest accept scripts
     if (questGiver)
@@ -13282,8 +13285,7 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, WorldObject* questE
     else
         SetQuestStatus(questId, QUEST_STATUS_NONE);
 
-    if (q_status.uState != QUEST_NEW)
-        q_status.uState = QUEST_CHANGED;
+    MarkQuestStatusChanged(q_status);
 
     if (announce)
         SendQuestReward(pQuest, xp);
@@ -13912,6 +13914,14 @@ bool Player::CanShareQuest(uint32 questId) const
     return false;
 }
 
+void Player::MarkQuestStatusChanged(QuestStatusData& questStatus)
+{
+    if (questStatus.uState != QUEST_NEW)
+        questStatus.uState = QUEST_CHANGED;
+
+    ScheduleSave();
+}
+
 void Player::SetQuestStatus(uint32 questId, QuestStatus status)
 {
     if (sObjectMgr.GetQuestTemplate(questId))
@@ -13920,8 +13930,7 @@ void Player::SetQuestStatus(uint32 questId, QuestStatus status)
 
         q_status.m_status = status;
 
-        if (q_status.uState != QUEST_NEW)
-            q_status.uState = QUEST_CHANGED;
+        MarkQuestStatusChanged(q_status);
 
         UpdateForQuestWorldObjects();
     }
@@ -13969,8 +13978,7 @@ void Player::AreaExploredOrEventHappens(uint32 questId)
                 SendQuestCompleteEvent(questId);
                 q_status.m_explored = true;
 
-                if (q_status.uState != QUEST_NEW)
-                    q_status.uState = QUEST_CHANGED;
+                MarkQuestStatusChanged(q_status);
             }
         }
         if (CanCompleteQuest(questId))
@@ -14041,8 +14049,7 @@ void Player::ItemAddedQuestCheck(uint32 entry, uint32 count)
                 {
                     uint16 newItemCount = std::min<uint16>(q_status.m_itemcount[j] + count, reqItemCount);
                     q_status.m_itemcount[j] = newItemCount;
-                    if (q_status.uState != QUEST_NEW)
-                        q_status.uState = QUEST_CHANGED;
+                    MarkQuestStatusChanged(q_status);
 
                     if (entry != qInfo->GetSrcItemId())
                         SendQuestUpdateAddItem(qInfo, j, curItemCount, newItemCount - curItemCount);
@@ -14091,8 +14098,7 @@ void Player::ItemRemovedQuestCheck(uint32 entry, uint32 count)
                 if (newItemCount != reqItemCount)
                 {
                     q_status.m_itemcount[j] = newItemCount;
-                    if (q_status.uState != QUEST_NEW)
-                        q_status.uState = QUEST_CHANGED;
+                    MarkQuestStatusChanged(q_status);
                     IncompleteQuest(questid);
                 }
                 break;
@@ -14146,8 +14152,7 @@ void Player::KilledMonsterCredit(uint32 entry, ObjectGuid guid)
                         if (curkillcount < reqkillcount)
                         {
                             q_status.m_creatureOrGOcount[j] = curkillcount + addkillcount;
-                            if (q_status.uState != QUEST_NEW)
-                                q_status.uState = QUEST_CHANGED;
+                            MarkQuestStatusChanged(q_status);
 
                             SendQuestUpdateAddCreatureOrGo(qInfo, guid, j, q_status.m_creatureOrGOcount[j]);
                         }
@@ -14222,8 +14227,7 @@ void Player::CastedCreatureOrGO(uint32 entry, ObjectGuid guid, uint32 spellId, b
             if (curCastCount < reqCastCount)
             {
                 q_status.m_creatureOrGOcount[j] = curCastCount + addCastCount;
-                if (q_status.uState != QUEST_NEW)
-                    q_status.uState = QUEST_CHANGED;
+                MarkQuestStatusChanged(q_status);
 
                 SendQuestUpdateAddCreatureOrGo(qInfo, guid, j, q_status.m_creatureOrGOcount[j]);
             }
@@ -14278,7 +14282,7 @@ void Player::TalkedToCreature(uint32 entry, ObjectGuid guid)
                         if (curTalkCount < reqTalkCount)
                         {
                             q_status.m_creatureOrGOcount[j] = curTalkCount + addTalkCount;
-                            if (q_status.uState != QUEST_NEW) q_status.uState = QUEST_CHANGED;
+                            MarkQuestStatusChanged(q_status);
 
                             SendQuestUpdateAddCreatureOrGo(qInfo, guid, j, q_status.m_creatureOrGOcount[j]);
                         }
@@ -14690,6 +14694,16 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     //"watched_faction,  drunk, health, power1, power2, power3, power4, power5, explored_zones, ammo_id, action_bars,"
     // 55                56           57
     //"world_phase_mask, create_time, instance FROM characters WHERE guid = '%u'", GUID_LOPART(m_guid));
+
+    // Every loader below reads a null result as "the character has none of this", so one
+    // query that failed rather than matched nothing would put the character in the world
+    // missing its quests, or its bags, or its spells, and the next save would write that
+    // back as the truth. Nothing here can tell which, so load none of it.
+    if (holder->HasFailedQuery())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "%s cannot be loaded: a character database query failed. Refusing the login rather than loading partial state.", guid.GetString().c_str());
+        return false;
+    }
 
     std::unique_ptr<QueryResult> result = holder->TakeResult(PLAYER_LOGIN_QUERY_LOADFROM);
 
@@ -16459,6 +16473,19 @@ void Player::UpdateCharacterFlags()
     SetCharacterFlag(CHARACTER_FLAG_GM_MODE, HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GM));
 }
 
+void Player::ScheduleSave()
+{
+    // Progress that exists only in memory dies with the client or the server, and the next
+    // periodic save can be most of PlayerSave.Interval away. Bring it forward, but only ever
+    // forward, so a run of kills or turn-ins costs one save between them rather than one each.
+    if (IsSavingDisabled() || !m_nextSave)
+        return;
+
+    uint32 const delay = sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE_PROGRESS);
+    if (delay && m_nextSave > delay)
+        m_nextSave = delay;
+}
+
 void Player::SaveToDB(bool online, bool force)
 {
     // we should assure this: ASSERT((m_nextSave != sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE)));
@@ -16869,7 +16896,11 @@ void Player::_SaveInventory()
         {
             case ITEM_NEW:
             {
-                SqlStatement stmt = CharacterDatabase.CreateStatement(insertInventory, "INSERT INTO `character_inventory` (`guid`, `bag`, `slot`, `item_guid`, `item_id`) VALUES (?, ?, ?, ?, ?)");
+                // REPLACE, not INSERT: item_guid is the primary key and item guids are recycled,
+                // so a row left behind by a delete that never committed will collide with the next
+                // item to be handed that guid. The item in memory is the truth about where it is,
+                // and a plain INSERT would fail instead, taking the whole save transaction with it.
+                SqlStatement stmt = CharacterDatabase.CreateStatement(insertInventory, "REPLACE INTO `character_inventory` (`guid`, `bag`, `slot`, `item_guid`, `item_id`) VALUES (?, ?, ?, ?, ?)");
                 stmt.addUInt32(GetGUIDLow());
                 stmt.addUInt32(bagGuid);
                 stmt.addUInt8(item->GetSlot());

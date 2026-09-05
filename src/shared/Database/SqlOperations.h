@@ -129,8 +129,14 @@ class SqlQueryHolder
 {
     friend class SqlQueryHolderEx;
     private:
-        typedef std::pair<std::string, std::unique_ptr<QueryResult>> SqlResultPair;
-        std::vector<SqlResultPair> m_queries;
+        struct SqlQueryEntry
+        {
+            std::string sql;
+            std::unique_ptr<QueryResult> result;
+            // Set when the query did not run, as opposed to running and matching nothing.
+            bool failed = false;
+        };
+        std::vector<SqlQueryEntry> m_queries;
 
         uint32 serialId;
     public:
@@ -143,6 +149,10 @@ class SqlQueryHolder
         size_t GetSize() const { return m_queries.size(); }
         /// When you are using this function, you are the new owner of the ptr. The query will be removed from the QueryHolder
         std::unique_ptr<QueryResult> TakeResult(size_t index);
+        /// True when any query in the holder failed outright. A caller that reads a null
+        /// result as "there is none of this" must check here first, or it will mistake a
+        /// database that could not answer for a character that owns nothing.
+        bool HasFailedQuery() const;
         void SetResult(size_t index, std::unique_ptr<QueryResult> result);
         bool Execute(MaNGOS::IQueryCallback* callback, Database* db, SqlResultQueue* queue);
         void DeleteAllResults();

@@ -56,6 +56,12 @@ class SqlConnection
         virtual std::unique_ptr<QueryResult> Query(std::string const& sql) = 0;
         virtual std::unique_ptr<QueryNamedResult> QueryNamed(std::string const& sql) = 0;
 
+        // As Query, but able to say which kind of empty result this is. Returns false only
+        // when the query itself failed; a query that ran and matched nothing returns true
+        // with a null result. Callers that would read "no rows" as "no such state" need the
+        // difference, because reading it wrong loses whatever the rows were describing.
+        virtual bool QueryChecked(std::string const& sql, std::unique_ptr<QueryResult>& result) = 0;
+
         //public methods for making requests
         virtual bool Execute(std::string const& sql) = 0;
 

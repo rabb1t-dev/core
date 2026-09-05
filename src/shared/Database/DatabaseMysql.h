@@ -85,6 +85,7 @@ class MySQLConnection : public SqlConnection
 
         std::unique_ptr<QueryResult> Query(std::string const& sql) override;
         std::unique_ptr<QueryNamedResult> QueryNamed(std::string const& sql) override;
+        bool QueryChecked(std::string const& sql, std::unique_ptr<QueryResult>& result) override;
         bool Execute(std::string const& sql) override;
 
         unsigned long escape_string(char* to, char const* from, unsigned long length) override;
@@ -98,7 +99,9 @@ class MySQLConnection : public SqlConnection
 
     private:
         bool _TransactionCmd(std::string const& sql);
-        bool _Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_FIELD** pFields, uint64* pRowCount, uint32* pFieldCount);
+        // pFailed, when given, is set to true only if the query did not run to completion,
+        // which is what tells an empty result apart from a broken one.
+        bool _Query(std::string const& sql, MYSQL_RES** pResult, MYSQL_FIELD** pFields, uint64* pRowCount, uint32* pFieldCount, bool* pFailed = nullptr);
 
         MYSQL* mMysql;
 };
