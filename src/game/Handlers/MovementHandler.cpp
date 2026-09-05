@@ -32,6 +32,7 @@
 #include "ConfusedMovementGenerator.h"
 #include "MapPersistentStateMgr.h"
 #include "World.h"
+#include "Chat.h"
 #include "Anticheat.h"
 #include "packet_builder.h"
 #include "MovementPacketSender.h"
@@ -1108,6 +1109,39 @@ void WorldSession::HandleMoverRelocation(Unit* pMover, MovementInfo& movementInf
             if (ObjectGuid const& lootGuid = pPlayerMover->GetLootGuid())
                 if (!lootGuid.IsItem())
                     pPlayerMover->GetSession()->DoLootRelease(lootGuid);
+        }
+
+        // Echo the player's own facing back to addons. 1.12.1 exposes no facing getter
+        // to Lua (GetPlayerFacing is a later addition), so an addon cannot tell which way the
+        // player is looking, and inferring it from position deltas is blind to turning on the
+        // spot. This packet is the server being told, so hand the value straight back as an
+        // addon message. Vanilla's FrameXML does not display CHAT_MSG_ADDON, so it is silent.
+        //
+        // Stateless on purpose: the player's stored orientation is still the PREVIOUS value
+        // here, so comparing against it detects a turn without per-session bookkeeping. That
+        // keeps this out of WorldSession.h, whose rebuild is enormous, and leaves no shared
+        // state for concurrent map threads to race on. The send rate is bounded by how often
+        // the client itself reports turning.
+        if (pPlayerMover == _player)
+        {
+            float delta = pMover->m_movementInfo.GetPos().o - pPlayerMover->GetOrientation();
+            while (delta > M_PI_F)
+                delta -= 2.0f * M_PI_F;
+            while (delta < -M_PI_F)
+                delta += 2.0f * M_PI_F;
+
+            // ~1.1 degrees: below this the arrow would not visibly move anyway.
+            if (fabs(delta) > 0.02f)
+            {
+                char payload[48];
+                snprintf(payload, sizeof(payload), "RXPF\t%.4f",
+                         pMover->m_movementInfo.GetPos().o);
+                WorldPacket facingData;
+                ChatHandler::BuildChatPacket(facingData, CHAT_MSG_ADDON, payload, LANG_ADDON,
+                                             CHAT_TAG_NONE, _player->GetObjectGuid(),
+                                             _player->GetName());
+                SendPacket(&facingData);
+            }
         }
 
         pPlayerMover->SetPosition(pMover->m_movementInfo.GetPos().x, pMover->m_movementInfo.GetPos().y, pMover->m_movementInfo.GetPos().z, pMover->m_movementInfo.GetPos().o);
