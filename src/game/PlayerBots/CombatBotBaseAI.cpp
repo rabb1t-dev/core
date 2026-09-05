@@ -3100,8 +3100,31 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
                 continue;
         }
 
+        uint32 const levelDifference = sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_LEVEL_DIFFERENCE);
+        uint32 const maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+        bool const levelling = me->GetLevel() < maxLevel;
+
         // Avoid low level items
-        if ((pProto->ItemLevel + sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_LEVEL_DIFFERENCE)) < me->GetLevel())
+        if ((pProto->ItemLevel + levelDifference) < me->GetLevel())
+            continue;
+
+        // Avoid high level items, by whatever route they arrived. The two checks above bound the
+        // item level of gear that carries no level requirement and is not a quest reward, and
+        // nothing else. A quest item is judged solely on the level needed to accept the quest,
+        // and SourceQuestLevel holds the lowest such level across every quest that awards it, so
+        // a single low entry point leaves an item available for the rest of the game. That is how
+        // a level 12 bot ended up wearing Arena Grand Master: an item level 55 trinket, no level
+        // requirement, from a quest whose minimum level is zero. The ceiling lifts at max level,
+        // where raid gear outruns the character level it is worn at by design.
+        if (levelling && pProto->ItemLevel > (me->GetLevel() + levelDifference))
+            continue;
+
+        // Nothing above uncommon while levelling. The primary stat filter below drops every
+        // candidate that lacks the class's main stat, and no white item in this client carries
+        // one, so the pool is already uncommon and above before anything is rolled. Left without
+        // a ceiling the roll lands on rare and epic often enough that a levelling bot barely
+        // takes damage from what it is levelling against.
+        if (levelling && pProto->Quality >= ITEM_QUALITY_RARE)
             continue;
 
         if (me->CanUseItem(pProto, onlyPvE) != EQUIP_ERR_OK)
