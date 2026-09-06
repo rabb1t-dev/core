@@ -2123,6 +2123,67 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+// How much of a roll's window to leave for the bots once the people have gone quiet. A roll nobody
+// answers is decided on the votes it did get, so a bot that waited too long has passed by omission.
+static constexpr uint32 PB_ROLL_DEFER_MARGIN_MS = 10 * IN_MILLISECONDS;
+
+// Whether to hold this bot's vote back and ask again next tick.
+//
+// Bots decide instantly and a person has to notice the window and click it, so voting on sight put
+// every bot's answer in before the player had one. Anyone the bot might defer to has to have spoken
+// first for deference to mean anything, which means voting last.
+//
+// Bounded by the roll's own clock rather than waiting indefinitely, because a player who never
+// answers is a common case -- the window is easy to miss and easy to ignore -- and a bot that waits
+// for an answer that is not coming has passed on the item without deciding to.
+bool PartyBotAI::ShouldDeferRollToPlayers(Roll const* pRoll) const
+{
+    bool pending = false;
+
+    for (auto const& vote : pRoll->playerVote)
+    {
+        // Only people are worth waiting for. Other bots vote on the same tick this one does, so
+        // waiting on them is waiting on nobody and would deadlock a group with no players in it.
+        Player const* pVoter = ObjectAccessor::FindPlayer(vote.first);
+        if (!pVoter || pVoter->IsBot())
+            continue;
+
+        if (vote.second == ROLL_NOT_EMITED_YET)
+            pending = true;
+    }
+
+    if (!pending)
+        return false;
+
+    // No corpse means no clock to read, and guessing long here risks the roll resolving while the
+    // bot is still being polite about it.
+    Creature const* pCreature = me->GetMap()->GetCreature(pRoll->lootedTargetGUID);
+    if (!pCreature)
+        return false;
+
+    return pCreature->GetGroupLootTimer() > PB_ROLL_DEFER_MARGIN_MS;
+}
+
+// Whether a person in this group has claimed the item for themselves.
+//
+// Need is the claim: greed is not, and neither is silence. A group of bots that stood down for
+// anything a player so much as considered would never gear up at all, since most of what drops gets
+// a greed roll from somebody.
+bool PartyBotAI::DidPlayerNeedRoll(Roll const* pRoll) const
+{
+    for (auto const& vote : pRoll->playerVote)
+    {
+        if (vote.second != ROLL_NEED)
+            continue;
+
+        Player const* pVoter = ObjectAccessor::FindPlayer(vote.first);
+        if (pVoter && !pVoter->IsBot())
+            return true;
+    }
+
+    return false;
+}
+
 // Whether this bot wants the thing on the corpse badly enough to roll for it.
 //
 // Need for a genuine upgrade and pass on everything else, deliberately: greed would have the group
@@ -2180,6 +2241,8 @@ void PartyBotAI::UpdateLootRolls()
     ObjectGuid lootedTarget;
     uint32 itemSlot = 0;
     uint32 itemId = 0;
+    bool defer = false;
+    bool playerClaimed = false;
 
     for (Roll const* pRoll : pGroup->GetRolls())
     {
@@ -2193,13 +2256,27 @@ void PartyBotAI::UpdateLootRolls()
         lootedTarget = pRoll->lootedTargetGUID;
         itemSlot = pRoll->itemSlot;
         itemId = pRoll->itemid;
+
+        // Asked before deferring, and it is why the wait can end early: once somebody has claimed
+        // the item there is nothing left to wait for and nothing left to decide.
+        playerClaimed = DidPlayerNeedRoll(pRoll);
+        defer = !playerClaimed && ShouldDeferRollToPlayers(pRoll);
         break;
     }
 
     if (lootedTarget.IsEmpty())
         return;
 
-    pGroup->CountRollVote(me, lootedTarget, itemSlot, DecideLootRoll(itemId));
+    // Still waiting on a person to make up their mind. Left unvoted, which is not the same as a
+    // pass: the roll stays open and this bot is asked again on the next tick.
+    if (defer)
+        return;
+
+    // A player wants it, so the bots are out of it regardless of what it would be worth to them.
+    // Passing rather than greeding, so that the roll is not merely lost but uncontested.
+    RollVote const vote = playerClaimed ? ROLL_PASS : DecideLootRoll(itemId);
+
+    pGroup->CountRollVote(me, lootedTarget, itemSlot, vote);
 }
 
 void PartyBotAI::RememberCorpseToLoot(ObjectGuid guid)

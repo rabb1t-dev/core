@@ -111,6 +111,8 @@ public:
     bool AddFillerDamage(Unit* pTarget);
     bool IsWorthDotting(Unit const* pVictim) const;
     void UpdateLootRolls();
+    bool ShouldDeferRollToPlayers(Roll const* pRoll) const;
+    bool DidPlayerNeedRoll(Roll const* pRoll) const;
     RollVote DecideLootRoll(uint32 itemId) const;
     void RememberCorpseToLoot(ObjectGuid guid);
     void UpdateCorpseLooting();
