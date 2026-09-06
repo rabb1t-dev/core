@@ -1924,6 +1924,15 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
                     pPuller->GetName(), pTarget->GetName(), ranged ? "at range" : "in melee",
                     held, held == 1 ? " is" : "s are");
 
+    // Worth saying rather than leaving to be inferred from the bot walking up and swinging. A hunter
+    // with an empty ranged slot reads as a ranged puller from the outside, since the class implies
+    // the bow, and the fix for it is one item away.
+    if (!ranged)
+    {
+        PSendSysMessage("%s has no ranged weapon it can fire, so that is a body pull. Give it a bow "
+                        "or gun with ammo for a clean one.", pPuller->GetName());
+    }
+
     // Said out loud, because a puller walking is the thing that looks most like a puller ignoring
     // the order, and the distance is the whole reason for it. A shot cannot be taken from further
     // away than the weapon reaches, so the alternative to those yards is no pull at all.

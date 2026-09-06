@@ -422,24 +422,49 @@ bool PartyBotAI::ShouldBreakHold() const
     return me->IsWithinDist(pTarget, PB_PULL_ARRIVE_DIST);
 }
 
-// Which ranged attack this bot has, if any.
+// Which ranged attack this bot can actually make, if any.
 //
-// Auto Shot is asked for first and by name, because a hunter has it regardless of what is in the
-// ranged slot. For everyone else the answer is decided by the weapon: these spells come with the
-// weapon skill rather than the class, so a warrior holding a gun can pull with it and the same
-// warrior holding nothing cannot.
+// The weapon decides in every case, a hunter's included. Auto Shot used to be answered off the
+// spellbook alone, on the reasoning that a hunter always knows it -- which is true, and is exactly
+// why this reported a ranged pull for a hunter standing there with an empty ranged slot. The command
+// then announced "at range", CastSpell accepted the autorepeat and returned OK, and no shot was ever
+// fired, because an autorepeat waits on the weapon timer and there was no weapon to time. Nothing
+// failed anywhere an error could be seen: the puller walked into position, stopped, and stared at the
+// mob until the sequence timed out thirty seconds later.
+//
+// Answering zero here is not a refusal to pull. It sends FirePullAttack down its melee path, so the
+// bot walks up and hits the thing instead, which is worse than a shot and far better than nothing.
 uint32 PartyBotAI::GetRangedAttackSpellId() const
 {
-    if (me->HasSpell(PB_SPELL_AUTO_SHOT))
-        return PB_SPELL_AUTO_SHOT;
-
-    Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    // Asked with nonbroken and useable set, so a weapon the bot cannot presently fire counts as no
+    // weapon rather than as a shot that silently never happens.
+    Item* pWeapon = me->GetWeaponForAttack(RANGED_ATTACK, true, true);
     if (!pWeapon)
         return 0;
 
     ItemPrototype const* pProto = pWeapon->GetProto();
     if (!pProto || pProto->Class != ITEM_CLASS_WEAPON)
         return 0;
+
+    // Bows, guns and crossbows fire what is in the ammo slot, and with that slot empty the shot dies
+    // at the same silent place a missing weapon did. Thrown weapons are their own ammo, so they are
+    // not asked. AddHunterAmmo stocks this at spawn, but it gives up early when nothing is equipped,
+    // so a bot that acquired its weapon later has the skill, the slot and no arrows.
+    switch (pProto->SubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_BOW:
+        case ITEM_SUBCLASS_WEAPON_GUN:
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+        {
+            if (!me->GetUInt32Value(PLAYER_AMMO_ID))
+                return 0;
+            break;
+        }
+    }
+
+    // Now that there is something to fire, a hunter's own shot is the one to use.
+    if (me->HasSpell(PB_SPELL_AUTO_SHOT))
+        return PB_SPELL_AUTO_SHOT;
 
     switch (pProto->SubClass)
     {
@@ -524,6 +549,13 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
 {
     if (!pTarget || !IsValidHostileTarget(pTarget))
         return false;
+
+    // Already working on this one, so leave the sequence where it is. The command is a natural thing
+    // to press again when nothing looks to be happening, and every press used to send the phase back
+    // to the approach and fire afresh, so a puller that was standing still waiting for its shot to
+    // land -- which is what waiting for a shot to land looks like -- was restarted for doing it.
+    if (IsPulling() && m_pullTargetGuid == pTarget->GetObjectGuid())
+        return true;
 
     m_pullTargetGuid = pTarget->GetObjectGuid();
     m_pullPhase = PULL_PHASE_APPROACH;
