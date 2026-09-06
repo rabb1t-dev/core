@@ -3032,6 +3032,17 @@ AHBot.itemcount = 50
 #        Default: 60
 #                 0 (disabled, bots wait indefinitely at both stages)
 #
+#    PartyBot.CombatLog
+#        Records what the tanks and healers in a party are deciding, under the [BotCombat] tag
+#        in the server log. One tick line per such bot per second describing the situation it
+#        chose in, and one cast line for every ability any bot attempts, carrying the failure
+#        code for the ones that did not land. Together those reconstruct a fight closely enough
+#        to tell a rotation that is misfiring from one that is being starved of resources.
+#        Verbose enough that it is meant to be switched on for a few fights and off again, with
+#        .server set botcombatlog on|off, rather than left running on a live realm.
+#        Default: 0 (off)
+#                 1 (on)
+#
 #    BattleBot.AutoEquip
 #        What gear will new battlebots spawn with.
 #        Default: 1 (random items)
@@ -3060,6 +3071,7 @@ PartyBot.AutoEquip = 1
 PartyBot.RandomGearLevelDifference = 10
 PartyBot.AutoRevive = 1
 PartyBot.DeathRecoveryTimeout = 60
+PartyBot.CombatLog = 0
 
 BattleBot.AutoEquip = 1
 BattleBot.AutoJoin = 0

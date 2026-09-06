@@ -388,6 +388,45 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
     return true;
 }
 
+bool ChatHandler::HandleServerSetBotCombatLogCommand(char* args)
+{
+    bool const wasEnabled = sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG);
+
+    if (!*args)
+    {
+        PSendSysMessage("Party bot combat logging is %s.", wasEnabled ? "on" : "off");
+        return true;
+    }
+
+    bool value;
+    if (!ExtractOnOff(&args, value))
+    {
+        SendSysMessage(LANG_USE_BOL);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (value == wasEnabled)
+    {
+        PSendSysMessage("Party bot combat logging is already %s.", value ? "on" : "off");
+        return true;
+    }
+
+    sWorld.setConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG, value);
+
+    if (value)
+    {
+        SendSysMessage("Party bot combat logging is now on. Every tank and healer in a party writes "
+                       "a tick line each second, and every bot ability writes a cast line.");
+        SendSysMessage("Grep the server log for [BotCombat]. Turn this back off when the fight you "
+                       "wanted is over; it is not something to leave running.");
+    }
+    else
+        SendSysMessage("Party bot combat logging is now off.");
+
+    return true;
+}
+
 bool ChatHandler::HandleServerPLimitCommand(char *args)
 {
     if (*args)

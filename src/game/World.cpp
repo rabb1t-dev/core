@@ -1002,6 +1002,12 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_PARTY_BOT_AUTO_REVIVE, "PartyBot.AutoRevive", false);
     setConfig(CONFIG_UINT32_PARTY_BOT_DEATH_RECOVERY_TIMEOUT, "PartyBot.DeathRecoveryTimeout", 60);
 
+    // Off by default, and meant to be turned on for a few fights at a time with
+    // '.server set botcombatlog on' rather than left running. It writes a line per tank and
+    // healer per second, plus one per ability any bot attempts, which is enough to reconstruct
+    // a fight and far too much to keep on a live realm.
+    setConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG, "PartyBot.CombatLog", false);
+
     setConfigMinMax(CONFIG_UINT32_SPELL_EFFECT_DELAY, "Spell.EffectDelay", 400, 0, 1000);
     setConfigMinMax(CONFIG_UINT32_SPELL_PROC_DELAY, "Spell.ProcDelay", 400, 0, 1000);
     setConfigMinMax(CONFIG_UINT32_DEBUFF_LIMIT, "DebuffLimit", 0, 0, 40);

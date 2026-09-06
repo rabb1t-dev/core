@@ -1771,8 +1771,101 @@ void PartyBotAI::UpdateOutOfCombatAI()
     }
 }
 
+// One line per tick describing the situation the bot is deciding in. The cast lines from
+// DoCastSpell say what it chose; this says what it was looking at, which is the only way to read
+// a tick where it chose nothing. Both halves are needed: a tank line showing full rage and no
+// cast beside it means something is gating the rotation, and the same line with no rage means
+// the rotation is fine and the rage is not there.
+void PartyBotAI::LogCombatTick() const
+{
+    Unit* pVictim = me->GetVictim();
+
+    // Rage and energy are held at ten times the displayed number, and these lines get read
+    // against the rotation's own thresholds.
+    Powers const powerType = me->GetPowerType();
+    uint32 power = me->GetPower(powerType);
+    if (powerType == POWER_RAGE || powerType == POWER_ENERGY)
+        power /= 10;
+
+    if (m_role == ROLE_TANK)
+    {
+        float myThreat = 0.0f;
+        float topThreat = 0.0f;
+        char const* topName = "none";
+        bool holding = false;
+
+        if (pVictim && pVictim->CanHaveThreatList())
+        {
+            // Neither the lookup nor the container beneath it is marked const, though both are
+            // read-only here. Same reason as ShouldTauntTarget above.
+            ThreatManager& threat = pVictim->GetThreatManager();
+            myThreat = threat.getThreat(me);
+
+            if (HostileReference const* pTop = threat.getCurrentVictim())
+            {
+                topThreat = pTop->getThreat();
+                if (Unit const* pTopUnit = pTop->getTarget())
+                {
+                    topName = pTopUnit->GetName();
+                    holding = (pTopUnit == me);
+                }
+            }
+        }
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
+                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' holding=%u",
+                 me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
+                 pVictim ? pVictim->GetName() : "none",
+                 pVictim ? pVictim->GetHealthPercent() : 0.0f,
+                 uint32(me->GetAttackers().size()),
+                 pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
+                 myThreat, topThreat, topName, uint32(holding));
+        return;
+    }
+
+    // The worst-off member, found without reference to the thresholds the rotation heals on.
+    // Reporting the rotation's own choice would only ever agree with itself; reporting the
+    // truth is what makes a line showing somebody at forty percent and no cast beside it
+    // legible as a fault.
+    Player* pWorst = nullptr;
+    float worstPct = 101.0f;
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (!pMember || !pMember->IsAlive() || !pMember->IsInWorld() ||
+                pMember->GetMapId() != me->GetMapId())
+                continue;
+
+            if (pMember->GetHealthPercent() < worstPct)
+            {
+                worstPct = pMember->GetHealthPercent();
+                pWorst = pMember;
+            }
+        }
+    }
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
+             "wdist=%.1f incoming=%d casting=%u attackers=%u",
+             me->GetName(), me->GetLevel(), me->GetHealthPercent(),
+             me->GetPowerPercent(POWER_MANA),
+             pWorst ? pWorst->GetName() : "none",
+             pWorst ? pWorst->GetHealthPercent() : 0.0f,
+             pWorst ? me->GetDistance(pWorst) : 0.0f,
+             pWorst ? GetIncomingdamage(pWorst) : 0,
+             uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
+             uint32(me->GetAttackers().size()));
+}
+
 void PartyBotAI::UpdateInCombatAI()
 {
+    if (IsCombatLogged())
+        LogCombatTick();
+
     // Ahead of every early return below, because a damage dealer that took a different branch
     // this tick is still swinging.
     if (Unit* pVictim = me->GetVictim())

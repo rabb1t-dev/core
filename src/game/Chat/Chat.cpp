@@ -1019,6 +1019,7 @@ ChatCommand * ChatHandler::getCommandTable()
     {
         { "motd",           SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleServerSetMotdCommand,       "", nullptr },
         { "restedxp",       SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleServerSetRestedXpCommand,   "Toggle permanently full rested xp", nullptr },
+        { "botcombatlog",   SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleServerSetBotCombatLogCommand, "Toggle party bot tank and healer combat logging", nullptr },
         { nullptr,          0,                  false, nullptr,                                        "", nullptr }
     };
 

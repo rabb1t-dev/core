@@ -137,6 +137,13 @@ public:
 
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+
+    // Whether this bot's combat decisions are being recorded. Gated on the runtime switch and
+    // narrowed to the two roles whose decisions are worth reading, because a full group logging
+    // every rotation drowns out the tank and healer lines that are the point of it.
+    bool IsCombatLogged() const;
+    void LogCombatCast(Unit const* pTarget, SpellEntry const* pSpellEntry, SpellCastResult result) const;
+    static char const* GetRoleName(CombatBotRoles role);
     bool IsWearingShield(Player* pPlayer) const;
     bool IsInDuel() const;
     CombatBotRoles GetRole() const;

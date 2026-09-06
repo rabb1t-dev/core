@@ -78,6 +78,7 @@ public:
     Player* FindGroupHealer() const;
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
     bool WaitForLeaderBeforeRising();
+    void LogCombatTick() const;
     bool UpdateCorpseRun();
     void UpdateDeadAI();
     bool IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy);

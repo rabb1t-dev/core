@@ -3343,6 +3343,49 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     return true;
 }
 
+char const* CombatBotBaseAI::GetRoleName(CombatBotRoles role)
+{
+    switch (role)
+    {
+        case ROLE_TANK:      return "tank";
+        case ROLE_HEALER:    return "healer";
+        case ROLE_MELEE_DPS: return "melee";
+        case ROLE_RANGE_DPS: return "ranged";
+        default:             return "none";
+    }
+}
+
+bool CombatBotBaseAI::IsCombatLogged() const
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+        return false;
+
+    CombatBotRoles const role = GetRole();
+    return role == ROLE_TANK || role == ROLE_HEALER;
+}
+
+void CombatBotBaseAI::LogCombatCast(Unit const* pTarget, SpellEntry const* pSpellEntry, SpellCastResult result) const
+{
+    if (!me || !pTarget || !pSpellEntry)
+        return;
+
+    // Rage and energy are held at ten times the number the client shows, and a log read against
+    // a rotation's rage costs is worthless in the wrong unit.
+    Powers const powerType = me->GetPowerType();
+    uint32 power = me->GetPower(powerType);
+    if (powerType == POWER_RAGE || powerType == POWER_ENERGY)
+        power /= 10;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] cast bot='%s' role=%s lvl=%u hp=%.0f pw=%u target='%s' thp=%.0f "
+             "spell='%s'(%u) result=%s(%u)",
+             me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+             me->GetHealthPercent(), power,
+             pTarget->GetName(), pTarget->GetHealthPercent(),
+             pSpellEntry->SpellName[0].c_str(), pSpellEntry->Id,
+             result == SPELL_CAST_OK ? "ok" : "fail", uint32(result));
+}
+
 SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry)
 {
     if (m_preventCasting)
@@ -3357,7 +3400,11 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     me->SetTargetGuid(pTarget->GetObjectGuid());
     auto result = me->CastSpell(pTarget, pSpellEntry, false);
 
-    //printf("cast %s result %u\n", pSpellEntry->SpellName[0].c_str(), result);
+    // Every ability a bot uses arrives here, so this one line is the whole rotation, in order,
+    // with the reason for anything that did not land. Recorded after the cast so that the
+    // failure code is the real one rather than a guess at which gate would have stopped it.
+    if (IsCombatLogged())
+        LogCombatCast(pTarget, pSpellEntry, result);
 
     if ((result == SPELL_FAILED_MOVING ||
         result == SPELL_CAST_OK) &&

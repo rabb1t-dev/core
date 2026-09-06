@@ -947,6 +947,7 @@ class ChatHandler
         bool HandleServerRestartCommand(char* args);
         bool HandleServerSetMotdCommand(char* args);
         bool HandleServerSetRestedXpCommand(char* args);
+        bool HandleServerSetBotCombatLogCommand(char* args);
         bool HandleServerShutDownCommand(char* args);
         bool HandleServerShutDownCancelCommand(char* args);
 
