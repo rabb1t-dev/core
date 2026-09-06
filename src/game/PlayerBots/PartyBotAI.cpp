@@ -1946,6 +1946,14 @@ void PartyBotAI::LogCombatTick() const
     if (powerType == POWER_RAGE || powerType == POWER_ENERGY)
         power /= 10;
 
+    // Whether the global cooldown was running when this tick ran, which is the difference between
+    // a tick that could not act and a tick that would not. Without it the two are indistinguishable
+    // in the log and the idle half of every fight cannot be read: the bots update once a second
+    // against a cooldown of one and a half, so a third of all ticks are gated by arithmetic alone
+    // and no amount of counting empty ticks says which third. Passing no spell asks after any
+    // category rather than a particular one, which is the question worth logging.
+    uint32 const gcd = me->HasGCD(nullptr) ? 1 : 0;
+
     if (m_role == ROLE_TANK)
     {
         float myThreat = 0.0f;
@@ -1973,13 +1981,15 @@ void PartyBotAI::LogCombatTick() const
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
-                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' holding=%u",
+                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' holding=%u "
+                 "gcd=%u stance=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  uint32(me->GetAttackers().size()),
                  pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
-                 myThreat, topThreat, topName, uint32(holding));
+                 myThreat, topThreat, topName, uint32(holding),
+                 gcd, uint32(me->GetShapeshiftForm()));
         return;
     }
 
@@ -2028,7 +2038,7 @@ void PartyBotAI::LogCombatTick() const
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f reach=%.0f wreason=%s incoming=%d casting=%u attackers=%u",
+             "wdist=%.1f reach=%.0f wreason=%s incoming=%d casting=%u attackers=%u gcd=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",
@@ -2036,7 +2046,7 @@ void PartyBotAI::LogCombatTick() const
              pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
-             uint32(me->GetAttackers().size()));
+             uint32(me->GetAttackers().size()), gcd);
 }
 
 void PartyBotAI::UpdateInCombatAI()
