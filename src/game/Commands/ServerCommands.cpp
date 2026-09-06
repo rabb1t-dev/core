@@ -329,6 +329,65 @@ bool ChatHandler::HandleServerSetMotdCommand(char* args)
     return true;
 }
 
+bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
+{
+    bool const wasEnabled = sWorld.getConfig(CONFIG_BOOL_REST_ALWAYS_FULL);
+
+    if (!*args)
+    {
+        PSendSysMessage("Permanent rested xp is %s.", wasEnabled ? "on" : "off");
+        return true;
+    }
+
+    bool value;
+    if (!ExtractOnOff(&args, value))
+    {
+        SendSysMessage(LANG_USE_BOL);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (value == wasEnabled)
+    {
+        PSendSysMessage("Permanent rested xp is already %s.", value ? "on" : "off");
+        return true;
+    }
+
+    sWorld.setConfig(CONFIG_BOOL_REST_ALWAYS_FULL, value);
+
+    if (value)
+    {
+        // The switch only changes what SetRestBonus computes, and nothing recomputes it until the
+        // player next gains xp or zones. Push the refill now, so turning this on is visible on the
+        // xp bar straight away rather than arriving at some unrelated later moment.
+        uint32 const maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+        uint32 refilled = 0;
+
+        HashMapHolder<Player>::MapType const& players = sObjectAccessor.GetPlayers();
+        for (auto const& itr : players)
+        {
+            Player* pPlayer = itr.second;
+            if (!pPlayer || !pPlayer->IsInWorld() || pPlayer->GetLevel() >= maxLevel)
+                continue;
+
+            pPlayer->SetRestBonus(pPlayer->GetRestBonus());
+            ++refilled;
+        }
+
+        PSendSysMessage("Permanent rested xp is now on. %u online character%s topped up.",
+                        refilled, refilled == 1 ? "" : "s");
+    }
+    else
+    {
+        // Whatever is already banked stays banked. It is an ordinary resource once the switch is
+        // gone, and letting it drain the usual way beats confiscating xp a player can see.
+        SendSysMessage("Permanent rested xp is now off. Rested pools already banked will drain as normal.");
+    }
+
+    PSendSysMessage("This lasts until the next restart, when Rest.AlwaysFull in the config decides again.");
+    return true;
+}
+
 bool ChatHandler::HandleServerPLimitCommand(char *args)
 {
     if (*args)
