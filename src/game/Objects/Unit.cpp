@@ -9750,6 +9750,28 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
     if (pCreature->IsInCombat())
         return false;
 
+    // What this unit is already fighting is not an extra pull. Walking up to the thing it has been
+    // sent to kill is the fight rather than a mistake, and without this the rule contradicts itself:
+    // a target nobody has hit yet is by definition unengaged, so every approach to it was refused,
+    // so it never entered combat, so the refusal never lifted. A tank told to pull stood still
+    // indefinitely and the mob was never touched.
+    if (GetVictim() == pCreature)
+        return false;
+
+    // Cannot be pulled, because it does not pull. Critters do not fight at all, and a creature
+    // flagged not to aggro only ever answers being attacked directly. Left in, these dominated the
+    // refusals rather than merely adding to them: level one Biletoads sitting beside the route
+    // through Wailing Caverns accounted for more than half of every position the group turned down.
+    CreatureInfo const* pInfo = pCreature->GetCreatureInfo();
+    if (pInfo->type == CREATURE_TYPE_CRITTER || (pInfo->flags_extra & CREATURE_FLAG_EXTRA_NO_AGGRO))
+        return false;
+
+    // Too far beneath this unit to be worth avoiding. Something grey to it cannot threaten the group
+    // even if it does wake up, so giving up good positions to stay clear of one costs more than the
+    // pull it prevents.
+    if (pCreature->GetLevel() <= MaNGOS::XP::GetGrayLevel(GetLevel()))
+        return false;
+
     float const aggroRadius = pCreature->GetAttackDistance(this);
     if (aggroRadius <= 0.0f)
         return false;
@@ -9761,16 +9783,13 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
 // being judged plus the widest radius the unit could end up sitting inside once it arrives.
 float const Unit::AGGRO_POSITION_SEARCH_RADIUS = 60.0f;
 
-Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin, Unit const* pIgnore /*= nullptr*/) const
+Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const
 {
     std::list<Unit*> enemies;
     GetEnemyListInRadiusAround(this, AGGRO_POSITION_SEARCH_RADIUS, enemies);
 
     for (Unit* pEnemy : enemies)
     {
-        if (pEnemy == pIgnore)
-            continue;
-
         Creature* pCreature = pEnemy->ToCreature();
         if (WouldPositionAggroCreature(pCreature, x, y, z, margin))
             return pCreature;

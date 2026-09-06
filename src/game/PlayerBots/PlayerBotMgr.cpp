@@ -1140,7 +1140,14 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
                 if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
                 {
                     if (pMember->IsValidAttackTarget(pTarget))
+                    {
+                        // Told to go, so the aggro rule stands aside for the trip. Without this the
+                        // order is accepted and then quietly declined: the route to anything nobody
+                        // is fighting yet runs into that mob's own radius, which was enough to
+                        // refuse it.
+                        pMember->SetAttackOrders(pTarget->GetObjectGuid());
                         pAI->AttackStart(pTarget);
+                    }
                 }
             }
         }
@@ -1857,7 +1864,19 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
     // Named bot if one was given, otherwise the best available. Taking a name rather than a
     // selection because the selection is already spoken for: it is the mob being pulled.
     Player* pPuller = nullptr;
-    if (char* nameArg = ExtractArg(&args))
+    char* nameArg = ExtractArg(&args);
+
+    // This used to take a number of seconds to pause the damage dealers for. It no longer waits on a
+    // clock, so a number here is old habit rather than a bot nobody can find, and saying so is more
+    // use than reporting that "10" is not in the group.
+    if (nameArg && *nameArg && strspn(nameArg, "0123456789") == strlen(nameArg))
+    {
+        SendSysMessage("Pull no longer takes a duration; the group now waits until the mob reaches "
+                       "it. Pass a bot name to choose the puller, or nothing to pick one.");
+        nameArg = nullptr;
+    }
+
+    if (nameArg)
     {
         std::string name = nameArg;
         if (!normalizePlayerName(name))

@@ -54,6 +54,12 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
     if (!pPlayer || !pPlayer->AvoidsAggroPulls())
         return nullptr;
 
+    // Under orders, so the rule steps aside. Told to go and fight something, a bot that stops short
+    // because the way there is not clean has refused the instruction while looking like it accepted
+    // it, and there is no route to most things in a dungeon that passes nothing else.
+    if (pPlayer->HasAttackOrders())
+        return nullptr;
+
     PointsArray const& points = path.getPath();
     if (points.empty())
         return nullptr;
@@ -65,17 +71,10 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
     if (enemies.empty())
         return nullptr;
 
-    // The mob this bot was sent to pull, which it has to be allowed to walk up to. Compared by
-    // guid rather than resolved to a pointer, since the answer is only ever used for this test.
-    ObjectGuid const exemptGuid = pPlayer->GetPullExemption();
-
     for (Unit* pEnemy : enemies)
     {
         Creature* pCreature = pEnemy->ToCreature();
         if (!pCreature)
-            continue;
-
-        if (!exemptGuid.IsEmpty() && pCreature->GetObjectGuid() == exemptGuid)
             continue;
 
         for (auto const& point : points)

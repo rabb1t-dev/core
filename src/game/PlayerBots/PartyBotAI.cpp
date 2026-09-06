@@ -497,10 +497,10 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     m_holdPosition = false;
     m_isBuffing = false;
 
-    // Excuse this one mob from the aggro rule, or the generators refuse every step of the approach:
-    // the mob being pulled is by definition one the group is not fighting yet, which is exactly what
-    // that rule exists to stay away from.
-    me->SetPullExemption(m_pullTargetGuid);
+    // On orders now, which suspends the aggro rule. Otherwise the generators refuse every step of the
+    // approach: the mob being pulled is by definition one the group is not fighting yet, which is
+    // precisely what that rule keeps away from.
+    me->SetAttackOrders(m_pullTargetGuid);
 
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
@@ -512,7 +512,7 @@ void PartyBotAI::EndPull()
 {
     m_pullPhase = PULL_PHASE_NONE;
     m_pullSince = 0;
-    me->SetPullExemption(ObjectGuid());
+    me->SetAttackOrders(ObjectGuid());
     me->SetCasterChaseDistance(0.0f);
 }
 
@@ -2002,6 +2002,18 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     m_ghostStart = 0;
     m_leaderWaitSince = 0;
     m_corpseRunBestDistance = -1.0f;
+
+    // An order is spent once its target is gone or is fighting somebody. At that point the aggro
+    // rule lets the bot approach anyway, since the mob is engaged, so holding the suspension open
+    // any longer would only extend it to the rest of the room for nothing. Expiring it on the target
+    // rather than on a timer is what keeps a bot from quietly keeping the exemption for a whole
+    // instance after one order.
+    if (me->HasAttackOrders())
+    {
+        Unit* pOrdered = me->GetMap()->GetUnit(me->GetAttackOrders());
+        if (!pOrdered || !pOrdered->IsAlive() || pOrdered->IsInCombat())
+            me->SetAttackOrders(ObjectGuid());
+    }
 
     // Ahead of the auto shot branch below, which returns on every tick that a ranged attack is
     // running. The puller fires one, so leaving this until later would strand it shooting from the

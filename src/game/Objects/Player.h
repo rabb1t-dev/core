@@ -1995,11 +1995,17 @@ class Player final: public Unit
         // extra pack in a dungeon would leave an AV bot refusing to leave the starting cave.
         bool AvoidsAggroPulls() const { return m_avoidAggroPulls; }
         void SetAvoidAggroPulls(bool enable) { m_avoidAggroPulls = enable; }
-        // The one creature this player has been sent to pull, which the rule above must let it walk
-        // up to. Held as a guid rather than a pointer because it survives across ticks, and the mob
+        // A target this player has been explicitly ordered onto, which suspends the rule above for as
+        // long as the order stands. Deliberately the whole rule and not just the named mob: being
+        // told to pull something is accepting whatever comes with it, and refusing the last few yards
+        // because a neighbour is close would decline the order while appearing to take it. What the
+        // rule is for is the pull nobody asked for, taken by standing in a poor spot.
+        //
+        // Held as a guid rather than a pointer because it outlives the tick that set it, and the mob
         // can die or despawn in between.
-        ObjectGuid GetPullExemption() const { return m_pullExemptGuid; }
-        void SetPullExemption(ObjectGuid guid) { m_pullExemptGuid = guid; }
+        ObjectGuid GetAttackOrders() const { return m_attackOrderGuid; }
+        bool HasAttackOrders() const { return !m_attackOrderGuid.IsEmpty(); }
+        void SetAttackOrders(ObjectGuid guid) { m_attackOrderGuid = guid; }
         // Throttle for the refusal log, which is asked on every recomputed path and would otherwise
         // write hundreds of identical lines a second while a bot holds still.
         bool ShouldLogPullBlock() const;
@@ -2409,7 +2415,7 @@ class Player final: public Unit
         bool   m_smartInstanceRebind;
         uint32 m_homebindTimer;
         bool   m_avoidAggroPulls = false;
-        ObjectGuid m_pullExemptGuid;
+        ObjectGuid m_attackOrderGuid;
         mutable time_t m_lastPullBlockLog = 0;
 
         void ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr);

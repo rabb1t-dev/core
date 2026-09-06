@@ -3717,12 +3717,11 @@ static constexpr float CB_CASTER_CHASE_DISTANCES[] = { 25.0f, 20.0f, 15.0f, 10.0
 // position. The generators catch what these cannot, which is the route taken to get there.
 bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
 {
-    // Whatever this bot was sent to pull is excused, so that a puller working its way into range is
-    // not refused on account of its own target.
-    ObjectGuid const exemptGuid = me->GetPullExemption();
-    Unit const* pExempt = exemptGuid.IsEmpty() ? nullptr : me->GetMap()->GetUnit(exemptGuid);
+    // Under orders, so this stops being a discretionary choice. See Player::GetAttackOrders.
+    if (me->HasAttackOrders())
+        return false;
 
-    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN, pExempt);
+    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN);
     if (!pCreature)
         return false;
 
