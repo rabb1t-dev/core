@@ -1172,6 +1172,7 @@ void Unit::Kill(Unit* pVictim, SpellEntry const* spellProto, bool durabilityLoss
     {
         // only if not player and not controlled by player pet. And not at BG
         if (durabilityLoss && !pPlayerTap && !pPlayerVictim->InBattleGround() &&
+            sWorld.getConfig(CONFIG_BOOL_DURABILITY_LOSS_ENABLE) &&
            (!spellProto || !spellProto->HasAttribute(SPELL_ATTR_EX3_NO_DURABILITY_LOSS)))
         {
             sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "We are dead, loosing 10 percents durability");

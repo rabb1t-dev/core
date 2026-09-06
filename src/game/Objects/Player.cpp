@@ -762,7 +762,7 @@ uint32 Player::EnvironmentalDamage(EnvironmentalDamageType type, uint32 damage)
     // DealDamage not apply item durability loss at self damage
     // Confirmed on classic that dying from lava, fatigue and
     // drowning causes durability loss. Probably applies to all.
-    if (!IsAlive())
+    if (!IsAlive() && sWorld.getConfig(CONFIG_BOOL_DURABILITY_LOSS_ENABLE))
     {
         sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "We are fall to death, loosing 10 percents durability");
         DurabilityLossAll(0.10f, false);

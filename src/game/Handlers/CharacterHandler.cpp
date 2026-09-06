@@ -584,6 +584,13 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
     if (!pCurrChar->IsAlive())
         pCurrChar->SendCorpseReclaimDelay(true);
 
+    // Nothing wears out while the durability switch is off, but plenty of gear predates the switch
+    // being thrown and anything traded or looted can arrive already worn. Topped up free of charge
+    // at the door, so "never needs repairing" holds for the gear a character already owns rather
+    // than only for the damage it would have taken from here on.
+    if (!sWorld.getConfig(CONFIG_BOOL_DURABILITY_LOSS_ENABLE))
+        pCurrChar->DurabilityRepairAll(false, 0.0f);
+
     pCurrChar->SendInitialPacketsBeforeAddToMap();
     GetMasterPlayer()->SendInitialActionButtons();
 
