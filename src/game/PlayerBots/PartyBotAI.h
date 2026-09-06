@@ -98,6 +98,7 @@ public:
     bool IsPulling() const { return m_pullPhase != PULL_PHASE_NONE; }
     void EndPull();
     bool UpdatePullSequence();
+    void LogPull(char const* what) const;
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
     bool FirePullAttack(Unit* pTarget);

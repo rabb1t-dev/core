@@ -505,6 +505,7 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
+    LogPull(GetRangedAttackSpellId() ? "ordered to pull at range" : "ordered to pull in melee");
     return true;
 }
 
@@ -514,6 +515,26 @@ void PartyBotAI::EndPull()
     m_pullSince = 0;
     me->SetAttackOrders(ObjectGuid());
     me->SetCasterChaseDistance(0.0f);
+}
+
+// Called on the steps of a pull rather than every tick, so it stays readable while a pull is being
+// watched. Worth having at all because the sequence used to report only the way it ended: a puller
+// stuck part way through looked identical to a command that had never arrived, and telling those
+// apart took a reading of the source rather than of the log.
+void PartyBotAI::LogPull(char const* what) const
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+        return;
+
+    Unit const* pTarget = me->GetMap()->GetUnit(m_pullTargetGuid);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] pull bot='%s' lvl=%u phase=%u %s (target='%s' dist=%.1f los=%u anchor=%.1f)",
+             me->GetName(), me->GetLevel(), uint32(m_pullPhase), what,
+             pTarget ? pTarget->GetName() : "gone",
+             pTarget ? me->GetDistance(pTarget) : 0.0f,
+             pTarget ? uint32(me->IsWithinLOSInMap(pTarget)) : 0,
+             me->GetDistance2d(m_holdX, m_holdY));
 }
 
 // Walk in, shoot, walk back. Returns true when the sequence has taken the tick for itself.
@@ -540,10 +561,38 @@ bool PartyBotAI::UpdatePullSequence()
             if (FirePullAttack(pTarget))
             {
                 m_pullPhase = PULL_PHASE_FIRE;
+                LogPull("took the shot");
                 return true;
             }
 
-            float const standoff = GetPullStandoffDistance();
+            // Sight first, because chasing does not supply it and quietly appears to work. The
+            // standoff below holds the puller at very nearly its weapon's maximum, and the chase
+            // generator counts that as arrived, so a puller with a wall between it and the mob
+            // stopped at thirty yards and stayed there: never in sight to shoot, never far enough
+            // away to walk. From the outside the command did nothing at all.
+            //
+            // Where the order came from is the one place known to have a view of the target, since
+            // whoever gave it had the mob selected to give it. That is the anchor already recorded
+            // for the walk home, so the puller is being sent to the spot it would return to anyway.
+            bool const canSee = me->IsWithinLOSInMap(pTarget);
+            bool const atAnchor = me->GetDistance2d(m_holdX, m_holdY) <= PB_PULL_ANCHOR_TOLERANCE;
+
+            if (!canSee && !atAnchor)
+            {
+                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+                {
+                    me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
+                    LogPull("no sight, walking to where the order came from");
+                }
+
+                return true;
+            }
+
+            // Standing where the order was given and still unable to see it, so the view that
+            // prompted the order is not available from the ground: closing the distance is the only
+            // thing left to try. The standoff is dropped to melee for that, deliberately, because
+            // keeping it is what caused the puller to stop short of a wall in the first place.
+            float const standoff = canSee ? GetPullStandoffDistance() : 0.0f;
             me->SetCasterChaseDistance(standoff);
 
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
@@ -563,6 +612,7 @@ bool PartyBotAI::UpdatePullSequence()
             if (pTarget->IsInCombat())
             {
                 m_pullPhase = PULL_PHASE_RETURN;
+                LogPull("it bit, heading home");
                 return true;
             }
 
@@ -582,6 +632,7 @@ bool PartyBotAI::UpdatePullSequence()
                 // behaviour this command exists to prevent, so it holds on the same terms as
                 // everyone else and breaks when the mob arrives.
                 ObjectGuid const pullTarget = m_pullTargetGuid;
+                LogPull("home, holding with the group");
                 EndPull();
                 BeginHold(m_holdX, m_holdY, m_holdZ, pullTarget);
                 return true;
