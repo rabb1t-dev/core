@@ -3525,7 +3525,32 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
 
 void PartyBotAI::UpdateOutOfCombatAI_Warrior()
 {
-    if (m_spells.warrior.pBattleStance &&
+    // A tank belongs in Defensive Stance and is left there, rather than being walked out to
+    // Battle Stance for a Charge and walked back the moment the fight starts.
+    //
+    // Changing stance sets rage to zero. Not reduces, zero: SpellAuras.cpp caps it at the rank of
+    // Tactical Mastery held, which a levelling bot has none of. So the old sequence cost the tank
+    // its rage twice per pull, and the second wipe landed on the Charge rage the first wipe had
+    // been paid for. The capture that prompted this has thirty one Battle Stances, thirty one
+    // Defensive Stances and twenty nine Charges in half an hour, which is a tank starting every
+    // single fight of a dungeon on nothing.
+    //
+    // Losing the gap closer costs a tank bot very little, because it is following the party rather
+    // than initiating, and Bloodrage at the top of the tank rotation is the real opener. A warrior
+    // here to do damage keeps Battle Stance and keeps Charge, since Battle Stance is where it
+    // fights anyway and there is no swap back to pay for.
+    bool const tanking = GetRole() == ROLE_TANK;
+
+    if (tanking && m_spells.warrior.pDefensiveStance)
+    {
+        if (me->GetShapeshiftForm() != FORM_DEFENSIVESTANCE &&
+            CanTryToCastSpell(me, m_spells.warrior.pDefensiveStance))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pDefensiveStance) == SPELL_CAST_OK)
+                return;
+        }
+    }
+    else if (m_spells.warrior.pBattleStance &&
         CanTryToCastSpell(me, m_spells.warrior.pBattleStance))
     {
         if (DoCastSpell(me, m_spells.warrior.pBattleStance) == SPELL_CAST_OK)
@@ -3705,20 +3730,34 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // cooldown and never fails. Anything placed under it is unreachable, which is what happened
     // to Demoralizing Shout in the shared list. Each is held behind its own aura, so being
     // higher costs a cast only on the tick the effect is actually missing.
-    if (m_spells.warrior.pDemoralizingShout &&
-       !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
-        CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
-    {
-        if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
-            return;
-    }
+    //
+    // Both are now also held behind a rage floor, which is what being above Sunder has to be paid
+    // for. Sitting there unconditionally, the pair outcast the filler they sit on top of: the
+    // capture that prompted this has Demoralizing Shout at sixty six casts against Sunder Armor's
+    // sixty, because a tank swapping targets around a pack meets a fresh victim without the debuff
+    // every few seconds and re-buys it every time. Ten rage for a debuff is a fair trade out of a
+    // surplus and a bad one out of the only ten rage a level fifteen tank has, where the same ten
+    // is a Sunder and the threat that comes with it. Reordering them under Sunder instead would
+    // just make them dead code, for the reason above.
+    bool const rageToSpare = me->GetPower(POWER_RAGE) >= ScaleTankRage(PB_TANK_RAGE_BLOCK);
 
-    if (m_spells.warrior.pBattleShout &&
-       !me->HasAura(m_spells.warrior.pBattleShout->Id) &&
-        CanTryToCastSpell(me, m_spells.warrior.pBattleShout))
+    if (rageToSpare)
     {
-        if (DoCastSpell(me, m_spells.warrior.pBattleShout) == SPELL_CAST_OK)
-            return;
+        if (m_spells.warrior.pDemoralizingShout &&
+           !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
+            CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
+                return;
+        }
+
+        if (m_spells.warrior.pBattleShout &&
+           !me->HasAura(m_spells.warrior.pBattleShout->Id) &&
+            CanTryToCastSpell(me, m_spells.warrior.pBattleShout))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBattleShout) == SPELL_CAST_OK)
+                return;
+        }
     }
 
     // The filler, and the floor of the list: no cooldown, so it runs whenever the two above are

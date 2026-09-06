@@ -3356,14 +3356,18 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (pSpellEntry->IsSpellAppliesAura() && pTarget->HasAura(pSpellEntry->Id))
         return false;
 
-    SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(pSpellEntry->rangeIndex);
+    // Asked of the spell, which knows the three range indices that do not mean what the number in
+    // the range store says. Reading maxRange straight, as this did, is right for the ordinary case
+    // and wrong for exactly the abilities a tank lives on: warrior Taunt carries rangeIndex 2,
+    // SPELL_RANGE_IDX_COMBAT, which is not a distance at all but a request for the dynamic melee
+    // reach between those two units, and the same is true of Sunder Armor, Revenge and Heroic
+    // Strike. Comparing against the store's nominal figure for that index is more permissive than
+    // the check the cast itself will make, so the bot cleared its own test and then failed the real
+    // one: four Taunts in half an hour died with SPELL_FAILED_OUT_OF_RANGE, each one a tank
+    // standing still doing nothing on the tick it had just lost its target.
     if (me != pTarget && pSpellEntry->EffectImplicitTargetA[0] != TARGET_UNIT_CASTER)
     {
-        float const dist = me->GetCombatDistance(pTarget);
-
-        if (dist > srange->maxRange)
-            return false;
-        if (srange->minRange && dist < srange->minRange)
+        if (!pSpellEntry->IsTargetInRange(me, pTarget))
             return false;
     }
 
