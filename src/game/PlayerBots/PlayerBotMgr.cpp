@@ -1790,6 +1790,46 @@ static PartyBotAI* GetPartyBotAI(Player* pMember)
     return dynamic_cast<PartyBotAI*>(pMember->AI());
 }
 
+// The bot in the group answering to a name, or nothing if the name belongs to nobody there.
+static Player* FindGroupBot(Player* pCommander, std::string name)
+{
+    if (!normalizePlayerName(name))
+        return nullptr;
+
+    Player* pNamed = ObjectAccessor::FindPlayerByName(name.c_str());
+    if (!pNamed || !pNamed->IsInSameGroupWith(pCommander) || !GetPartyBotAI(pNamed))
+        return nullptr;
+
+    return pNamed;
+}
+
+// The puller each group has settled on, remembered until it is changed.
+//
+// Kept here rather than on the group itself because it means nothing to the rest of the group code,
+// and keyed by group id because that is what a party and a raid have in common. Nothing cleans this
+// up when a group breaks apart: a stale entry names a bot that is no longer a member, which the
+// lookup below already has to handle, and it is dropped the first time it is asked for.
+static std::unordered_map<uint32 /*groupId*/, ObjectGuid> s_designatedPullers;
+
+// The bot this group has been told to pull with, or nothing if the choice is still automatic. A
+// designation outlives the state of the bot it names, so all of it is checked again on the way out:
+// the bot can have left the group, logged out, or stopped being a bot since it was set.
+static Player* GetDesignatedPuller(Group* pGroup)
+{
+    auto itr = s_designatedPullers.find(pGroup->GetId());
+    if (itr == s_designatedPullers.end())
+        return nullptr;
+
+    Player* pPuller = ObjectAccessor::FindPlayer(itr->second);
+    if (!pPuller || !pGroup->IsMember(itr->second) || !GetPartyBotAI(pPuller))
+    {
+        s_designatedPullers.erase(itr);
+        return nullptr;
+    }
+
+    return pPuller;
+}
+
 // Which bot should do the pulling.
 //
 // Preference is about who can pull without walking into the pack: a hunter has Auto Shot and the
@@ -1873,8 +1913,9 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
         return false;
     }
 
-    // Named bot if one was given, otherwise the best available. Taking a name rather than a
-    // selection because the selection is already spoken for: it is the mob being pulled.
+    // Named bot if one was given, otherwise whoever setpuller nominated, otherwise the best
+    // available. Taking a name rather than a selection because the selection is already spoken for:
+    // it is the mob being pulled.
     Player* pPuller = nullptr;
     char* nameArg = ExtractArg(&args);
 
@@ -1890,28 +1931,29 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
 
     if (nameArg)
     {
-        std::string name = nameArg;
-        if (!normalizePlayerName(name))
+        // A name here is a one-off for this pull and deliberately does not change the standing
+        // choice, so that reaching for a different bot once does not quietly reassign the job.
+        pPuller = FindGroupBot(pPlayer, nameArg);
+        if (!pPuller)
         {
-            SendSysMessage("Invalid bot name.");
+            PSendSysMessage("%s is not a party bot in your group.", nameArg);
             SetSentErrorMessage(true);
             return false;
         }
-
-        Player* pNamed = ObjectAccessor::FindPlayerByName(name.c_str());
-        if (!pNamed || !pNamed->IsInSameGroupWith(pPlayer) || !GetPartyBotAI(pNamed))
-        {
-            PSendSysMessage("%s is not a party bot in your group.", name.c_str());
-            SetSentErrorMessage(true);
-            return false;
-        }
-
-        pPuller = pNamed;
     }
-    else
+    else if (Player* pDesignated = GetDesignatedPuller(pGroup))
     {
-        pPuller = SelectPuller(pGroup, pPlayer);
+        // A corpse cannot pull, and refusing outright would mean re-nominating somebody every time
+        // the usual puller goes down. The designation is left alone so it comes back with the bot.
+        if (pDesignated->IsAlive())
+            pPuller = pDesignated;
+        else
+            PSendSysMessage("%s is your puller but is dead, so this one goes to somebody else.",
+                            pDesignated->GetName());
     }
+
+    if (!pPuller)
+        pPuller = SelectPuller(pGroup, pPlayer);
 
     if (!pPuller)
     {
@@ -1955,6 +1997,82 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
         PSendSysMessage("%s is %.0f yards away and can shoot from %.0f, so it has to close about "
                         "%.0f yards first.", pPuller->GetName(), distance, standoff,
                         distance - standoff);
+    }
+
+    return true;
+}
+
+bool ChatHandler::HandlePartyBotSetPullerCommand(char* args)
+{
+    Player* pPlayer = GetSession()->GetPlayer();
+
+    Group* pGroup = pPlayer->GetGroup();
+    if (!pGroup)
+    {
+        SendSysMessage("You are not in a group.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    char* nameArg = ExtractArg(&args);
+
+    if (nameArg && *nameArg)
+    {
+        std::string word = nameArg;
+        strToLower(word);
+
+        if (word == "none" || word == "clear" || word == "off" || word == "auto")
+        {
+            s_designatedPullers.erase(pGroup->GetId());
+            SendSysMessage("Puller cleared; pull picks the best available bot again.");
+            return true;
+        }
+    }
+
+    Player* pPuller = nullptr;
+
+    if (nameArg && *nameArg)
+    {
+        pPuller = FindGroupBot(pPlayer, nameArg);
+        if (!pPuller)
+        {
+            PSendSysMessage("%s is not a party bot in your group.", nameArg);
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+    else
+    {
+        // No name, so the selection speaks: pointing at a bot and running this reads as naming it.
+        // Unlike pull, nothing else here wants the selection, so there is no conflict in using it.
+        Unit* pSelected = GetSelectedUnit();
+        if (pSelected && pSelected->IsPlayer())
+            pPuller = FindGroupBot(pPlayer, pSelected->GetName());
+
+        // Neither a name nor a bot to point at, which is a question rather than an instruction.
+        if (!pPuller)
+        {
+            if (Player* pCurrent = GetDesignatedPuller(pGroup))
+                PSendSysMessage("%s is your puller.", pCurrent->GetName());
+            else
+                SendSysMessage("No puller set; pull picks the best available bot. Name one or "
+                               "select it to set it, or pass none to go back to picking.");
+
+            return true;
+        }
+    }
+
+    s_designatedPullers[pGroup->GetId()] = pPuller->GetObjectGuid();
+
+    PartyBotAI* pPullerAI = GetPartyBotAI(pPuller);
+    if (pPullerAI->GetRangedAttackSpellId())
+        PSendSysMessage("%s is your puller and will pull at range.", pPuller->GetName());
+    else
+    {
+        // Same warning pull gives, said at the point the choice is made rather than at the point it
+        // goes wrong, because that is when there is time to hand the bot something to shoot with.
+        PSendSysMessage("%s is your puller, but has no ranged weapon it can fire, so its pulls are "
+                        "body pulls until it gets a bow or gun with ammo.", pPuller->GetName());
     }
 
     return true;
