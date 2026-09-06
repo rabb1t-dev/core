@@ -78,6 +78,8 @@ public:
     Player* FindGroupHealer() const;
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
     bool WaitForLeaderBeforeRising();
+    void LogDeathHold(char const* reason);
+    bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
     Unit* SelectHealTargetOutOfReach() const;
     Unit const* GetCurrentFollowTarget() const;
     uint32 ScaleTankRage(uint32 rage) const;
@@ -139,6 +141,9 @@ public:
     // When this bot reached its corpse and began holding for the leader to arrive, so the hold
     // can be given up on rather than lasting as long as the leader stays away.
     time_t m_leaderWaitSince = 0;
+    // Throttle for the "still down" lines, which are otherwise asked for once a second for as
+    // long as the bot stays dead.
+    time_t m_lastDeathLog = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

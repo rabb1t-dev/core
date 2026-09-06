@@ -142,6 +142,19 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 // being unable to reach them.
 #define PB_HEAL_REPOSITION_DIST 10.0f
 
+// How far a bot backs off when it flees melee. Shared by the move and by the check that runs
+// ahead of it, so the position tested is always the position taken.
+static constexpr float PB_DISTANCING_RANGE = 15.0f;
+// How far out to look for mobs a move might wake. Has to cover the furthest spot a bot will
+// pick plus the widest radius it could end up sitting inside once it arrives.
+static constexpr float PB_PULL_CHECK_SEARCH_RADIUS = 60.0f;
+// Slack on top of the mob's own radius, so a destination is not chosen a hand's breadth outside
+// it and then drifted over the line by the next step.
+static constexpr float PB_PULL_CHECK_MARGIN = 3.0f;
+// Seconds between lines while a bot is down. It is asked once a second for as long as the bot
+// stays dead, which is precisely the stretch that is worth reading and far too often to log.
+static constexpr time_t PB_DEATH_LOG_INTERVAL = 5;
+
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
     if (!m_race && !m_class)
@@ -226,6 +239,45 @@ Player* PartyBotAI::GetPartyLeader() const
     return nullptr;
 }
 
+// Whether standing here would wake something the group is not already fighting.
+//
+// Nothing in this class has ever asked that question. Target selection is safe on its own,
+// since SelectAttackTarget only ever returns something already engaged, so bots do not choose
+// extra fights. They walk into them: a caster backing away from melee, a ranged bot holding
+// twenty five yards, melee spreading around the target. Every one of those picks a spot with
+// reference only to the mob being fought.
+//
+// The radius is asked of each mob rather than assumed, because GetAttackDistance folds in the
+// level difference between that mob and this bot, and the eighteen yards an even level pull
+// suggests is far short of the truth for a group levelling through a dungeon above its level,
+// which is exactly when the extra pack is fatal.
+bool PartyBotAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
+{
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_PULL_CHECK_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        Creature* pCreature = pEnemy->ToCreature();
+        if (!pCreature || !pCreature->IsAlive())
+            continue;
+
+        // Already awake, so it cannot be pulled a second time. Counting it would rule out most
+        // of the room during the very fight the bot is trying to move within.
+        if (pCreature->IsInCombat())
+            continue;
+
+        float const aggroRadius = pCreature->GetAttackDistance(me);
+        if (aggroRadius <= 0.0f)
+            continue;
+
+        if (pCreature->GetDistance(x, y, z) < aggroRadius + PB_PULL_CHECK_MARGIN)
+            return true;
+    }
+
+    return false;
+}
+
 bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
 {
     if (pTarget->IsInWorld() && pTarget->IsAlive() &&
@@ -233,7 +285,9 @@ bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
     {
         float const distance = me->GetDistance(pTarget);
         if (distance >= 15.0f && distance <= 30.0f &&
-            pTarget->GetDistance(pEnemy) >= 15.0f)
+            pTarget->GetDistance(pEnemy) >= 15.0f &&
+            !WouldPositionPullExtraEnemies(pTarget->GetPositionX(), pTarget->GetPositionY(),
+                                           pTarget->GetPositionZ()))
             return true;
     }
 
@@ -279,7 +333,18 @@ bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
         return true;
     }
 
-    return me->GetMotionMaster()->MoveDistance(pEnemy, 15.0f);
+    // Backing straight away from whatever is hitting it is how a caster in a corridor walks into
+    // the next pack. The direction is decided entirely by where the enemy happens to stand, and
+    // nothing looked at what was behind. Test the spot MoveDistance would choose before
+    // committing to it, computed the same way so the two cannot disagree, and stay put when it
+    // would wake something: a few more hits in a fight the group is already having is a better
+    // trade than starting a second one on top of it.
+    float x, y, z;
+    pEnemy->GetNearPoint(me, x, y, z, 0, PB_DISTANCING_RANGE, pEnemy->GetAngle(me));
+    if (WouldPositionPullExtraEnemies(x, y, z))
+        return false;
+
+    return me->GetMotionMaster()->MoveDistance(pEnemy, PB_DISTANCING_RANGE);
 }
 
 bool PartyBotAI::DrinkAndEat()
@@ -524,6 +589,7 @@ bool PartyBotAI::WaitForLeaderBeforeRising()
     // Reaching the corpse ended the run, so the run's own stall deadline must not collect a bot
     // that is now standing still on purpose. The hold above is what bounds this phase instead.
     m_ghostStart = now;
+    LogDeathHold("standing on its corpse, waiting for the leader to get back to this map");
     return true;
 }
 
@@ -640,6 +706,37 @@ bool PartyBotAI::UpdateCorpseRun()
     return true;
 }
 
+// Why a bot that is down is still down. The recovery path records the moment it releases and
+// the moment it stands back up, and says nothing whatever about the stretch in between, which
+// is the only part anyone ever complains about. Every hold below is deliberate and every one of
+// them looks identical from the outside: a corpse lying there not releasing.
+void PartyBotAI::LogDeathHold(char const* reason)
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+        return;
+
+    time_t const now = time(nullptr);
+    if (m_lastDeathLog && (now - m_lastDeathLog) < PB_DEATH_LOG_INTERVAL)
+        return;
+
+    m_lastDeathLog = now;
+
+    Player* pLeader = GetPartyLeader();
+    Player* pHealer = FindGroupHealer();
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBot] '%s' still down on map %u: %s. state=%s ressreq=%u groupcombat=%u "
+             "healer='%s' leadermap=%d leaderalive=%u deadfor=%us",
+             me->GetName(), me->GetMapId(), reason,
+             me->GetDeathState() == CORPSE ? "corpse" : "ghost",
+             uint32(me->IsRessurectRequested() ? 1 : 0),
+             uint32(IsGroupInCombat() ? 1 : 0),
+             pHealer ? pHealer->GetName() : "none",
+             pLeader ? int32(pLeader->GetMapId()) : -1,
+             uint32(pLeader && pLeader->IsAlive() ? 1 : 0),
+             uint32(m_corpseSince ? now - m_corpseSince : 0));
+}
+
 // Recovery after death. A resurrection is always preferred, but nothing here may depend on
 // one arriving: after a wipe there is nobody left to cast it, which is exactly the case that
 // used to leave the whole group on the floor permanently.
@@ -664,7 +761,10 @@ void PartyBotAI::UpdateDeadAI()
         // An offer is already in flight and bots accept immediately, so never release out
         // from under one.
         if (me->IsRessurectRequested())
+        {
+            LogDeathHold("a resurrection has been offered and is about to be accepted");
             return;
+        }
 
         // While the group is still fighting there is nothing to break out of, and releasing
         // would throw away both the battle res and the free one after the kill. Combat ends
@@ -677,6 +777,7 @@ void PartyBotAI::UpdateDeadAI()
             // against a death during the pull, and spending one after the fight is over buys
             // nothing that walking back would not, at a cooldown of half an hour or more.
             UseSelfResurrection();
+            LogDeathHold("somebody in the group is still in combat, so the clock has not started");
             return;
         }
 
@@ -694,7 +795,10 @@ void PartyBotAI::UpdateDeadAI()
                 m_corpseSince = now;
 
             if (!timeout || (now - m_corpseSince) < time_t(timeout))
+            {
+                LogDeathHold("a healer is alive, so holding for a resurrection rather than releasing");
                 return;
+            }
         }
 
         if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_AUTO_REVIVE) && ShouldAutoRevive())
