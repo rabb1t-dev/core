@@ -2419,9 +2419,14 @@ void PartyBotAI::UpdateInCombatAI()
             // off a mage, and two tanks then spend the encounter trading it between them while
             // neither has a taunt left when a damage dealer actually needs saving.
             //
-            // Nor does this return any more. Taunt carries StartRecoveryTime 0, so it is free of
-            // the global cooldown and returning here gave up the tank's cast for the tick on top
-            // of the target it had just lost, which is the worst moment to be doing nothing.
+            // Returns on success, which reads like giving up the tick's cast and is not. Taunt does
+            // carry StartRecoveryTime 0, so nothing here is waiting on the global cooldown, but the
+            // server will not start a second cast in the same tick as the first regardless of
+            // cooldowns: the one already cast still holds the caster's current-spell slot when the
+            // next is checked, and that check answers SPELL_FAILED_SPELL_IN_PROGRESS. So carrying on
+            // does not buy a second ability, it only spends the attempt and logs the refusal. The
+            // ability is cast on the following tick instead, which is what was already happening
+            // underneath the failures.
             if (pVictim && ShouldTauntTarget(pVictim))
             {
                 for (const auto& pSpellEntry : m_spellListTaunt)
@@ -2429,7 +2434,7 @@ void PartyBotAI::UpdateInCombatAI()
                     if (CanTryToCastSpell(pVictim, pSpellEntry))
                     {
                         if (DoCastSpell(pVictim, pSpellEntry) == SPELL_CAST_OK)
-                            break;
+                            return;
                     }
                 }
             }
@@ -3982,10 +3987,23 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
 
     // Everything from here to the global cooldown block is off the global cooldown, which the
     // spell data is explicit about: Taunt, Bloodrage, Shield Block, Heroic Strike and Cleave all
-    // carry StartRecoveryTime 0. So none of them is an alternative to the ability that fills the
-    // cooldown, and none of them returns. Treating them as alternatives is the single most
-    // expensive thing a warrior rotation can do, because the cooldown is the scarce resource and
-    // a free ability spent in place of one is a whole cast of threat given up for nothing.
+    // carry StartRecoveryTime 0. In the game they are therefore not alternatives to the ability
+    // that fills the cooldown, and this block used to fall through on that reasoning so a free
+    // ability was never spent in place of a cast of threat.
+    //
+    // The server does not allow it. Whatever was cast first still holds the caster's current-spell
+    // slot when the next cast is checked in the same tick, and that check refuses it with
+    // SPELL_FAILED_SPELL_IN_PROGRESS no matter what the cooldowns say. Falling through bought no
+    // second ability, only a rejected attempt: thirty five minutes of one Wailing Caverns tank
+    // produced sixty nine of them, every one immediately after a cast that had just succeeded, and
+    // every one landing anyway on the following tick. So these return, and the second ability
+    // arrives a tick later exactly as it already did underneath the noise.
+    //
+    // What that costs is ordering. Because only one cast per tick survives, position in this list
+    // now decides which ability wins the tick, and the free ones are listed first. They are gated
+    // tightly enough to stay out of the way -- Bloodrage wants low rage and has a minute cooldown,
+    // Shield Block wants a rage floor and has five seconds, the dump wants a surplus -- but a
+    // Shield Block does now delay a threat cast by a tick where before it merely failed to add one.
 
     // Taunt is not here. It is handled once in UpdateInCombatAI for every tank class off the
     // list of everything carrying SPELL_EFFECT_ATTACK_ME, which covers a druid's Growl as well
@@ -4000,7 +4018,8 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
         me->GetPower(POWER_RAGE) < ScaleTankRage(PB_TANK_RAGE_LOW) &&
         CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
     {
-        DoCastSpell(me, m_spells.warrior.pBloodrage);
+        if (DoCastSpell(me, m_spells.warrior.pBloodrage) == SPELL_CAST_OK)
+            return;
     }
 
     // Mitigation, and also the supply of Revenge below, which only unlocks off a block, dodge or
@@ -4011,7 +4030,8 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
         me->GetPower(POWER_RAGE) >= ScaleTankRage(PB_TANK_RAGE_BLOCK) &&
         CanTryToCastSpell(me, m_spells.warrior.pShieldBlock))
     {
-        DoCastSpell(me, m_spells.warrior.pShieldBlock);
+        if (DoCastSpell(me, m_spells.warrior.pShieldBlock) == SPELL_CAST_OK)
+            return;
     }
 
     // Spend the surplus. These land on the next swing instead of costing a cast, so the only
@@ -4024,12 +4044,14 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
         if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pCleave))
         {
-            DoCastSpell(pVictim, m_spells.warrior.pCleave);
+            if (DoCastSpell(pVictim, m_spells.warrior.pCleave) == SPELL_CAST_OK)
+                return;
         }
         else if (m_spells.warrior.pHeroicStrike &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pHeroicStrike))
         {
-            DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike);
+            if (DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike) == SPELL_CAST_OK)
+                return;
         }
     }
 
