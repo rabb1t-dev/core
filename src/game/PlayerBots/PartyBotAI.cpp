@@ -30,6 +30,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "Chat.h"
+#include "Packets/Loot.h"
 #include "Utilities/Random.h"
 
 #include <random>
@@ -171,6 +172,14 @@ static constexpr uint32 PB_DOT_WORTH_ENEMY_COUNT = 3;
 static constexpr float PB_DOT_WORTH_TARGET_HEALTH = 50.0f;
 // How far out to look for the rest of the pack.
 static constexpr float PB_DOT_PACK_RADIUS = 30.0f;
+
+// How long to leave a corpse before deciding who it belongs to. Loot permission is not settled at
+// the moment of death: the round robin assignment a bot holds is given up a tick later, and group
+// rolls take seconds, so reading it immediately would call a corpse nobody's while it was still
+// being decided.
+static constexpr time_t PB_LOOT_GRACE_SECONDS = 6;
+// How many corpses a bot will keep track of at once. A wipe-sized pull is well inside this.
+static constexpr size_t PB_LOOT_QUEUE_LIMIT = 24;
 
 // How close the pulled mob has to get before the party stops waiting and fights it. Generous on
 // purpose: the point is to be sure the mob has committed to coming, and a held melee bot that breaks
@@ -2019,6 +2028,11 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
             if (!me)
                 return;
 
+            // Noted for the cleanup pass in UpdateCorpseLooting. This is the one moment the corpse
+            // is known for certain without searching the grid for it, so it is written down here and
+            // dealt with later, once the fight is over and the group has had its pick.
+            RememberCorpseToLoot(ObjectGuid(*(((uint64*)(*packet).contents()) + 1)));
+
             if (Group const* pGroup = me->GetGroup())
             {
                 if (pGroup->GetLootMethod() == ROUND_ROBIN ||
@@ -2046,6 +2060,149 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     }
 
     CombatBotBaseAI::OnPacketReceived(packet);
+}
+
+void PartyBotAI::RememberCorpseToLoot(ObjectGuid guid)
+{
+    if (!guid.IsCreature())
+        return;
+
+    for (PartyBotCorpse const& corpse : m_corpsesToLoot)
+        if (corpse.guid == guid)
+            return;
+
+    // Oldest goes when the list is full. A corpse that has waited through this many kills is either
+    // out of reach for good or already gone.
+    if (m_corpsesToLoot.size() >= PB_LOOT_QUEUE_LIMIT)
+        m_corpsesToLoot.erase(m_corpsesToLoot.begin());
+
+    m_corpsesToLoot.push_back({ guid, time(nullptr) + PB_LOOT_GRACE_SECONDS });
+}
+
+// Whether any real player in the group could still loot this corpse themselves. If one can, the bot
+// leaves it alone: emptying it takes the loot out from under someone who was entitled to it, and the
+// only reason a bot is looting at all is to clear corpses nobody else is able to.
+bool PartyBotAI::CanAnyPlayerLoot(Creature* pCreature) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember->IsBot())
+            continue;
+
+        if (pMember->IsAllowedToLoot(pCreature))
+            return true;
+    }
+
+    return false;
+}
+
+// Empty a corpse completely, which is the only thing that makes it skinnable. Anything left behind,
+// down to the last grey, keeps a skinner on "creature must be looted first": the check wants the
+// loot gone rather than merely opened.
+//
+// The session's own handlers do the work rather than a reimplementation of them. A bot owns a real
+// WorldSession and every one of these is public on it, so this takes the same path a player's client
+// would and cannot drift away from it as the loot rules change.
+bool PartyBotAI::LootCorpse(Creature* pCreature)
+{
+    if (!me->IsAllowedToLoot(pCreature))
+        return false;
+
+    // Somebody real can still take this, so it is not the bot's to take.
+    if (CanAnyPlayerLoot(pCreature))
+        return false;
+
+    // Held to the same distance the client's own loot request is held to, and not closed manually:
+    // walking to corpses would have the bot wander off after fights and into the mobs the aggro rule
+    // spends its time keeping it away from. It does not need to. Bots follow the leader at a few
+    // yards, so a skinner standing over a corpse brings one along with them.
+    if (!pCreature->IsWithinDistInMap(me, me->GetMaxLootDistance(pCreature), true, SizeFactor::None))
+        return false;
+
+    WorldSession* pSession = me->GetSession();
+    if (!pSession)
+        return false;
+
+    // Opens the loot, and sets the loot guid that every handler below reads back.
+    me->SendLoot(pCreature->GetObjectGuid(), LOOT_CORPSE);
+    if (me->GetLootGuid() != pCreature->GetObjectGuid())
+        return false;
+
+    uint32 const maxSlot = pCreature->loot.GetMaxSlotInLootFor(me->GetGUIDLow());
+    for (uint32 slot = 0; slot < maxSlot; ++slot)
+    {
+        WorldPackets::Loot::AutoStoreLootItem take;
+        take.lootSlot = uint8(slot);
+        pSession->HandleAutostoreLootItemOpcode(take);
+    }
+
+    if (pCreature->loot.gold)
+    {
+        NullClientPacket money(CMSG_LOOT_MONEY);
+        pSession->HandleLootMoneyOpcode(money);
+    }
+
+    // The release is what finishes it. It is the only path that tests isLooted, drops the lootable
+    // flag and calls AllLootRemovedFromCorpse, and that last call starts the tap timer the skinning
+    // check waits on. Emptying the loot without releasing would leave the corpse looking full.
+    pSession->DoLootRelease(pCreature->GetObjectGuid());
+
+    return pCreature->loot.isLooted();
+}
+
+void PartyBotAI::UpdateCorpseLooting()
+{
+    // Never during a fight. A tick spent looting is a tick not spent healing or holding threat, and
+    // the corpse is not going anywhere.
+    if (m_corpsesToLoot.empty() || me->IsInCombat() || !me->IsAlive() || me->IsBeingTeleported())
+        return;
+
+    time_t const now = time(nullptr);
+
+    for (auto itr = m_corpsesToLoot.begin(); itr != m_corpsesToLoot.end();)
+    {
+        // Still inside the grace period. Loot permission settles over the first moment or so after a
+        // kill -- the round robin assignment a bot holds is given up a tick later, and group rolls
+        // take longer than that -- so asking too early would read a corpse as nobody's when it was
+        // about to become someone's.
+        if (now < itr->lootAfter)
+        {
+            ++itr;
+            continue;
+        }
+
+        Creature* pCreature = me->GetMap()->GetCreature(itr->guid);
+        if (!pCreature || pCreature->IsAlive() || pCreature->loot.isLooted())
+        {
+            itr = m_corpsesToLoot.erase(itr);
+            continue;
+        }
+
+        // Out of reach, or still somebody else's to take. Kept on the list rather than dropped:
+        // range changes as the bot follows the leader, and permission changes as rolls resolve and
+        // players walk away. It leaves the list with the corpse itself when that despawns.
+        if (!LootCorpse(pCreature))
+        {
+            ++itr;
+            continue;
+        }
+
+        if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] loot bot='%s' emptied '%s' on map %u, now skinnable",
+                     me->GetName(), pCreature->GetName(), me->GetMapId());
+
+        itr = m_corpsesToLoot.erase(itr);
+
+        // One a tick. Emptying a whole pack in a single pass is a burst of inventory work and
+        // several item-received packets for no gain; the next tick is fifty milliseconds away.
+        return;
+    }
 }
 
 void PartyBotAI::OnPlayerLogin()
@@ -2314,6 +2471,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             ChatHandler(me).HandleGonameCommand(name);
             return;
         }
+
+        // Ahead of drinking, which returns for as long as it lasts. Behind it a corpse would wait
+        // out the whole break and be gone by the end of it.
+        UpdateCorpseLooting();
 
         if (DrinkAndEat())
         {

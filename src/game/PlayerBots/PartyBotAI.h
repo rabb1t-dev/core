@@ -105,6 +105,10 @@ public:
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
     bool IsWorthDotting(Unit const* pVictim) const;
+    void RememberCorpseToLoot(ObjectGuid guid);
+    void UpdateCorpseLooting();
+    bool CanAnyPlayerLoot(Creature* pCreature) const;
+    bool LootCorpse(Creature* pCreature);
     bool IsCastingFillerDamage() const;
     Player* GetGroupTank() const;
     Unit* SelectHealTargetOutOfReach() const;
@@ -145,6 +149,16 @@ public:
     void UpdateInCombatAI_Druid() final;
     void UpdateOutOfCombatAI_Druid() final;
 
+    // A corpse the group killed, and the time after which whatever is left in it may be taken. The
+    // delay is the group's window to pick what it wants; a corpse has to end up completely empty
+    // before it can be skinned, so the bot takes the remainder rather than choosing among it.
+    struct PartyBotCorpse
+    {
+        ObjectGuid guid;
+        time_t lootAfter;
+    };
+
+    std::vector<PartyBotCorpse> m_corpsesToLoot;
     std::vector<RaidTargetIcon> m_marksToCC;
     std::vector<RaidTargetIcon> m_marksToFocus;
     ShortTimeTracker m_updateTimer;
