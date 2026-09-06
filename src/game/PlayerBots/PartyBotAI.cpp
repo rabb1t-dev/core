@@ -620,7 +620,12 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     if (!me->IsStopped())
         me->StopMoving();
 
+    // Idle put back deliberately. Clearing with all set empties the whole stack, including the idle
+    // generator at the bottom that everything else assumes is there, and UpdateMotion asserts on an
+    // empty one: leaving it bare crashed the world server on the next tick of the bot that had just
+    // been told to pull.
     me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
 
     // On orders now, which suspends the aggro rule. Otherwise the generators refuse every step of the
     // approach: the mob being pulled is by definition one the group is not fighting yet, which is
@@ -835,9 +840,14 @@ bool PartyBotAI::UpdatePullSequence()
                 {
                     pTank->GetPosition(m_holdX, m_holdY, m_holdZ);
 
-                    // Drop the walk to the old spot so the re-issue below picks up the new one.
+                    // Drop the walk to the old spot so the re-issue below picks up the new one. Idle
+                    // goes back on immediately: clearing with all set empties the stack completely,
+                    // and an empty stack fails an assertion in UpdateMotion on the next tick.
                     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                    {
                         me->GetMotionMaster()->Clear(false, true);
+                        me->GetMotionMaster()->MoveIdle();
+                    }
                 }
             }
 
