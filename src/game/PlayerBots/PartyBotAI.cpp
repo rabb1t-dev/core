@@ -1414,6 +1414,9 @@ Unit const* PartyBotAI::GetCurrentFollowTarget() const
 
 Player* PartyBotAI::SelectShieldTarget() const
 {
+    if (!m_spells.priest.pPowerWordShield)
+        return nullptr;
+
     if (IsInDuel())
         return nullptr;
 
@@ -1429,9 +1432,15 @@ Player* PartyBotAI::SelectShieldTarget() const
             if (pMember == me)
                 continue;
 
+            // Line of sight, which nothing here asked for and the spell then demanded: fifteen
+            // shields in half an hour were thrown at a group member the priest could not see and
+            // failed with SPELL_FAILED_LINE_OF_SIGHT, each one a tick given up. Range for the same
+            // reason, taken from the spell rather than guessed at.
             if ((pMember->GetHealthPercent() < 90.0f) &&
                 !pMember->GetAttackers().empty() &&
-                !pMember->IsImmuneToMechanic(MECHANIC_SHIELD))
+                !pMember->IsImmuneToMechanic(MECHANIC_SHIELD) &&
+                me->IsWithinLOSInMap(pMember) &&
+                m_spells.priest.pPowerWordShield->IsTargetInRange(me, pMember))
                 return pMember;
         }
     }
@@ -3128,7 +3137,23 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
 
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
+    // Shielding itself was the first thing this function did, on no condition beyond owning the
+    // spell, and it returned, so the tick was spent. A priest standing safely at the back at full
+    // health put the shield straight back up every time it lapsed, all fight. The capture that
+    // prompted this has Power Word: Shield cast eighty six times against sixty actual heals, with
+    // the healer at zero mana while an ally sat under half health, and a four second median gap
+    // between somebody dropping below seventy percent and any heal arriving.
+    //
+    // Taking damage is the condition, since absorbing damage is the whole of what the spell does.
+    // Health is tested as well as attackers, because a caster being shot at from across the room
+    // has nothing in melee with it and is exactly what this is for.
+    //
+    // And a healer with somebody genuinely dying has better use for the tick even when it is being
+    // hit itself, so the heal block further down now outranks this. The thresholds are that
+    // block's own, rather than a second opinion about what counts as urgent.
     if (m_spells.priest.pPowerWordShield &&
+        (!me->GetAttackers().empty() || me->GetHealthPercent() < 90.0f) &&
+        !(GetRole() == ROLE_HEALER && SelectHealTarget(60.0f, 80.0f)) &&
         CanTryToCastSpell(me, m_spells.priest.pPowerWordShield))
     {
         if (DoCastSpell(me, m_spells.priest.pPowerWordShield) == SPELL_CAST_OK)
