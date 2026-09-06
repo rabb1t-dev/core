@@ -121,8 +121,15 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 #define PB_UPDATE_INTERVAL 1000
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
-#define PB_MIN_FOLLOW_ANGLE 0.0f
-#define PB_MAX_FOLLOW_ANGLE 6.0f
+// Behind the leader, not anywhere around them. FollowMovementGenerator measures this angle from
+// the leader's own facing, so zero is directly in front, and the full circle this used to draw
+// from put half the group abreast of or ahead of whoever was steering. In a corridor that drags
+// three or four aggro radii along the walls and pulls exactly what the leader was walking around.
+// The spread is what keeps them from stacking on one spot, so it stays wide enough to fan out
+// across the rear and no wider.
+#define PB_FOLLOW_ANGLE_SPREAD 0.7f
+#define PB_MIN_FOLLOW_ANGLE (M_PI_F - PB_FOLLOW_ANGLE_SPREAD)
+#define PB_MAX_FOLLOW_ANGLE (M_PI_F + PB_FOLLOW_ANGLE_SPREAD)
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
