@@ -48,6 +48,11 @@ static constexpr float PB_CORPSE_RUN_PROGRESS_STEP = 5.0f;
 // made to give up regardless of how busy it looks. The longest run in the game is well inside
 // this, and the point is only to put an end to a ghost pacing a loop it cannot get out of.
 static constexpr int PB_CORPSE_RUN_MAX_TIMEOUTS = 10;
+// How many of those same deadlines a bot standing on its own corpse will hold for the leader to
+// reach the same map before giving up and rising anyway. Shorter than the run allowance above so
+// that a hold always ends by standing up at the corpse, never by the spirit healer collecting a
+// bot that had already walked all the way back.
+static constexpr int PB_LEADER_RETURN_TIMEOUTS = 5;
 
 // How near a dungeon entrance the bot has to be before it is worth checking which area trigger
 // it is standing in. Comfortably wider than the largest entrance box, which runs to about
@@ -468,6 +473,42 @@ bool PartyBotAI::FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, 
     return true;
 }
 
+// Whether to keep lying there having arrived. A group that wiped should come back together, so a
+// bot that has walked all the way to its corpse holds until the leader has reached the same map
+// rather than rising the moment it can and trailing back out to a leader still running in.
+//
+// A ghost leader counts: what is being waited on is the group being in one place, and a leader
+// picking their way back through the dungeon is exactly the moment to stand up beside them.
+bool PartyBotAI::WaitForLeaderBeforeRising()
+{
+    Player* pLeader = GetPartyLeader();
+    if (pLeader && pLeader->IsInWorld() && pLeader->GetMapId() == me->GetMapId())
+    {
+        m_leaderWaitSince = 0;
+        return false;
+    }
+
+    time_t const now = time(nullptr);
+    if (!m_leaderWaitSince)
+        m_leaderWaitSince = now;
+
+    uint32 const timeout = sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_DEATH_RECOVERY_TIMEOUT);
+    if (timeout && (now - m_leaderWaitSince) >= time_t(timeout) * PB_LEADER_RETURN_TIMEOUTS)
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBot] '%s' waited %us on its corpse on map %u for the leader to come back, "
+                 "and is rising without them.",
+                 me->GetName(), uint32(now - m_leaderWaitSince), me->GetMapId());
+        m_leaderWaitSince = 0;
+        return false;
+    }
+
+    // Reaching the corpse ended the run, so the run's own stall deadline must not collect a bot
+    // that is now standing still on purpose. The hold above is what bounds this phase instead.
+    m_ghostStart = now;
+    return true;
+}
+
 // The run back from the graveyard. Returns whether the bot is getting anywhere, so the caller
 // can hold the spirit healer off while it is and fall back to one when it is not.
 //
@@ -501,8 +542,15 @@ bool PartyBotAI::UpdateCorpseRun()
         if (time(nullptr) < pCorpse->GetGhostTime() + time_t(me->GetCorpseReclaimDelay(pCorpse->GetType() == CORPSE_RESURRECTABLE_PVP)))
             return true;
 
+        if (WaitForLeaderBeforeRising())
+            return true;
+
         me->ResurrectPlayer(0.5f);
         me->SpawnCorpseBones();
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBot] '%s' finished its corpse run and rose at its body on map %u after %us.",
+                 me->GetName(), me->GetMapId(), uint32(time(nullptr) - m_ghostStart));
 
         // Deliberately not reported as progress. If that did not take, standing on the body
         // repeating it forever is a stall like any other, and the deadline should collect it.
@@ -636,6 +684,10 @@ void PartyBotAI::UpdateDeadAI()
             me->ResurrectPlayer(0.5f);
             me->SpawnCorpseBones();
             me->CastSpell(me, PB_SPELL_HONORLESS_TARGET, true);
+
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[PartyBot] '%s' revived on the spot on map %u, no corpse run needed.",
+                     me->GetName(), me->GetMapId());
             return;
         }
 
@@ -652,7 +704,12 @@ void PartyBotAI::UpdateDeadAI()
         me->ScheduleRepopAtGraveyard();
         m_ghostSince = now;
         m_ghostStart = now;
+        m_leaderWaitSince = 0;
         m_corpseRunBestDistance = -1.0f;
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[PartyBot] '%s' released after %us dead on map %u and is running back.",
+                 me->GetName(), uint32(now - m_corpseSince), me->GetMapId());
         return;
     }
 
@@ -1170,6 +1227,10 @@ bool PartyBotAI::UseSelfResurrection()
         return false;
 
     me->SetUInt32Value(PLAYER_SELF_RES_SPELL, 0);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[PartyBot] '%s' self resurrected on map %u with spell %u.",
+             me->GetName(), me->GetMapId(), spellId);
     return true;
 }
 
@@ -1489,6 +1550,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     m_corpseSince = 0;
     m_ghostSince = 0;
     m_ghostStart = 0;
+    m_leaderWaitSince = 0;
     m_corpseRunBestDistance = -1.0f;
 
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
