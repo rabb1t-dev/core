@@ -618,6 +618,30 @@ void PartyBotAI::LogPull(char const* what) const
              me->GetDistance2d(m_holdX, m_holdY));
 }
 
+// The bot in the group whose job it is to hold whatever we pull. Nullptr when there is not one,
+// which covers both a group with no tank and the common case of the tank being a real player: in
+// either of those the anchor the order was given from is the best guess available.
+Player* PartyBotAI::GetGroupTank() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive() || pMember->GetMapId() != me->GetMapId())
+            continue;
+
+        PlayerBotEntry const* pEntry = pMember->GetSession() ? pMember->GetSession()->GetBot() : nullptr;
+        if (PartyBotAI const* pAI = pEntry ? dynamic_cast<PartyBotAI const*>(pEntry->ai.get()) : nullptr)
+            if (pAI->m_role == ROLE_TANK)
+                return pMember;
+    }
+
+    return nullptr;
+}
+
 // Walk in, shoot, walk back. Returns true when the sequence has taken the tick for itself.
 bool PartyBotAI::UpdatePullSequence()
 {
@@ -687,8 +711,22 @@ bool PartyBotAI::UpdatePullSequence()
             // after it is asked for, and moving cancels it, so turning for home on the tick the cast
             // began would produce a pull that never happened: the party waits, and the mob never
             // comes. Combat on the target is the acknowledgement that it did happen.
-            if (!me->IsStopped())
-                me->StopMoving();
+            //
+            // The chase from the approach has to be taken away and not merely interrupted. StopMoving
+            // ends the current spline and leaves the generator in place, so the chase re-issued
+            // itself on its very next update and walked the puller back in behind our backs: one
+            // Wailing Caverns capture has a hunter shoot from 35.9 yards and then arrive 5.6 yards
+            // from the mob, twenty yards adrift of the anchor it had just been standing on. That is
+            // the body pull this whole command exists to avoid, performed by the bot that was told
+            // to shoot instead.
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != IDLE_MOTION_TYPE)
+            {
+                if (!me->IsStopped())
+                    me->StopMoving();
+
+                me->GetMotionMaster()->Clear(false, true);
+                me->GetMotionMaster()->MoveIdle();
+            }
 
             if (pTarget->IsInCombat())
             {
@@ -697,15 +735,45 @@ bool PartyBotAI::UpdatePullSequence()
                 return true;
             }
 
+            // Something is still in flight, so leave it be. Asking again here would restart the
+            // very weapon timer the shot is waiting on, and a shot re-asked for every tick never
+            // leaves at all.
+            if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) || me->IsNonMeleeSpellCasted())
+                return true;
+
             // Nothing in flight and nothing landed, so it was interrupted or never started. Ask
-            // again; the sequence timeout above is what stops this going on indefinitely.
-            if (!me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && !me->IsNonMeleeSpellCasted())
-                FirePullAttack(pTarget);
+            // again -- and if it cannot be asked, the mob has moved out of reach or behind something
+            // while we stood here. That became possible the moment standing still was enforced
+            // rather than merely requested: a patrolling mob walks off and leaves the puller rooted,
+            // shooting at nothing until the sequence times out. The approach phase is what knows how
+            // to close a distance, so hand it back.
+            if (!FirePullAttack(pTarget))
+            {
+                m_pullPhase = PULL_PHASE_APPROACH;
+                LogPull("lost the shot, closing again");
+            }
 
             return true;
         }
         case PULL_PHASE_RETURN:
         {
+            // Home is where the tank is standing rather than where the order was given from. The
+            // mob is following the puller, so the whole point of the walk back is to hand it to
+            // whoever is meant to hold it, and stopping short at the commander's old spot drops it
+            // wherever they happened to be standing at the time. Re-aimed as we walk, so a tank
+            // that has shifted in the meantime is still where we end up.
+            if (Player const* pTank = GetGroupTank())
+            {
+                if (pTank->GetDistance2d(m_holdX, m_holdY) > PB_PULL_ANCHOR_TOLERANCE)
+                {
+                    pTank->GetPosition(m_holdX, m_holdY, m_holdZ);
+
+                    // Drop the walk to the old spot so the re-issue below picks up the new one.
+                    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                        me->GetMotionMaster()->Clear(false, true);
+                }
+            }
+
             if (me->GetDistance2d(m_holdX, m_holdY) <= PB_PULL_ANCHOR_TOLERANCE)
             {
                 // Back with the group, and now waiting alongside it. Handing straight back to

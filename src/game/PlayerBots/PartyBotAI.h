@@ -103,6 +103,7 @@ public:
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
     bool FirePullAttack(Unit* pTarget);
+    Player* GetGroupTank() const;
     Unit* SelectHealTargetOutOfReach() const;
     Unit const* GetCurrentFollowTarget() const;
     uint32 ScaleTankRage(uint32 rage) const;
