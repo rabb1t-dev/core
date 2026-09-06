@@ -213,7 +213,14 @@ bool ChatHandler::HandleLookupItemCommand(char* args)
 
     Player* pl = m_session ? m_session->GetPlayer() : nullptr;
 
+    // One chat message per match, and a short fragment matches most of the item table: "e" alone
+    // hits about sixteen thousand of the roughly eighteen thousand items, which overruns the chat
+    // buffer and is enough traffic to drop the client. Only the first few are sent, but counting
+    // continues past the limit so the notice below can say how many were withheld.
+    uint32 constexpr maxResults = 50;
+
     uint32 counter = 0;
+    uint32 shown = 0;
 
     // Search in `item_template`
     for (auto const& itr : sObjectMgr.GetItemPrototypeMap())
@@ -232,7 +239,11 @@ bool ChatHandler::HandleLookupItemCommand(char* args)
 
                     if (Utf8FitTo(name, wnamepart))
                     {
-                        ShowItemListHelper(pProto->ItemId, loc_idx, pl);
+                        if (shown < maxResults)
+                        {
+                            ShowItemListHelper(pProto->ItemId, loc_idx, pl);
+                            ++shown;
+                        }
                         ++counter;
                         continue;
                     }
@@ -246,13 +257,19 @@ bool ChatHandler::HandleLookupItemCommand(char* args)
 
         if (Utf8FitTo(name, wnamepart))
         {
-            ShowItemListHelper(pProto->ItemId, -1, pl);
+            if (shown < maxResults)
+            {
+                ShowItemListHelper(pProto->ItemId, -1, pl);
+                ++shown;
+            }
             ++counter;
         }
     }
 
     if (counter == 0)
         SendSysMessage(LANG_COMMAND_NOITEMFOUND);
+    else if (counter > shown)
+        PSendSysMessage("Showing %u of %u matches. Narrow your search.", shown, counter);
 
     return true;
 }
