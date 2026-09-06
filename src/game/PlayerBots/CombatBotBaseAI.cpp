@@ -2211,12 +2211,39 @@ bool CombatBotBaseAI::HealInjuredTargetDirect(Unit* pTarget)
     return false;
 }
 
+template <class T>
+static float MaxRangeInSpellList(std::set<SpellEntry const*, T> const& spellList)
+{
+    float range = 0.0f;
+    for (SpellEntry const* pSpellEntry : spellList)
+    {
+        if (SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(pSpellEntry->rangeIndex))
+            range = std::max(range, srange->maxRange);
+    }
+    return range;
+}
+
+// How far this bot can actually heal, taken from the heals it knows rather than assumed. What
+// this replaced was a flat thirty yards, which is short of the range of every heal trained in
+// the game: Healing Wave reaches forty. The effect was not that a distant ally got a worse
+// spell, it was that IsValidHealTarget rejected them outright, so SelectHealTarget returned
+// nothing, no heal was attempted, and no failure was recorded anywhere to say why. A tank that
+// had charged ahead was left to die well inside its healer's real range and inside its mana.
+float CombatBotBaseAI::GetMaxHealSpellRange() const
+{
+    float const range = std::max(MaxRangeInSpellList(m_spellListDirectHeal),
+                                 MaxRangeInSpellList(m_spellListPeriodicHeal));
+
+    // Nothing trained yet still has to be judged by something, and the old number does for that.
+    return range > 0.0f ? range : 30.0f;
+}
+
 bool CombatBotBaseAI::IsValidHealTarget(Unit const* pTarget, float healthPercent) const
 {
     return (pTarget->GetHealthPercent() < healthPercent) &&
             me->IsValidHelpfulTarget(pTarget) &&
             me->IsWithinLOSInMap(pTarget) &&
-            me->IsWithinDist(pTarget, 30.0f);
+            me->IsWithinDist(pTarget, GetMaxHealSpellRange());
 }
 
 Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPercent) const
@@ -3391,8 +3418,23 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     if (m_preventCasting)
         return SPELL_FAILED_DONT_REPORT;
 
+    // SetFacingToObject gives up immediately on a unit that is moving, and a tank taking a
+    // target back is moving almost by definition, because the run to the new mob is the whole
+    // of what taking it back looks like. So nothing turned, the arc check inside the cast
+    // rejected it, and Taunt and Sunder Armor failed with SPELL_FAILED_UNIT_NOT_INFRONT during
+    // exactly the seconds the group had lost the target and needed them.
+    //
+    // Setting the orientation outright is the way out for a bot: there is no client sending it
+    // a facing to respect, and the movespline SetFacingToObject would launch is both unwanted
+    // mid-chase and the reason it refuses in the first place. Only when the bot really is not
+    // facing the target, so a bot already running at its target is left alone.
     if (me != pTarget)
-        me->SetFacingToObject(pTarget);
+    {
+        if (me->IsStopped())
+            me->SetFacingToObject(pTarget);
+        else if (!me->HasInArc(pTarget))
+            me->SetOrientation(me->GetAngle(pTarget));
+    }
 
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);

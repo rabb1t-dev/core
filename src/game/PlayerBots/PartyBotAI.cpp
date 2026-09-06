@@ -19,6 +19,7 @@
 #include "Corpse.h"
 #include "CreatureAI.h"
 #include "MotionMaster.h"
+#include "TargetedMovementGenerator.h"
 #include "ObjectMgr.h"
 #include "Map.h"
 #include "Database/SQLStorages.h"
@@ -130,6 +131,16 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 #define PB_FOLLOW_ANGLE_SPREAD 0.7f
 #define PB_MIN_FOLLOW_ANGLE (M_PI_F - PB_FOLLOW_ANGLE_SPREAD)
 #define PB_MAX_FOLLOW_ANGLE (M_PI_F + PB_FOLLOW_ANGLE_SPREAD)
+
+// How hurt somebody has to be before a healer will leave formation to get within range of them.
+// Chip damage is not worth walking for and a healer that chases every scratch is a healer out
+// of position when something real happens, so this sits well below the threshold it heals at.
+#define PB_HEAL_REPOSITION_PERCENT 70.0f
+// Where it stands once it gets there. Comfortably inside every heal in the game, and chosen
+// short because in a corridor the binding constraint is line of sight rather than range: the
+// distance that fixes being unable to see somebody is closer than the distance that fixes
+// being unable to reach them.
+#define PB_HEAL_REPOSITION_DIST 10.0f
 
 bool PartyBotAI::OnSessionLoaded(PlayerBotEntry* entry, WorldSession* sess)
 {
@@ -1241,6 +1252,62 @@ bool PartyBotAI::UseSelfResurrection()
     return true;
 }
 
+// The worst-off member this bot could heal if only it were standing somewhere else. Range and
+// line of sight are the two things a healer can fix by walking, so they are the only reasons
+// anything is returned here: somebody merely above the heal threshold is not a problem that
+// being nearer would solve.
+Unit* PartyBotAI::SelectHealTargetOutOfReach() const
+{
+    if (IsInDuel())
+        return nullptr;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    float const reach = GetMaxHealSpellRange();
+    float worst = PB_HEAL_REPOSITION_PERCENT;
+    Unit* pTarget = nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive() || !pMember->IsInWorld() ||
+            pMember->GetMapId() != me->GetMapId())
+            continue;
+
+        if (pMember->GetHealthPercent() >= worst)
+            continue;
+
+        if (!me->IsValidHelpfulTarget(pMember))
+            continue;
+
+        // Already reachable, so the rotation has it and there is nothing to walk towards.
+        if (me->IsWithinDist(pMember, reach) && me->IsWithinLOSInMap(pMember))
+            continue;
+
+        worst = pMember->GetHealthPercent();
+        pTarget = pMember;
+    }
+
+    return pTarget;
+}
+
+// Who the follow generator is currently pointed at, or nothing if the bot is not following.
+// Needed because "is this bot following" and "is this bot following the leader" stopped being
+// the same question once a healer could be off following somebody it needs to reach.
+Unit const* PartyBotAI::GetCurrentFollowTarget() const
+{
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+        return nullptr;
+
+    if (FollowMovementGenerator<Player> const* pMoveGen =
+            dynamic_cast<FollowMovementGenerator<Player> const*>(me->GetMotionMaster()->GetCurrent()))
+        return pMoveGen->GetTarget();
+
+    return nullptr;
+}
+
 Player* PartyBotAI::SelectShieldTarget() const
 {
     if (IsInDuel())
@@ -1696,7 +1763,25 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     {
         if (!pVictim)
         {
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+            // A healer with somebody hurt and out of reach has somewhere more useful to be than
+            // tucked in behind the leader. This is the other half of the thirty yard heal cap:
+            // even with the range read from the spell, the leader and the tank are not always in
+            // the same place, and nothing here ever connected being unable to reach a heal
+            // target to doing something about it. A tank that charges ahead pulls that gap open
+            // by itself, and the healer used to just stand still and watch.
+            Unit* pOutOfReach = (m_role == ROLE_HEALER) ? SelectHealTargetOutOfReach() : nullptr;
+            Unit const* pFollowing = GetCurrentFollowTarget();
+
+            if (pOutOfReach)
+            {
+                if (pFollowing != pOutOfReach)
+                    me->GetMotionMaster()->MoveFollow(pOutOfReach, PB_HEAL_REPOSITION_DIST,
+                                                      frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+            }
+            // Testing the target and not merely the generator type, because a healer coming back
+            // from a reposition is still following, just following the wrong unit, and a bare
+            // type check leaves it trailing whoever it went to help for the rest of the fight.
+            else if (pFollowing != pLeader)
                 me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST), frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
         }
         else
@@ -1848,14 +1933,33 @@ void PartyBotAI::LogCombatTick() const
         }
     }
 
+    // Why the worst-off member is not being healed, which is the gap that let the thirty yard
+    // cap hide for as long as it did. Everything logged elsewhere is an attempt: a decision
+    // thrown out before DoCastSpell was ever called left no trace at all, so six seconds of a
+    // healer standing over a dying tank with full mana read as six seconds of nothing
+    // happening. These are the tests IsValidHealTarget applies, in its order.
+    float const reach = GetMaxHealSpellRange();
+    char const* reason = "none";
+    if (pWorst)
+    {
+        if (!me->IsValidHelpfulTarget(pWorst))
+            reason = "not_helpful";
+        else if (!me->IsWithinLOSInMap(pWorst))
+            reason = "no_los";
+        else if (!me->IsWithinDist(pWorst, reach))
+            reason = "out_of_range";
+        else
+            reason = "reachable";
+    }
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f incoming=%d casting=%u attackers=%u",
+             "wdist=%.1f reach=%.0f wreason=%s incoming=%d casting=%u attackers=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",
              pWorst ? pWorst->GetHealthPercent() : 0.0f,
-             pWorst ? me->GetDistance(pWorst) : 0.0f,
+             pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
              uint32(me->GetAttackers().size()));
@@ -2405,14 +2509,21 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
         }
     }
 
+    // Healing outranks laying a totem, which it did not before: totems were summoned here and
+    // returned, so a healer never reached the block below on any tick it had a totem missing.
+    // A totem is worth a small steady trickle to the group and a heal is worth whoever is about
+    // to die, and the capture that prompted this has a shaman putting down Strength of Earth
+    // while the tank fell past forty percent on the same second.
+    //
+    // Pre-healing stays underneath totems, because that is a luxury and a totem is not.
+    if (GetRole() == ROLE_HEALER && FindAndHealInjuredAlly(50.0f, 90.0f))
+        return;
+
     if (SummonShamanTotems())
         return;
 
     if (GetRole() == ROLE_HEALER)
     {
-        if (FindAndHealInjuredAlly(50.0f, 90.0f))
-            return;
-
         if (FindAndPreHealTarget())
             return;
     }
@@ -3338,6 +3449,25 @@ bool PartyBotAI::ShouldTauntTarget(Unit const* pVictim) const
     return true;
 }
 
+// The rage floors above are what a level sixty tank in a raid can hold, and a levelling one
+// cannot come near them. Rage is earned as a share of damage dealt and taken weighed against the
+// character's own level, and the pool a low level warrior can build inside one fight is a
+// fraction of the same numbers: the capture that prompted this has a level fifteen tank spend a
+// whole dungeon under thirty rage, so Shield Block never fired once and the surplus dump never
+// fired at all, which are two thirds of what the rotation is.
+//
+// Scaled rather than lowered, so that max level is left exactly as it was measured, and scaled
+// off a floor rather than straight off the level so the thresholds still mean something at
+// fifteen instead of collapsing to nearly zero and handing back the pooling they exist to do.
+uint32 PartyBotAI::ScaleTankRage(uint32 rage) const
+{
+    uint32 const maxLevel = sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL);
+    if (!maxLevel || me->GetLevel() >= maxLevel)
+        return rage;
+
+    return uint32(rage * (0.4f + 0.6f * float(me->GetLevel()) / float(maxLevel)));
+}
+
 void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
 {
     // Defensive Stance first and before anything else is attempted, because most of what
@@ -3389,7 +3519,7 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // out of combat, and then only when Battle Shout happened to be up already, which is to say
     // almost never.
     if (m_spells.warrior.pBloodrage &&
-        me->GetPower(POWER_RAGE) < PB_TANK_RAGE_LOW &&
+        me->GetPower(POWER_RAGE) < ScaleTankRage(PB_TANK_RAGE_LOW) &&
         CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
     {
         DoCastSpell(me, m_spells.warrior.pBloodrage);
@@ -3400,7 +3530,7 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // above a rage floor so that the ten it costs is never the ten Shield Slam needed.
     if (m_spells.warrior.pShieldBlock && IsWearingShield(me) &&
        !me->GetAttackers().empty() &&
-        me->GetPower(POWER_RAGE) >= PB_TANK_RAGE_BLOCK &&
+        me->GetPower(POWER_RAGE) >= ScaleTankRage(PB_TANK_RAGE_BLOCK) &&
         CanTryToCastSpell(me, m_spells.warrior.pShieldBlock))
     {
         DoCastSpell(me, m_spells.warrior.pShieldBlock);
@@ -3411,7 +3541,7 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // to make. The floor is set high enough that what is spent here is genuinely spare. The test
     // for this used to be inverted, dumping only below thirty rage and pooling in silence above
     // it, so a tank being hit hard enough to be flush was also the one doing least with it.
-    if (me->GetPower(POWER_RAGE) >= PB_TANK_RAGE_DUMP)
+    if (me->GetPower(POWER_RAGE) >= ScaleTankRage(PB_TANK_RAGE_DUMP))
     {
         if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pCleave))

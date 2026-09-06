@@ -78,6 +78,9 @@ public:
     Player* FindGroupHealer() const;
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
     bool WaitForLeaderBeforeRising();
+    Unit* SelectHealTargetOutOfReach() const;
+    Unit const* GetCurrentFollowTarget() const;
+    uint32 ScaleTankRage(uint32 rage) const;
     void LogCombatTick() const;
     bool UpdateCorpseRun();
     void UpdateDeadAI();
