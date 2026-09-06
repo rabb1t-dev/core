@@ -143,6 +143,15 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 // How often a bot writes a state line, held apart from the tick rate above so that speeding the
 // rotation up does not multiply the log by the same factor.
 static constexpr uint32 PB_TICK_LOG_INTERVAL_MS = 1000;
+
+// Clearance demanded on top of a mob's own aggro radius before a bot will stand up inside it. A bot
+// rises on half health with no buffs and cannot afford to be judged on the edge of the band, and a
+// boss whose radius is measured against a level sixty raider is not generous to a level twenty bot.
+static constexpr float PB_RISE_SAFETY_MARGIN = 8.0f;
+// How close a ghost has to get to a chosen rise spot before standing up there. Only used when the
+// spot is not the body: rising anywhere inside the reclaim radius is what walks a ghost the last
+// thirty yards onto a corpse lying under whatever killed it.
+static constexpr float PB_RISE_ARRIVE_DIST = 5.0f;
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
 // Behind the leader, not anywhere around them. FollowMovementGenerator measures this angle from
@@ -963,8 +972,83 @@ bool PartyBotAI::DrinkAndEat()
     return needToEat || needToDrink;
 }
 
+// Whether a bot could stand up here without something immediately killing it again.
+//
+// The aggro rule the living bots move by, asked about one spot instead of a route. Margin on top of
+// the mob's own radius because a bot rises with half its health and no buffs, so the edge of the
+// band is not somewhere to cut fine.
+bool PartyBotAI::IsPositionSafeToRise(float x, float y, float z) const
+{
+    return me->FindUnengagedCreatureAggroedByPosition(x, y, z, PB_RISE_SAFETY_MARGIN) == nullptr;
+}
+
+// Where to stand up, given that the body may be lying somewhere it cannot be stood up on.
+//
+// A corpse inside a boss's aggro radius is the case this exists for: rising on it aggroes the boss
+// at half health, which kills the bot, which leaves a corpse in the same place, which it rises on
+// again. The reclaim radius is much wider than any aggro radius, so there is nearly always
+// somewhere within reach of the body that is out of reach of whatever killed it.
+//
+// False means there is nowhere, which is worth telling apart from success rather than papering over:
+// the caller waits instead, since rising into the boss is not an improvement on staying down.
+bool PartyBotAI::FindSafeRisePosition(Corpse* pCorpse, float& x, float& y, float& z) const
+{
+    pCorpse->GetPosition(x, y, z);
+
+    // The body itself, which is the answer almost every time and costs one query to confirm.
+    if (IsPositionSafeToRise(x, y, z))
+        return true;
+
+    float const corpseX = x;
+    float const corpseY = y;
+    float const corpseZ = z;
+
+    // Outward, so the bot gives up as little ground as the danger allows and still has a short walk
+    // to the body afterwards. Kept inside the reclaim radius throughout, because a spot the corpse
+    // cannot be reclaimed from is not a spot to walk to.
+    static constexpr float PB_RISE_SEARCH_RADII[] = { 15.0f, 22.0f, 28.0f, 34.0f };
+    static constexpr int PB_RISE_SEARCH_ANGLES = 8;
+
+    for (float const radius : PB_RISE_SEARCH_RADII)
+    {
+        for (int i = 0; i < PB_RISE_SEARCH_ANGLES; ++i)
+        {
+            float const angle = (2.0f * M_PI_F * float(i)) / float(PB_RISE_SEARCH_ANGLES);
+            float testX = corpseX + radius * cos(angle);
+            float testY = corpseY + radius * sin(angle);
+            float testZ = corpseZ;
+
+            // Asked of the map rather than assumed flat, since a spot hanging in the air or buried
+            // in rock is no use even when nothing can reach it.
+            me->UpdateAllowedPositionZ(testX, testY, testZ);
+
+            if (!IsPositionSafeToRise(testX, testY, testZ))
+                continue;
+
+            // Line of sight to the body, which keeps the search on this side of the wall it is
+            // circling. Without it the far side of a boss room scores as safe on distance alone.
+            if (!pCorpse->IsWithinLOS(testX, testY, testZ + 2.0f))
+                continue;
+
+            x = testX;
+            y = testY;
+            z = testZ;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool PartyBotAI::ShouldAutoRevive() const
 {
+    // Nothing is worth reviving into. This is the death loop in one line: a wipe at a boss leaves
+    // every corpse inside its radius, the group revives on the spot the moment the boss resets,
+    // and the boss pulls them again at half health. Falling through to the release below sends the
+    // bot to the graveyard instead, which is somewhere safe by construction.
+    if (!IsPositionSafeToRise(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ()))
+        return false;
+
     // Deliberately no shortcut for the DEAD state here. A released ghost is mid-recovery,
     // and reviving it on the spot would undo the release and destroy its own corpse.
     Group* pGroup = me->GetGroup();
@@ -1172,8 +1256,27 @@ bool PartyBotAI::UpdateCorpseRun()
     float x, y, z;
     bool const corpseIsOnThisMap = pCorpse->GetMapId() == me->GetMapId();
 
+    // Where to rise from, which is the body unless the body is somewhere that cannot be stood up
+    // on. When it is, the walk aims at the safe spot instead and the bot rises when it gets there
+    // rather than anywhere inside the reclaim radius: the shortcut below is what walks a ghost the
+    // last thirty yards onto a corpse lying under a boss.
+    bool riseAnywhereInRange = true;
+
     if (corpseIsOnThisMap)
-        pCorpse->GetPosition(x, y, z);
+    {
+        if (!FindSafeRisePosition(pCorpse, x, y, z))
+        {
+            // Nowhere within reach of the body is out of reach of what is standing over it. Rising
+            // is a death, so the run reports itself as still going and the deadline collects it into
+            // a spirit healer resurrection at the graveyard, which is the one place that is safe.
+            LogDeathHold("its body is inside something's reach and there is nowhere safe to rise");
+            return true;
+        }
+
+        // Whether the spot chosen is the body. When it is, nothing has changed and the shortcut
+        // stands; when it is not, the point of it is where the bot stands, so it has to arrive.
+        riseAnywhereInRange = pCorpse->GetDistance2d(x, y) < 1.0f;
+    }
     else if (!FindInstanceEntrance(pCorpse->GetMapId(), x, y, z))
     {
         // A corpse left inside an instance cannot be walked to, and without a way back in
@@ -1183,7 +1286,8 @@ bool PartyBotAI::UpdateCorpseRun()
 
     float const distance = me->GetDistance(x, y, z);
 
-    if (corpseIsOnThisMap && distance <= CORPSE_RECLAIM_RADIUS)
+    if (corpseIsOnThisMap &&
+        distance <= (riseAnywhereInRange ? CORPSE_RECLAIM_RADIUS : PB_RISE_ARRIVE_DIST))
     {
         // Arriving is not the end of it. The reclaim delay escalates to two minutes across
         // repeated deaths, and waiting it out is progress rather than a stall.

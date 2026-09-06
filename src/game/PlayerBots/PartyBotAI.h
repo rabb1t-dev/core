@@ -90,6 +90,8 @@ public:
     bool CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget) const;
     bool DrinkAndEat();
     bool ShouldAutoRevive() const;
+    bool IsPositionSafeToRise(float x, float y, float z) const;
+    bool FindSafeRisePosition(Corpse* pCorpse, float& x, float& y, float& z) const;
     bool IsGroupInCombat() const;
     Player* FindGroupHealer() const;
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
