@@ -1549,6 +1549,18 @@ bool HandlePartyBotComeToMeHelper(Player* pBot, Player* pPlayer)
             if (pBot->GetStandState() != UNIT_STAND_STATE_STAND)
                 pBot->SetStandState(UNIT_STAND_STATE_STAND);
 
+            // Being sent for ends whatever was keeping it in place. A bot still holding from an
+            // earlier pull arrived and then stood exactly where it landed, because the follow in
+            // UpdateAI is skipped for a held bot, and standing at the commander's feet ignoring
+            // them is not what asking it to come over means. Ordinary AI issues the follow once it
+            // finds the bot standing still, so clearing these is all that is needed for it to fall
+            // back in behind the group on arrival.
+            if (pAI->IsPulling())
+                pAI->EndPull();
+
+            if (pAI->IsHolding())
+                pAI->ReleaseHold();
+
             pBot->InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
             pBot->MonsterMove(pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ());
             return true;

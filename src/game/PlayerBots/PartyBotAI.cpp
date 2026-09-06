@@ -551,10 +551,21 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
         if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
             return false;
 
-        // A ranged attack will not start while the caster is moving, and stopping is wanted here
-        // anyway: this is the spot the puller shoots from and comes back to.
+        // A ranged attack will not start while the caster is moving, and the generator has to be
+        // taken away rather than merely interrupted for that to hold. StopMoving on its own ends the
+        // current spline and leaves the chase in place, so it re-issued itself on its very next
+        // update, the shot was cancelled for moving, and the next tick asked for it again: a hunter
+        // stuck trying to shoot and never landing one, until a hold command cleared the generator
+        // for it and the same shot went off immediately.
+        //
+        // Safe to do unconditionally here because the two checks above have already refused every
+        // case where the shot is not on. By this line the puller is committed to firing, and firing
+        // means standing still.
         if (!me->IsStopped())
             me->StopMoving();
+
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
 
         me->SetFacingToObject(pTarget);
         me->Attack(pTarget, false);
