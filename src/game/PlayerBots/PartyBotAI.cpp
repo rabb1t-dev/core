@@ -449,9 +449,24 @@ bool PartyBotAI::ShouldBreakHold() const
     if (!pTarget || !pTarget->IsAlive())
         return true;
 
-    // Deliberately measured against this bot and not against the anchor. The party is spread over
-    // several yards, and the bot the mob reaches first is the one that most needs to be allowed to
-    // fight back.
+    // Measured against the whole party rather than against this bot alone. A pull is over once the
+    // mob reaches the people waiting for it, and the member it walks up to is rarely the one at the
+    // back: a hunter standing thirty yards behind the tank is never approached, so on a per-bot test
+    // its own hold never lifted and it stayed held for the entire fight. It still shot, because a
+    // hold only suppresses movement, which is why this looked like a pet problem rather than a hold
+    // one -- the pet is commanded only on ticks where the bot is free to move, so it stood there.
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        {
+            Player* pMember = itr->getSource();
+            if (pMember && pMember->IsAlive() && pMember->IsWithinDist(pTarget, PB_PULL_ARRIVE_DIST))
+                return true;
+        }
+
+        return false;
+    }
+
     return me->IsWithinDist(pTarget, PB_PULL_ARRIVE_DIST);
 }
 

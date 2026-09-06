@@ -1141,6 +1141,16 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
                 {
                     if (pMember->IsValidAttackTarget(pTarget))
                     {
+                        // An order to attack outranks whatever the bot was told to wait for, and
+                        // both of these states refuse movement on every tick, so leaving either in
+                        // place accepts the order and then declines to act on it: the bot stands
+                        // where it was, and its pet stays passive along with it.
+                        if (pAI->IsPulling())
+                            pAI->EndPull();
+
+                        if (pAI->IsHolding())
+                            pAI->ReleaseHold();
+
                         // Told to go, so the aggro rule stands aside for the trip. Without this the
                         // order is accepted and then quietly declined: the route to anything nobody
                         // is fighting yet runs into that mob's own radius, which was enough to
