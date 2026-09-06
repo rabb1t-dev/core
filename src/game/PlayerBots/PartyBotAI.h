@@ -109,6 +109,7 @@ public:
     void HoldPet(bool hold);
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
+    SpellEntry const* GetInstantPullSpell() const;
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
     bool IsWorthDotting(Unit const* pVictim) const;
@@ -211,6 +212,9 @@ public:
     ObjectGuid m_pullTargetGuid;
     PartyBotPullPhase m_pullPhase = PULL_PHASE_NONE;
     time_t m_pullSince = 0;
+    // When the shot currently being waited on was asked for, so that a queued autorepeat which is
+    // never going to fire can be told apart from one that simply has not come round yet.
+    time_t m_pullShotSince = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

@@ -10934,6 +10934,21 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
     {
         DisableSpline();
 
+        // A spline that ends because the unit got there clears the spline flag and the forward flag
+        // and leaves the rest of the moving mask exactly as it was. For anything with a client that
+        // costs nothing, because the client sends its own stop and the flags are replaced wholesale.
+        // A bot has no client, so whatever is left over stays set for good, and every later question
+        // about whether it is moving is answered wrongly.
+        //
+        // Autorepeat attacks are what this ruins, and they fail in the worst possible way: a shot
+        // asked for while the flags say moving is neither fired nor cancelled, so a hunter stands
+        // with a pending Auto Shot that will never leave and a wanding priest does the same, both
+        // looking idle for no stated reason and neither logging a thing. Cutting a spline short goes
+        // through StopMoving, which clears the whole mask, which is why this only ever bit bots that
+        // had finished walking rather than bots that were interrupted mid-stride.
+        if (IsPlayer() && static_cast<Player*>(this)->IsBot())
+            RemoveUnitMovementFlag(MOVEFLAG_MASK_MOVING);
+
         if (HasPendingSplineDone() && !IsPlayer() && !GetPossessorGuid().IsPlayer())
             SetSplineDonePending(false);
     }

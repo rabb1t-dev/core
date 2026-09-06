@@ -217,6 +217,10 @@ static constexpr int PB_PULL_HOLD_TIMEOUT = 45;
 // How long the puller itself keeps trying before giving the attempt up. Shorter than the hold above,
 // so that a puller which cannot reach or cannot fire stops before the party does.
 static constexpr int PB_PULL_SEQUENCE_TIMEOUT = 30;
+// How long to let a shot that has been asked for stay pending before treating it as never coming.
+// Two ranged swings at the slowest weapon in the game, so a shot genuinely on its way is never cut
+// off, and a shot that is stuck no longer costs the whole sequence timeout in silence.
+static constexpr int PB_PULL_SHOT_WAIT = 4;
 // How near the anchor counts as being back with the group. Loose enough that pathing around the
 // people already standing there does not leave the puller circling for a spot.
 static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
@@ -578,53 +582,84 @@ float PartyBotAI::GetPullStandoffDistance() const
     return maxRange > 2.0f ? maxRange - 2.0f : maxRange;
 }
 
+// An instant shot to open a pull with, for the classes that have one.
+//
+// Auto Shot is an autorepeat, which makes asking for it a request rather than an act: the cast only
+// starts the weapon timer, and the shot leaves later on conditions that are tested again at the
+// moment it fires. When one of those tests fails there is nothing to see -- the shot is neither
+// fired nor cancelled, so the puller stands holding a shot that will never leave, the mob is never
+// aggroed, and the whole sequence times out in silence. Arcane Shot resolves on cast and has the
+// mob in combat on the same tick, which is the property a pull actually needs.
+SpellEntry const* PartyBotAI::GetInstantPullSpell() const
+{
+    if (m_spells.hunter.pArcaneShot && me->IsSpellReady(m_spells.hunter.pArcaneShot))
+        return m_spells.hunter.pArcaneShot;
+
+    return nullptr;
+}
+
 // Take the shot, if it can be taken from where the bot is standing.
 bool PartyBotAI::FirePullAttack(Unit* pTarget)
 {
     if (!me->IsWithinLOSInMap(pTarget))
         return false;
 
-    if (uint32 const spellId = GetRangedAttackSpellId())
+    uint32 const rangedSpellId = GetRangedAttackSpellId();
+    if (!rangedSpellId)
     {
-        SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(spellId);
-        if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
+        // Nothing to shoot with, so the pull is made with a fist. Worth doing rather than refusing:
+        // it still brings the mob back to a group that is standing still, which is the point, and it
+        // is what a warrior without a gun would have to do anyway.
+        if (!me->CanReachWithMeleeAutoAttack(pTarget))
             return false;
 
-        // A ranged attack will not start while the caster is moving, and the generator has to be
-        // taken away rather than merely interrupted for that to hold. StopMoving on its own ends the
-        // current spline and leaves the chase in place, so it re-issued itself on its very next
-        // update, the shot was cancelled for moving, and the next tick asked for it again: a hunter
-        // stuck trying to shoot and never landing one, until a hold command cleared the generator
-        // for it and the same shot went off immediately.
-        //
-        // Safe to do unconditionally here because the two checks above have already refused every
-        // case where the shot is not on. By this line the puller is committed to firing, and firing
-        // means standing still.
-        if (!me->IsStopped())
-            me->StopMoving();
-
-        me->GetMotionMaster()->Clear(false, true);
-        me->GetMotionMaster()->MoveIdle();
-
         me->SetFacingToObject(pTarget);
-        me->Attack(pTarget, false);
-
-        // Cast directly rather than through DoCastSpell, which would refuse this outright.
-        // GetThreatHeadroom gives no allowance at all against a mob that is not yet fighting
-        // anybody, on the grounds that casting into one is the pull. That is the right answer for a
-        // damage dealer opening too early and the wrong one here, where pulling is the instruction
-        // given. Auto Shot already reached the weapon by this route for the same reason.
-        return me->CastSpell(pTarget, spellId, false) == SPELL_CAST_OK;
+        return me->Attack(pTarget, true);
     }
 
-    // Nothing to shoot with, so the pull is made with a fist. Worth doing rather than refusing: it
-    // still brings the mob back to a group that is standing still, which is the point, and it is
-    // what a warrior without a gun would have to do anyway.
-    if (!me->CanReachWithMeleeAutoAttack(pTarget))
+    SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(rangedSpellId);
+    if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
         return false;
 
+    // Forced, and not conditional on IsStopped. These are two different questions that are usually
+    // answered the same way and were being treated as one: IsStopped reads a unit state, while
+    // whether a ranged attack may fire is decided by the movement flags, and only StopMoving clears
+    // those. A spline that ends because the bot arrived clears the spline flag and the forward flag
+    // and leaves the rest of the moving mask behind, and with no client to send a stop packet there
+    // is nothing else that ever clears it. So a puller that had finished walking counted as stopped,
+    // skipped the call, and kept a movement flag that made every shot it queued unfireable.
+    //
+    // That is the whole bug, and it explains why it looked so arbitrary: pulls where the shot went
+    // off mid-walk worked, because cutting a spline short goes through StopMoving and clears the
+    // flags, while every pull that fired from a standstill at the anchor failed. It is also why a
+    // hold command fixed it by hand.
+    me->StopMoving(true);
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
+
     me->SetFacingToObject(pTarget);
-    return me->Attack(pTarget, true);
+    me->Attack(pTarget, false);
+
+    // Cast directly rather than through DoCastSpell, which would refuse this outright.
+    // GetThreatHeadroom gives no allowance at all against a mob that is not yet fighting
+    // anybody, on the grounds that casting into one is the pull. That is the right answer for a
+    // damage dealer opening too early and the wrong one here, where pulling is the instruction
+    // given. Auto Shot already reached the weapon by this route for the same reason.
+    //
+    // The instant shot is preferred where there is one, so that the pull is an act with an
+    // observable result rather than a queued intention. Auto Shot is still started underneath it,
+    // because it is what keeps the damage coming once the mob is on its way.
+    if (SpellEntry const* pInstant = GetInstantPullSpell())
+    {
+        if (pInstant->IsTargetInRange(me, pTarget) &&
+            me->CastSpell(pTarget, pInstant->Id, false) == SPELL_CAST_OK)
+        {
+            me->CastSpell(pTarget, rangedSpellId, false);
+            return true;
+        }
+    }
+
+    return me->CastSpell(pTarget, rangedSpellId, false) == SPELL_CAST_OK;
 }
 
 bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float anchorZ)
@@ -642,6 +677,7 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     m_pullTargetGuid = pTarget->GetObjectGuid();
     m_pullPhase = PULL_PHASE_APPROACH;
     m_pullSince = time(nullptr);
+    m_pullShotSince = 0;
     m_holdX = anchorX;
     m_holdY = anchorY;
     m_holdZ = anchorZ;
@@ -687,6 +723,7 @@ void PartyBotAI::EndPull()
 {
     m_pullPhase = PULL_PHASE_NONE;
     m_pullSince = 0;
+    m_pullShotSince = 0;
     me->SetAttackOrders(ObjectGuid());
     me->SetCasterChaseDistance(0.0f);
 
@@ -846,8 +883,44 @@ bool PartyBotAI::UpdatePullSequence()
             // Something is still in flight, so leave it be. Asking again here would restart the
             // very weapon timer the shot is waiting on, and a shot re-asked for every tick never
             // leaves at all.
+            //
+            // Bounded, because "in flight" and "never going to leave" look identical from here. A
+            // queued autorepeat that fails its checks at firing time is neither fired nor cancelled,
+            // so this branch held the sequence for its full timeout without logging a line: the
+            // fourteen seconds of complete silence in the capture that found this bug. Waiting a
+            // couple of weapon swings is generous for a shot that is genuinely coming, and anything
+            // longer is a stall worth describing and abandoning.
             if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) || me->IsNonMeleeSpellCasted())
+            {
+                if (!m_pullShotSince)
+                    m_pullShotSince = time(nullptr);
+
+                if ((time(nullptr) - m_pullShotSince) < PB_PULL_SHOT_WAIT)
+                    return true;
+
+                // Everything the firing path tests, so the next one of these does not need a
+                // debugging session to read. Movement is first because it is the one that silently
+                // holds an autorepeat forever, and it is deliberately reported from both sources:
+                // they disagree, and the disagreement was the bug.
+                if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] pull bot='%s' shot never left after %us: moving=%u "
+                             "stopped=%u moveflags=0x%x rangedready=%u rangedtimer=%u dist=%.1f",
+                             me->GetName(), uint32(PB_PULL_SHOT_WAIT), uint32(me->IsMoving() ? 1 : 0),
+                             uint32(me->IsStopped() ? 1 : 0), me->GetUnitMovementFlags(),
+                             uint32(me->IsAttackReady(RANGED_ATTACK) ? 1 : 0),
+                             me->GetAttackTimer(RANGED_ATTACK), me->GetDistance(pTarget));
+                }
+
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+                m_pullShotSince = 0;
+                m_pullPhase = PULL_PHASE_CLOSE;
+                LogPull("shot never left, closing in");
                 return true;
+            }
+
+            m_pullShotSince = 0;
 
             // Nothing in flight and nothing landed, so it was interrupted or never started. Ask
             // again -- and if it cannot be asked, the mob has moved out of reach or behind something
