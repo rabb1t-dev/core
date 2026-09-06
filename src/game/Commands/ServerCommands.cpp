@@ -379,9 +379,29 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
     }
     else
     {
-        // Whatever is already banked stays banked. It is an ordinary resource once the switch is
-        // gone, and letting it drain the usual way beats confiscating xp a player can see.
-        SendSysMessage("Permanent rested xp is now off. Rested pools already banked will drain as normal.");
+        // Emptied rather than left to drain. Everything banked while the switch was on was put there
+        // by the switch, so leaving it behind means the bonus xp keeps arriving for hours after it
+        // was supposedly turned off, which reads as the command not having worked.
+        uint32 drained = 0;
+
+        HashMapHolder<Player>::MapType const& players = sObjectAccessor.GetPlayers();
+        for (auto const& itr : players)
+        {
+            Player* pPlayer = itr.second;
+            if (!pPlayer || !pPlayer->IsInWorld() || pPlayer->GetRestBonus() <= 0.0f)
+                continue;
+
+            pPlayer->SetRestBonus(0.0f);
+            ++drained;
+        }
+
+        // Offline characters carry their pool in the database and would otherwise bring it back with
+        // them at the next login, which is the same problem arriving late.
+        CharacterDatabase.Execute("UPDATE `characters` SET `rest_bonus` = 0 WHERE `rest_bonus` > 0");
+
+        PSendSysMessage("Permanent rested xp is now off and banked pools are emptied. %u online "
+                        "character%s drained, offline ones cleared in the database.",
+                        drained, drained == 1 ? "" : "s");
     }
 
     PSendSysMessage("This lasts until the next restart, when Rest.AlwaysFull in the config decides again.");
