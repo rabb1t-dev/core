@@ -596,9 +596,20 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     m_holdY = anchorY;
     m_holdZ = anchorZ;
 
-    // The puller has to be free to move, whatever it was doing before.
+    // Everything it was doing stops here. Half of the reports of this command not working were a
+    // puller that was mid-cast, holding position from a previous pull, or already swinging at
+    // something else, and none of that gives way on its own: the sequence would set off only once
+    // whatever it was busy with had finished with it.
     m_holdPosition = false;
     m_isBuffing = false;
+
+    me->InterruptNonMeleeSpells(true);
+    me->AttackStop();
+
+    if (!me->IsStopped())
+        me->StopMoving();
+
+    me->GetMotionMaster()->Clear(false, true);
 
     // On orders now, which suspends the aggro rule. Otherwise the generators refuse every step of the
     // approach: the mob being pulled is by definition one the group is not fighting yet, which is
@@ -695,6 +706,24 @@ bool PartyBotAI::UpdatePullSequence()
     {
         case PULL_PHASE_APPROACH:
         {
+            // Come here first, then shoot from here. Firing on the way in is what this used to do,
+            // and it made the command unpredictable: a puller that happened to have a view of the
+            // mob from wherever it was standing shot from there, which could be anywhere, and the
+            // walk home then started from a spot nobody had chosen.
+            //
+            // Where the order was given is also the one place known to have a view of the target,
+            // since whoever gave it had the mob selected to do so.
+            if (me->GetDistance2d(m_holdX, m_holdY) > PB_PULL_ANCHOR_TOLERANCE)
+            {
+                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+                {
+                    me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
+                    LogPull("walking to where the order came from");
+                }
+
+                return true;
+            }
+
             if (FirePullAttack(pTarget))
             {
                 m_pullPhase = PULL_PHASE_FIRE;
@@ -702,35 +731,27 @@ bool PartyBotAI::UpdatePullSequence()
                 return true;
             }
 
-            // Sight first, because chasing does not supply it and quietly appears to work. The
-            // standoff below holds the puller at very nearly its weapon's maximum, and the chase
-            // generator counts that as arrived, so a puller with a wall between it and the mob
-            // stopped at thirty yards and stayed there: never in sight to shoot, never far enough
-            // away to walk. From the outside the command did nothing at all.
-            //
-            // Where the order came from is the one place known to have a view of the target, since
-            // whoever gave it had the mob selected to give it. That is the anchor already recorded
-            // for the walk home, so the puller is being sent to the spot it would return to anyway.
-            bool const canSee = me->IsWithinLOSInMap(pTarget);
-            bool const atAnchor = me->GetDistance2d(m_holdX, m_holdY) <= PB_PULL_ANCHOR_TOLERANCE;
-
-            if (!canSee && !atAnchor)
+            m_pullPhase = PULL_PHASE_CLOSE;
+            LogPull("no shot from here, closing in");
+            return true;
+        }
+        case PULL_PHASE_CLOSE:
+        {
+            if (FirePullAttack(pTarget))
             {
-                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-                {
-                    me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
-                    LogPull("no sight, walking to where the order came from");
-                }
-
+                m_pullPhase = PULL_PHASE_FIRE;
+                LogPull("took the shot");
                 return true;
             }
 
-            // Standing where the order was given and still unable to see it, so the view that
-            // prompted the order is not available from the ground: closing the distance is the only
-            // thing left to try. The standoff is dropped to melee for that, deliberately, because
-            // keeping it is what caused the puller to stop short of a wall in the first place.
-            float const standoff = canSee ? GetPullStandoffDistance() : 0.0f;
-            me->SetCasterChaseDistance(standoff);
+            // Not shootable from where the order was given, so either the view that prompted it is
+            // not available at head height or the mob is past the weapon's reach from there. Closing
+            // is all that is left, and the standoff is dropped to melee for it deliberately: keeping
+            // the standoff is what had a puller stop dead thirty yards from a wall, never in sight
+            // to shoot and never far enough out to walk, doing nothing at all as far as anyone
+            // watching could tell. FirePullAttack above takes the shot the moment one exists, so the
+            // walk ends early whenever it can and only reaches melee when no shot was ever possible.
+            me->SetCasterChaseDistance(0.0f);
 
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
                 me->GetMotionMaster()->MoveChase(pTarget, 1.0f, 0.0f);
@@ -777,11 +798,14 @@ bool PartyBotAI::UpdatePullSequence()
             // again -- and if it cannot be asked, the mob has moved out of reach or behind something
             // while we stood here. That became possible the moment standing still was enforced
             // rather than merely requested: a patrolling mob walks off and leaves the puller rooted,
-            // shooting at nothing until the sequence times out. The approach phase is what knows how
-            // to close a distance, so hand it back.
+            // shooting at nothing until the sequence times out.
+            //
+            // Closing, not approaching. Walking back to where the order came from would be walking
+            // away from the mob that has just wandered off, and it is a spot already known not to
+            // have a shot from it.
             if (!FirePullAttack(pTarget))
             {
-                m_pullPhase = PULL_PHASE_APPROACH;
+                m_pullPhase = PULL_PHASE_CLOSE;
                 LogPull("lost the shot, closing again");
             }
 

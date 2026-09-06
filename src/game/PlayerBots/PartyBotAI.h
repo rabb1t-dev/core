@@ -25,10 +25,15 @@
 // because a ranged attack does not leave the weapon the moment it is asked for: it is an auto repeat
 // spell that fires on the weapon timer, and moving cancels it. A puller that turned for home as soon
 // as it had cast would arrive back with the group having pulled nothing at all.
+// Walk to where the order was given, shoot from there, wait for the mob to commit, walk it to the
+// tank. Closing is a separate phase from approaching rather than a branch inside it, because the two
+// walk in opposite directions: sharing a phase, arriving at the anchor and then setting off towards
+// the mob reads as having left the anchor, and the puller paces between the two.
 enum PartyBotPullPhase
 {
     PULL_PHASE_NONE,
     PULL_PHASE_APPROACH,
+    PULL_PHASE_CLOSE,
     PULL_PHASE_FIRE,
     PULL_PHASE_RETURN,
 };
