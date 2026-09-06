@@ -110,6 +110,8 @@ public:
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
     bool IsWorthDotting(Unit const* pVictim) const;
+    void UpdateLootRolls();
+    RollVote DecideLootRoll(uint32 itemId) const;
     void RememberCorpseToLoot(ObjectGuid guid);
     void UpdateCorpseLooting();
     bool CanAnyPlayerLoot(Creature* pCreature) const;

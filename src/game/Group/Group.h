@@ -369,6 +369,12 @@ class Group
         void StartLootRoll(Creature* lootTarget, LootMethod method, Loot* loot, uint8 itemSlot);
         void EndRoll(Loot* loot);
 
+        // Rolls waiting on votes. Read-only because voting has to go through CountRollVote, which
+        // finds the roll again by target and slot and can finish and delete it: a caller holding
+        // anything from this list across a vote is holding a pointer that may already be gone.
+        // Bots need it to notice that they have been asked to roll, having no client to ask them.
+        Rolls const& GetRolls() const { return RollId; }
+
         void LinkMember(GroupReference* pRef) { m_memberMgr.insertFirst(pRef); }
         void DelinkMember(GroupReference* /*pRef*/) { }
 

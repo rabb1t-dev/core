@@ -41,6 +41,10 @@ class PlayerAI
         virtual void UpdateAI(uint32 const /*diff*/);
         virtual void MovementInform(uint32 MovementType, uint32 Data = 0) {}
 
+        // An item has landed in this character's bags. A real player sees it and decides what to do
+        // with it; an AI has to be told, and this is every route in -- trade, loot, won roll.
+        virtual void OnReceivedItem(Item const* /*pItem*/) {}
+
         // == Helpers =====================================
         bool CanCastSpell(Unit* pTarget, SpellEntry const* pSpell, bool isTriggered, bool checkControlled = true);
 

@@ -3558,6 +3558,32 @@ void CombatBotBaseAI::AddHunterAmmo()
     }
 }
 
+// How this bot scores gear, or nothing if no row resolves for its class at all.
+//
+// Shared by the two questions that need the same answer: whether to wear something already in the
+// bags, and whether something on a corpse is worth rolling for. Scoring a drop on one set of weights
+// and then re-scoring it on another after winning it is how a bot ends up rolling for gear it then
+// declines to wear.
+StatWeights const* CombatBotBaseAI::GetStatWeights() const
+{
+    // Prefer the roster's authored spec; fall back to the short role name so a member that
+    // has not been given one still has a weight row to resolve against.
+    std::string spec = m_specName;
+    if (spec.empty())
+    {
+        switch (m_role)
+        {
+            case ROLE_TANK:      spec = "tank"; break;
+            case ROLE_HEALER:    spec = "healer"; break;
+            case ROLE_MELEE_DPS: spec = "fury"; break;
+            case ROLE_RANGE_DPS: spec = "shadow-pve"; break;
+            default: break;
+        }
+    }
+
+    return sItemEvaluator.GetWeights(me->GetClass(), spec);
+}
+
 void CombatBotBaseAI::EquipOrUseNewItem()
 {
     // Learn any proficiency a new piece of gear asks for before asking whether it can be
@@ -3577,22 +3603,7 @@ void CombatBotBaseAI::EquipOrUseNewItem()
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
         learnProficiency(me->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
 
-    // Prefer the roster's authored spec; fall back to the short role name so a member that
-    // has not been given one still has a weight row to resolve against.
-    std::string spec = m_specName;
-    if (spec.empty())
-    {
-        switch (m_role)
-        {
-            case ROLE_TANK:      spec = "tank"; break;
-            case ROLE_HEALER:    spec = "healer"; break;
-            case ROLE_MELEE_DPS: spec = "fury"; break;
-            case ROLE_RANGE_DPS: spec = "shadow-pve"; break;
-            default: break;
-        }
-    }
-
-    if (StatWeights const* pWeights = sItemEvaluator.GetWeights(me->GetClass(), spec))
+    if (StatWeights const* pWeights = GetStatWeights())
     {
         sItemEvaluator.OptimizeEquipment(me, *pWeights);
         return;

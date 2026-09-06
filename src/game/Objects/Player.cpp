@@ -22096,6 +22096,9 @@ void Player::OnReceivedItem(Item const* item)
 {
     if (item->GetProto()->Quality >= sWorld.getConfig(CONFIG_UINT32_ITEM_INSTANTSAVE_QUALITY))
         SetSaveTimer(1);
+
+    if (AI())
+        AI()->OnReceivedItem(item);
 }
 
 bool Player::HasFreeBattleGroundQueueId() const

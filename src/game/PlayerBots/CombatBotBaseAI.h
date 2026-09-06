@@ -5,6 +5,8 @@
 #include "SpellEntry.h"
 #include "Player.h"
 
+struct StatWeights;
+
 struct PlayerPremadeSpecTemplate;
 
 struct HealSpellCompare
@@ -150,6 +152,13 @@ public:
     CombatBotRoles GetRole() const;
 
     void EquipOrUseNewItem();
+    StatWeights const* GetStatWeights() const;
+
+    // An item has arrived, from a trade, a corpse or a won roll. Only noted here: the wearing of it
+    // is done out of combat, because re-solving the whole loadout mid-fight costs a tick the bot
+    // owes to the fight and can swap the weapon out from under a swing.
+    void OnReceivedItem(Item const* /*pItem*/) override { m_equipCheckPending = true; }
+
     bool AddItemToInventory(uint32 itemId, uint32 count = 1);
     void AddHunterAmmo();
     uint8 GetHighestHonorRankFromEquippedItems() const;
@@ -647,6 +656,7 @@ public:
     // class rotation reaches for and which is defined on this class, can decline. A battleground bot
     // never sets it.
     bool m_holdPosition = false;
+    bool m_equipCheckPending = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
 

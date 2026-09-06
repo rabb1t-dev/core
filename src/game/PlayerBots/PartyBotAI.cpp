@@ -15,6 +15,7 @@
 */
 
 #include "PartyBotAI.h"
+#include "ItemEvaluator.h"
 #include "Player.h"
 #include "Corpse.h"
 #include "CreatureAI.h"
@@ -2107,6 +2108,85 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
     CombatBotBaseAI::OnPacketReceived(packet);
 }
 
+// Whether this bot wants the thing on the corpse badly enough to roll for it.
+//
+// Need for a genuine upgrade and pass on everything else, deliberately: greed would have the group
+// hoovering up every vendor grey and every drop a real player was hoping for, and winning things it
+// will not wear is how a bot's bags fill until it can no longer loot at all. Passing costs the bot
+// nothing, because an item nobody needs still goes to whoever did want it.
+RollVote PartyBotAI::DecideLootRoll(uint32 itemId) const
+{
+    ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(itemId);
+    if (!pProto)
+        return ROLL_PASS;
+
+    // Not a question of taste. A bot that cannot wear the thing has no upgrade to measure, and
+    // CanUseItem is what rules out the wrong armour class, the wrong weapon, and the level it has
+    // not reached yet.
+    if (me->CanUseItem(pProto) != EQUIP_ERR_OK)
+        return ROLL_PASS;
+
+    StatWeights const* pWeights = GetStatWeights();
+    if (!pWeights)
+        return ROLL_PASS;
+
+    // Scored against what is worn in that slot, so the answer accounts for the thing being replaced
+    // rather than the drop in isolation. Passed as a prototype with no Item behind it, since the
+    // instance does not exist until somebody wins it: random-property enchantments are invisible
+    // here, which understates a few drops and never overstates one.
+    float const delta = sItemEvaluator.UpgradeDelta(me, pProto, nullptr, *pWeights);
+    if (delta <= 0.0f)
+        return ROLL_PASS;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[BotCombat] roll bot='%s' needs '%s' (%u), worth %.1f "
+                 "more than what it is wearing", me->GetName(), pProto->Name1, itemId, delta);
+    }
+
+    return ROLL_NEED;
+}
+
+// Answer any roll this bot has been asked for and has not yet voted on.
+//
+// Bots are entered into rolls exactly as players are, and with nobody to answer for them the item
+// waited out its timer and went to whoever did vote. That is why the warrior stood over a shield it
+// wanted: not indifference, but no way to say so.
+void PartyBotAI::UpdateLootRolls()
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return;
+
+    // Details copied out before voting rather than voting mid-iteration. A vote can be the last one
+    // a roll was waiting for, which finishes it, erases it from the list and deletes it, leaving
+    // both the iterator and the Roll dangling. One vote per update makes that impossible, and a bot
+    // ticks far more often than a roll's sixty seconds.
+    ObjectGuid lootedTarget;
+    uint32 itemSlot = 0;
+    uint32 itemId = 0;
+
+    for (Roll const* pRoll : pGroup->GetRolls())
+    {
+        if (!pRoll->isValid())
+            continue;
+
+        auto const vote = pRoll->playerVote.find(me->GetObjectGuid());
+        if (vote == pRoll->playerVote.end() || vote->second != ROLL_NOT_EMITED_YET)
+            continue;
+
+        lootedTarget = pRoll->lootedTargetGUID;
+        itemSlot = pRoll->itemSlot;
+        itemId = pRoll->itemid;
+        break;
+    }
+
+    if (lootedTarget.IsEmpty())
+        return;
+
+    pGroup->CountRollVote(me, lootedTarget, itemSlot, DecideLootRoll(itemId));
+}
+
 void PartyBotAI::RememberCorpseToLoot(ObjectGuid guid)
 {
     if (!guid.IsCreature())
@@ -2420,6 +2500,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         return;
     }
 
+    // Ahead of everything below, and not confined to the out-of-combat path: a roll opens the moment
+    // its corpse is looted, which in a chain pull is in the middle of the next fight, and a roll left
+    // unanswered until the fight ends has already timed out.
+    UpdateLootRolls();
+
     // Back on our feet, by whichever route. Clearing here covers all of them, so a later
     // death cannot inherit stale timestamps and skip straight to the spirit healer.
     m_corpseSince = 0;
@@ -2520,6 +2605,16 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         // Ahead of drinking, which returns for as long as it lasts. Behind it a corpse would wait
         // out the whole break and be gone by the end of it.
         UpdateCorpseLooting();
+
+        // Same reason, and the reason this is not left until the group stops to rest: gear won or
+        // looted is worth nothing until it is worn, and the next pull may come before any sitting
+        // down happens.
+        if (m_equipCheckPending)
+        {
+            m_equipCheckPending = false;
+            EquipOrUseNewItem();
+            UpdateVisualHonorRankBasedOnItems();
+        }
 
         if (DrinkAndEat())
         {
