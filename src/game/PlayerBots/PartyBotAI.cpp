@@ -2648,20 +2648,20 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     else if (m_holdPosition && ShouldBreakHold())
         ReleaseHold();
 
+    // A shot or a wand already in flight is no reason to stop thinking, and this used to return as
+    // though it were. Everything below was skipped for as long as the autorepeat lasted, which is
+    // most of a fight for a hunter: the pet was never given a target, because the command that does
+    // that is further down, and a priest that had started wanding stopped healing until the wand
+    // stopped. Only hunters got a rotation out of it, and only by calling one from in here.
+    //
+    // The interrupts stay, because both cases below are shots that will never leave: nothing to
+    // shoot at, or a target inside the minimum range a bow needs. Dropping the autorepeat lets the
+    // rotation reach for something it can actually do.
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {
-        // Stop auto shot if no target.
-        if (!me->GetVictim())
+        if (!me->GetVictim() ||
+            (me->GetClass() == CLASS_HUNTER && me->GetCombatDistance(me->GetVictim()) < 8.0f))
             me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
-        else if (me->GetClass() == CLASS_HUNTER)
-        {
-            if (me->GetCombatDistance(me->GetVictim()) < 8.0f)
-                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
-            else
-                UpdateInCombatAI_Hunter();
-        }
-
-        return;
     }
 
     if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
@@ -3807,7 +3807,22 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             me->GetMotionMaster()->Clear();
             if (RunAwayFromTarget(pVictim))
                 return;
+
+            // Backing off was refused, which the aggro rule makes ordinary in a corridor, and the
+            // mob is inside the range the bow will not fire at. Without this the hunter has nothing
+            // left it is willing to do and stands there for the rest of the fight, having stopped
+            // itself moving on the line above. Melee is poor for a hunter and beats watching.
+            me->Attack(pVictim, true);
+            return;
         }
+
+        // Melee is off after a pull, which asks for a shot with Attack's melee flag cleared so the
+        // bot does not walk in swinging. Nothing turned it back on afterwards, so a puller that
+        // ended up in melee anyway stood and watched. Only claimed at a range where a swing can
+        // land, so a hunter shooting from thirty yards is not marked as meleeing something it
+        // cannot reach.
+        if (pVictim->CanReachWithMeleeAutoAttack(me) && !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            me->Attack(pVictim, true);
     }
 }
 
