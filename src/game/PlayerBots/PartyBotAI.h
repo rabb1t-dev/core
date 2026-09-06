@@ -171,6 +171,9 @@ public:
     std::vector<RaidTargetIcon> m_marksToCC;
     std::vector<RaidTargetIcon> m_marksToFocus;
     ShortTimeTracker m_updateTimer;
+    // Throttle for the per-tick state line. Mutable because logging is the one thing a const
+    // reporting function is allowed to change about the bot.
+    mutable uint32 m_lastTickLog = 0;
     ObjectGuid m_leaderGuid;
     ObjectGuid m_cloneGuid;
     uint8 m_race = 0;

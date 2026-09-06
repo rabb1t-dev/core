@@ -3391,8 +3391,10 @@ bool CombatBotBaseAI::IsCombatLogged() const
     if (!sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
         return false;
 
-    CombatBotRoles const role = GetRole();
-    return role == ROLE_TANK || role == ROLE_HEALER;
+    // Every role, having started as tank and healer only. Narrowing it kept the lines readable
+    // while those two were the question, and then made the next question unanswerable: asked why
+    // the group's damage was low, the log had nothing at all to say about the bots dealing it.
+    return GetRole() != ROLE_INVALID;
 }
 
 void CombatBotBaseAI::LogCombatCast(Unit const* pTarget, SpellEntry const* pSpellEntry, SpellCastResult result) const

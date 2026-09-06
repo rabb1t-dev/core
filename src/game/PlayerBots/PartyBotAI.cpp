@@ -128,7 +128,21 @@ static constexpr uint32 PB_TANK_RAGE_LOW = 200;
 static constexpr uint32 PB_TANK_RAGE_BLOCK = 300;
 static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 
-#define PB_UPDATE_INTERVAL 1000
+// How often a bot gets to think, which is the ceiling on everything it does.
+//
+// This was a second, against a global cooldown of one and a half, and the two do not divide: a bot
+// acting at zero is refused at one and acts again at two, so every ability lands on a two second
+// cycle and a rotation that should be uninterrupted gives up a quarter of itself to arithmetic. The
+// cost is invisible in the cast log, which shows only casts that happened and nothing about the
+// half second each one waited. Four ticks to the second divides the cooldown exactly and leaves the
+// rotation to be limited by its own costs and cooldowns instead.
+//
+// Cheap enough at this rate: a tick is target selection and a walk down a list of spell checks, for
+// a handful of bots, against a server that is idle between them.
+#define PB_UPDATE_INTERVAL 250
+// How often a bot writes a state line, held apart from the tick rate above so that speeding the
+// rotation up does not multiply the log by the same factor.
+static constexpr uint32 PB_TICK_LOG_INTERVAL_MS = 1000;
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
 // Behind the leader, not anywhere around them. FollowMovementGenerator measures this angle from
@@ -2898,6 +2912,16 @@ void PartyBotAI::UpdateOutOfCombatAI()
 // the rotation is fine and the rage is not there.
 void PartyBotAI::LogCombatTick() const
 {
+    // Throttled to roughly a line a second per bot, independently of how often the bot thinks. The
+    // tick rate is a tuning knob and the log is read by eye and by script; tying the two together
+    // means every change to the first silently rescales the second, and the rate that makes a good
+    // rotation does not make a readable log.
+    uint32 const now = WorldTimer::getMSTime();
+    if (m_lastTickLog && WorldTimer::getMSTimeDiff(m_lastTickLog, now) < PB_TICK_LOG_INTERVAL_MS)
+        return;
+
+    m_lastTickLog = now;
+
     Unit* pVictim = me->GetVictim();
 
     // Rage and energy are held at ten times the displayed number, and these lines get read
@@ -2951,6 +2975,32 @@ void PartyBotAI::LogCombatTick() const
                  pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
                  myThreat, topThreat, topName, uint32(holding),
                  gcd, uint32(me->GetShapeshiftForm()));
+        return;
+    }
+
+    if (m_role == ROLE_MELEE_DPS || m_role == ROLE_RANGE_DPS)
+    {
+        // Whether the two things that actually produce most of a damage bot's output are running.
+        // A rotation can look busy in the cast log and still be worth very little if the swing
+        // timer or the shot timer is not turning underneath it, and neither leaves a cast line.
+        uint32 const autoRepeat = me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) ? 1 : 0;
+        bool const meleeOn = pVictim && me->HasUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+        // Distance and reach together, since out of range is the commonest reason a bot with a
+        // target is doing nothing at all, and the two roles fail it in opposite directions: a
+        // melee bot stopped short of its victim, a caster driven inside its own standoff.
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
+                 "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u gcd=%u",
+                 me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
+                 me->GetHealthPercent(), power,
+                 pVictim ? pVictim->GetName() : "none",
+                 pVictim ? pVictim->GetHealthPercent() : 0.0f,
+                 pVictim ? me->GetDistance(pVictim) : 0.0f,
+                 uint32(meleeOn ? 1 : 0), autoRepeat,
+                 uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
+                 uint32(me->IsStopped() ? 0 : 1),
+                 uint32(m_holdPosition ? 1 : 0), gcd);
         return;
     }
 
