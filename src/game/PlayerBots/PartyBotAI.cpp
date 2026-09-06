@@ -2314,31 +2314,52 @@ RollVote PartyBotAI::DecideLootRoll(uint32 itemId) const
     if (!pProto)
         return ROLL_PASS;
 
+    // Every branch reports itself, passes included. A pass is the answer that looks like a
+    // malfunction from the outside -- a blue drops, a bot that obviously wants it says nothing, and
+    // there is no way to tell a considered decline from a broken one. Declining a rare shield
+    // because the green in the slot carries stamina is correct and completely invisible, so the
+    // score that decided it is written down next to the verdict.
+    char const* reason;
+    float delta = 0.0f;
+    RollVote vote = ROLL_PASS;
+
     // Not a question of taste. A bot that cannot wear the thing has no upgrade to measure, and
     // CanUseItem is what rules out the wrong armour class, the wrong weapon, and the level it has
     // not reached yet.
     if (me->CanUseItem(pProto) != EQUIP_ERR_OK)
-        return ROLL_PASS;
+        reason = "cannot use it at all";
+    else if (StatWeights const* pWeights = GetStatWeights())
+    {
+        // Scored against what is worn in that slot, so the answer accounts for the thing being
+        // replaced rather than the drop in isolation. Passed as a prototype with no Item behind it,
+        // since the instance does not exist until somebody wins it: random-property enchantments
+        // are invisible here, which understates a few drops and never overstates one.
+        delta = sItemEvaluator.UpgradeDelta(me, pProto, nullptr, *pWeights);
 
-    StatWeights const* pWeights = GetStatWeights();
-    if (!pWeights)
-        return ROLL_PASS;
-
-    // Scored against what is worn in that slot, so the answer accounts for the thing being replaced
-    // rather than the drop in isolation. Passed as a prototype with no Item behind it, since the
-    // instance does not exist until somebody wins it: random-property enchantments are invisible
-    // here, which understates a few drops and never overstates one.
-    float const delta = sItemEvaluator.UpgradeDelta(me, pProto, nullptr, *pWeights);
-    if (delta <= 0.0f)
-        return ROLL_PASS;
+        if (delta > 0.0f)
+        {
+            reason = "better than what it is wearing";
+            vote = ROLL_NEED;
+        }
+        else
+            reason = "no better than what it is wearing";
+    }
+    else
+    {
+        // Worth saying out loud rather than folding into the ordinary pass. A missing weight row
+        // makes a bot decline everything forever, which is a configuration gap wearing the costume
+        // of a decision.
+        reason = "has no stat weights to judge it by";
+    }
 
     if (IsCombatLogged())
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[BotCombat] roll bot='%s' needs '%s' (%u), worth %.1f "
-                 "more than what it is wearing", me->GetName(), pProto->Name1, itemId, delta);
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[BotCombat] roll bot='%s' %s '%s' (%u): %s, worth "
+                 "%+.1f", me->GetName(), vote == ROLL_NEED ? "needs" : "passes on", pProto->Name1,
+                 itemId, reason, delta);
     }
 
-    return ROLL_NEED;
+    return vote;
 }
 
 // Answer any roll this bot has been asked for and has not yet voted on.
