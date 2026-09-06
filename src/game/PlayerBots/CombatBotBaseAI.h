@@ -155,6 +155,8 @@ public:
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
+    bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
+    bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();
 
     // Who a totem dropped right now would actually reach.
@@ -633,6 +635,13 @@ public:
     bool m_isBuffing = false;
     bool m_preventCasting = false;
     bool m_receivedBgInvite = false;
+    // Throttles for the two refusal logs. Mutable because the checks that write them are questions
+    // about a position and nothing else, and const is worth keeping for that; the alternative is
+    // every caller of a read-only predicate having to be non-const to carry a log timestamp.
+    // Counted separately so that a bot refusing spots all fight cannot hide the one line explaining
+    // why its fear never went off.
+    mutable time_t m_lastPullLog = 0;
+    mutable time_t m_lastFearLog = 0;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
 

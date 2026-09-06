@@ -32,6 +32,81 @@
 #include "Geometry.h"
 #include "Utilities/Random.h"
 
+// Slack on top of the creature's own radius, so a route is not approved a hand's breadth outside it
+// and then drifted over the line by the next step.
+static constexpr float PULL_CHECK_MARGIN = 3.0f;
+
+// The creature this path would wake, or nothing if the whole route is clear.
+//
+// Every point is tested and not merely the destination, because a clean spot reached by walking
+// through a pack is not a clean spot. That is the limit the checks in the bot AI ran into: they
+// judged the endpoint a move was aimed at, which reduces pulls and cannot prevent them, and they
+// judged it once when the move was issued, while both of the generators here re-pick a destination
+// continuously for as long as the target keeps moving. This is the only place with the finished path
+// in hand and a chance to decline it.
+//
+// Applies to nothing that has not asked for it. Real players never reach these generators for their
+// own movement, so the Player instantiation is bots and charmed units, and the flag narrows it again
+// to the party bots that want the rule.
+static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
+{
+    Player const* pPlayer = owner.ToPlayer();
+    if (!pPlayer || !pPlayer->AvoidsAggroPulls())
+        return nullptr;
+
+    PointsArray const& points = path.getPath();
+    if (points.empty())
+        return nullptr;
+
+    // Hoisted out of the loop below: this is a cell visit over sixty yards and the path can be
+    // dozens of points long.
+    std::list<Unit*> enemies;
+    owner.GetEnemyListInRadiusAround(&owner, Unit::AGGRO_POSITION_SEARCH_RADIUS, enemies);
+    if (enemies.empty())
+        return nullptr;
+
+    for (Unit* pEnemy : enemies)
+    {
+        Creature* pCreature = pEnemy->ToCreature();
+        if (!pCreature)
+            continue;
+
+        for (auto const& point : points)
+        {
+            if (owner.WouldPositionAggroCreature(pCreature, point.x, point.y, point.z, PULL_CHECK_MARGIN))
+                return pCreature;
+        }
+    }
+
+    return nullptr;
+}
+
+// Decline the move and stand still. Returning without launching leaves the generator to ask again on
+// its next update, so a bot held here resumes by itself the moment the route clears, whether that is
+// because the pack got pulled by someone else, died, or the target moved somewhere reachable.
+static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path)
+{
+    Creature* pCreature = FindPullOnPath(owner, path);
+    if (!pCreature)
+        return false;
+
+    if (Player* pPlayer = owner.ToPlayer())
+    {
+        if (pPlayer->ShouldLogPullBlock())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] pullblock bot='%s' lvl=%u refused a route past '%s' (lvl %u, aggro "
+                     "%.1fy, %.1fy away) on map %u and is holding position",
+                     pPlayer->GetName(), pPlayer->GetLevel(), pCreature->GetName(),
+                     pCreature->GetLevel(), pCreature->GetAttackDistance(&owner),
+                     pCreature->GetDistance(&owner), pPlayer->GetMapId());
+    }
+
+    if (!owner.movespline->Finalized())
+        owner.StopMoving();
+
+    return true;
+}
+
 //-----------------------------------------------//
 template<class T, typename D>
 bool TargetedMovementGeneratorMedium<T, D>::IsFarEnoughToMoveStationaryFollower(T &owner) const
@@ -202,6 +277,12 @@ void ChaseMovementGenerator<T>::_setTargetLocation(T &owner)
 
     if (!m_bReachable && !!(pathType & PATHFIND_INCOMPLETE) && owner.HasUnitState(UNIT_STATE_ALLOW_INCOMPLETE_PATH))
         m_bReachable = true;
+
+    // Strictly, and including the chase to a target the group is already fighting. A bot that will
+    // not take the only route to the mob stands there and contributes nothing, which is the cost
+    // knowingly accepted here: an idle bot loses a fight, an extra pack loses the group.
+    if (RefusePathThatWouldPull(owner, path))
+        return;
 
     m_bRecalculateTravel = false;
     if (!transport && owner.HasDistanceCasterMovement() &&
@@ -649,6 +730,12 @@ void FollowMovementGenerator<T>::_setTargetLocation(T &owner)
 
     if (!m_bReachable && !!(pathType & PATHFIND_INCOMPLETE) && owner.HasUnitState(UNIT_STATE_ALLOW_INCOMPLETE_PATH))
         m_bReachable = true;
+
+    // The follow is where most of the pulling actually came from, and the one an endpoint check in
+    // the AI could never have covered: a bot trailing its leader re-picks this spot every time the
+    // leader moves, so the route is chosen fresh several times a second all the way down a corridor.
+    if (RefusePathThatWouldPull(owner, path))
+        return;
 
     m_bRecalculateTravel = false;
 

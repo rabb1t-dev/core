@@ -1988,6 +1988,17 @@ class Player final: public Unit
         void SetSession(WorldSession* s);
         bool IsBot() const { return m_session->GetBot() != nullptr; }
 
+        // Whether the movement generators should refuse a path that would wake a creature this
+        // player's group is not already fighting. Opt in rather than keyed off IsBot, because a
+        // battleground bot shares the same AI base and Alterac Valley is full of neutral creatures
+        // standing next to the only route anywhere: the same rule that stops a party bot pulling an
+        // extra pack in a dungeon would leave an AV bot refusing to leave the starting cave.
+        bool AvoidsAggroPulls() const { return m_avoidAggroPulls; }
+        void SetAvoidAggroPulls(bool enable) { m_avoidAggroPulls = enable; }
+        // Throttle for the refusal log, which is asked on every recomputed path and would otherwise
+        // write hundreds of identical lines a second while a bot holds still.
+        bool ShouldLogPullBlock() const;
+
         void BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) const override;
         void DestroyForPlayer(Player const* target) const override;
         void SendLogXPGain(uint32 givenXP, Unit const* victim, uint32 restXP) const;
@@ -2392,6 +2403,8 @@ class Player final: public Unit
         bool   m_enableInstanceSwitch;
         bool   m_smartInstanceRebind;
         uint32 m_homebindTimer;
+        bool   m_avoidAggroPulls = false;
+        mutable time_t m_lastPullBlockLog = 0;
 
         void ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr);
     public:

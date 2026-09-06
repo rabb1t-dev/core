@@ -1100,6 +1100,12 @@ class Unit : public SpellCaster
         // Script Helpers
         uint8 GetEnemyCountInRadiusAround(Unit const* pTarget, float radius) const;
         void GetEnemyListInRadiusAround(Unit const* pTarget, float radius, std::list<Unit*>& targets) const;
+        // Aggro-range awareness, used to keep the player bots from walking their group into packs
+        // it is not already fighting. The rule and the search are separate so that a caller judging
+        // a whole path can gather candidates once and test every point against them cheaply.
+        static float const AGGRO_POSITION_SEARCH_RADIUS;
+        bool WouldPositionAggroCreature(Creature const* pCreature, float x, float y, float z, float margin) const;
+        Creature* FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const;
         Unit* SelectNearestTarget(float dist) const;
         Unit* SelectRandomUnfriendlyTarget(Unit const* except = nullptr, float radius = ATTACK_DISTANCE, bool inFront = false, bool isValidAttackTarget = false, bool notPvpEnabling = false) const;
         Unit* SelectRandomFriendlyTarget(Unit const* except = nullptr, float radius = ATTACK_DISTANCE, bool inCombat = false) const;

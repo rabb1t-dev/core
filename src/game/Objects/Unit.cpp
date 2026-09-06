@@ -9727,6 +9727,55 @@ void Unit::GetEnemyListInRadiusAround(Unit const* pTarget, float radius, std::li
     Cell::VisitAllObjects(pTarget, searcher, radius);
 }
 
+// Whether this creature would notice this unit standing at the given position, and is not already
+// fighting so that noticing would mean a new fight. Written for the player bots, which had no notion
+// of a mob's aggro range and walked their groups into extra packs constantly, but expressed on Unit
+// because it is a question about a position and a creature and nothing about a bot.
+//
+// Split from the search below so that a caller judging many positions at once, which is what testing
+// a whole path amounts to, can gather the candidates once and then ask this cheaply about each point.
+// The search is a cell visit over sixty yards and belongs outside that loop.
+//
+// The radius is asked of the creature rather than assumed, because GetAttackDistance folds in the
+// level difference between it and this unit, and the eighteen or so yards an even level pull suggests
+// is far short of the truth for a group levelling through a dungeon above its level, which is exactly
+// when the extra pack is fatal.
+bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float y, float z, float margin) const
+{
+    if (!pCreature || !pCreature->IsAlive())
+        return false;
+
+    // Already awake, so it cannot be pulled a second time. Counting it would rule out most of the
+    // room during the very fight the caller is trying to move within.
+    if (pCreature->IsInCombat())
+        return false;
+
+    float const aggroRadius = pCreature->GetAttackDistance(this);
+    if (aggroRadius <= 0.0f)
+        return false;
+
+    return pCreature->GetDistance(x, y, z) < aggroRadius + margin;
+}
+
+// How far out to look for creatures a move might wake. Has to cover the furthest point of any path
+// being judged plus the widest radius the unit could end up sitting inside once it arrives.
+float const Unit::AGGRO_POSITION_SEARCH_RADIUS = 60.0f;
+
+Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const
+{
+    std::list<Unit*> enemies;
+    GetEnemyListInRadiusAround(this, AGGRO_POSITION_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        Creature* pCreature = pEnemy->ToCreature();
+        if (WouldPositionAggroCreature(pCreature, x, y, z, margin))
+            return pCreature;
+    }
+
+    return nullptr;
+}
+
 Unit* Unit::SelectRandomUnfriendlyTarget(Unit const* except /*= nullptr*/, float radius /*= ATTACK_DISTANCE*/, bool inFront /*= false*/, bool isValidAttackTarget /*= false*/, bool notPvpEnabling /*= false*/) const
 {
     std::list<Unit*> targets;

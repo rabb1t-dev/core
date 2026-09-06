@@ -145,12 +145,6 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 // How far a bot backs off when it flees melee. Shared by the move and by the check that runs
 // ahead of it, so the position tested is always the position taken.
 static constexpr float PB_DISTANCING_RANGE = 15.0f;
-// How far out to look for mobs a move might wake. Has to cover the furthest spot a bot will
-// pick plus the widest radius it could end up sitting inside once it arrives.
-static constexpr float PB_PULL_CHECK_SEARCH_RADIUS = 60.0f;
-// Slack on top of the mob's own radius, so a destination is not chosen a hand's breadth outside
-// it and then drifted over the line by the next step.
-static constexpr float PB_PULL_CHECK_MARGIN = 3.0f;
 // Seconds between lines while a bot is down. It is asked once a second for as long as the bot
 // stays dead, which is precisely the stretch that is worth reading and far too often to log.
 static constexpr time_t PB_DEATH_LOG_INTERVAL = 5;
@@ -237,45 +231,6 @@ Player* PartyBotAI::GetPartyLeader() const
         return originalLeader;
     }
     return nullptr;
-}
-
-// Whether standing here would wake something the group is not already fighting.
-//
-// Nothing in this class has ever asked that question. Target selection is safe on its own,
-// since SelectAttackTarget only ever returns something already engaged, so bots do not choose
-// extra fights. They walk into them: a caster backing away from melee, a ranged bot holding
-// twenty five yards, melee spreading around the target. Every one of those picks a spot with
-// reference only to the mob being fought.
-//
-// The radius is asked of each mob rather than assumed, because GetAttackDistance folds in the
-// level difference between that mob and this bot, and the eighteen yards an even level pull
-// suggests is far short of the truth for a group levelling through a dungeon above its level,
-// which is exactly when the extra pack is fatal.
-bool PartyBotAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
-{
-    std::list<Unit*> enemies;
-    me->GetEnemyListInRadiusAround(me, PB_PULL_CHECK_SEARCH_RADIUS, enemies);
-
-    for (Unit* pEnemy : enemies)
-    {
-        Creature* pCreature = pEnemy->ToCreature();
-        if (!pCreature || !pCreature->IsAlive())
-            continue;
-
-        // Already awake, so it cannot be pulled a second time. Counting it would rule out most
-        // of the room during the very fight the bot is trying to move within.
-        if (pCreature->IsInCombat())
-            continue;
-
-        float const aggroRadius = pCreature->GetAttackDistance(me);
-        if (aggroRadius <= 0.0f)
-            continue;
-
-        if (pCreature->GetDistance(x, y, z) < aggroRadius + PB_PULL_CHECK_MARGIN)
-            return true;
-    }
-
-    return false;
 }
 
 bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
@@ -1670,6 +1625,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         me->GetZoneAndAreaId(newzone, newarea);
         me->UpdateZone(newzone, newarea);
 
+        // Opt this bot's movement into the aggro check in the chase and follow generators, which is
+        // what actually keeps it from walking the group into a pack. Set here rather than for every
+        // bot, because a battleground bot runs the same AI base through maps full of neutral
+        // creatures standing beside the only route anywhere.
+        me->SetAvoidAggroPulls(true);
+
         m_initialized = true;
         return;
     }
@@ -2749,6 +2710,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
             Unit* pAttacker = *me->GetAttackers().begin();
 
             if (m_spells.hunter.pScareBeast &&
+               !WouldFearPullExtraEnemies() &&
                 CanTryToCastSpell(pAttacker, m_spells.hunter.pScareBeast))
             {
                 if (DoCastSpell(pAttacker, m_spells.hunter.pScareBeast) == SPELL_CAST_OK)
@@ -3263,8 +3225,13 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                 return;
         }
 
+        // Psychic Scream is the worst of the five for this, because it fears everything in melee at
+        // once and it fires on nothing more than being hit. A priest being beaten on has a real
+        // problem and this is a real answer to it, but a room full of loose mobs is a worse problem
+        // than a dead priest, and the priest usually lives anyway.
         if (m_spells.priest.pPsychicScream &&
             GetAttackersInRangeCount(10.0f) &&
+           !WouldFearPullExtraEnemies() &&
             CanTryToCastSpell(me, m_spells.priest.pPsychicScream))
         {
             if (DoCastSpell(me, m_spells.priest.pPsychicScream) == SPELL_CAST_OK)
@@ -3472,6 +3439,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
 
         if (m_spells.warlock.pFear &&
             pVictim->GetVictim() == me &&
+           !WouldFearPullExtraEnemies() &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pFear))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pFear) == SPELL_CAST_OK)
@@ -3493,6 +3461,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
 
         if (m_spells.warlock.pHowlofTerror &&
             GetAttackersInRangeCount(10.0f) > 1 &&
+           !WouldFearPullExtraEnemies() &&
             CanTryToCastSpell(me, m_spells.warlock.pHowlofTerror))
         {
             if (DoCastSpell(me, m_spells.warlock.pHowlofTerror) == SPELL_CAST_OK)
@@ -3903,6 +3872,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         if (m_spells.warrior.pIntimidatingShout &&
            (me->GetHealthPercent() < 30.0f) &&
            (GetAttackersInRangeCount(10.0f) > 2) &&
+           !WouldFearPullExtraEnemies() &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pIntimidatingShout))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pIntimidatingShout) == SPELL_CAST_OK)

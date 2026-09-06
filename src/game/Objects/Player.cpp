@@ -21904,6 +21904,24 @@ void Player::RefreshBitsForVisibleUnits(UpdateMask* mask, uint32 objectTypeMask)
     data.Send(GetSession());
 }
 
+// Seconds between refusal lines. A bot standing still because every route it can see would wake
+// something asks this question on every recomputed path, which is several times a second, and the
+// answer does not change often enough to be worth reading twice.
+static constexpr time_t PULL_BLOCK_LOG_INTERVAL = 5;
+
+bool Player::ShouldLogPullBlock() const
+{
+    if (!sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+        return false;
+
+    time_t const now = time(nullptr);
+    if (m_lastPullBlockLog && (now - m_lastPullBlockLog) < PULL_BLOCK_LOG_INTERVAL)
+        return false;
+
+    m_lastPullBlockLog = now;
+    return true;
+}
+
 void Player::SetSession(WorldSession* s)
 {
     m_session = s;

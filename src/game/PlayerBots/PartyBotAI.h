@@ -79,7 +79,6 @@ public:
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
     bool WaitForLeaderBeforeRising();
     void LogDeathHold(char const* reason);
-    bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
     Unit* SelectHealTargetOutOfReach() const;
     Unit const* GetCurrentFollowTarget() const;
     uint32 ScaleTankRage(uint32 rage) const;

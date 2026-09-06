@@ -3687,13 +3687,147 @@ void CombatBotBaseAI::UpdateVisualHonorRankBasedOnItems()
     me->SetByteValue(PLAYER_FIELD_BYTES, PLAYER_FIELD_BYTES_OFFSET_HIGHEST_HONOR_RANK, m_visualHonorRank);
 }
 
+// Slack on top of the mob's own radius, so a destination is not chosen a hand's breadth outside it
+// and then drifted over the line by the next step. Matches the margin the generators apply to a
+// whole path, so a spot this class approves is not then refused on arrival.
+static constexpr float CB_PULL_CHECK_MARGIN = 3.0f;
+
+// How far a feared creature ends up from whoever feared it. A fear does not send a mob wandering a
+// few steps: FleeingMovementGenerator runs it out until it is between twenty eight and thirty eight
+// yards of the caster and then moves it at random inside that band for the rest of the duration.
+// Rounded up to the generator's outer figure before the random radius is taken off it, because the
+// mob visits the whole band and not one point in it.
+static constexpr float CB_FEAR_FLEE_RADIUS = 43.0f;
+// Seconds between pull-rejection lines. A bot holding a bad station asks this once per tick for as
+// long as the fight lasts, and the answer does not change often enough to be worth reading twice.
+static constexpr time_t CB_PULL_LOG_INTERVAL = 5;
+
+// The standoff distances a caster will settle for, longest first. Twenty five is what it wants and
+// what it used to take unconditionally; the rest are what it will accept to avoid waking the room.
+// The floor is well inside whatever the group is already fighting, which is the point: a caster
+// standing closer than it would like is a worse caster, and a caster standing in the next pack's
+// aggro radius is a wipe.
+static constexpr float CB_CASTER_CHASE_DISTANCES[] = { 25.0f, 20.0f, 15.0f, 10.0f };
+
+// Whether standing here would wake something the group is not already fighting.
+//
+// The rule itself lives on Unit, because the generators need the same one and a second copy of it is
+// a second thing to get wrong. What is left here is the bot's own use of it: the discretionary
+// choices this class makes before any movement is issued, where declining costs nothing but a worse
+// position. The generators catch what these cannot, which is the route taken to get there.
+bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
+{
+    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN);
+    if (!pCreature)
+        return false;
+
+    // Named, because a check that only ever declines in silence cannot be told apart from a check
+    // that never runs, and the whole of what this feature does is decline in silence.
+    if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+    {
+        time_t const now = time(nullptr);
+        if (!m_lastPullLog || (now - m_lastPullLog) >= CB_PULL_LOG_INTERVAL)
+        {
+            m_lastPullLog = now;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] pullblock bot='%s' role=%s lvl=%u refused a spot %.1fy from '%s' "
+                     "(lvl %u, aggro %.1fy) on map %u",
+                     me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                     pCreature->GetDistance(x, y, z), pCreature->GetName(), pCreature->GetLevel(),
+                     pCreature->GetAttackDistance(me), me->GetMapId());
+        }
+    }
+
+    return true;
+}
+
+// Whether fearing something right now would hand the group a second fight.
+//
+// This is a different question from the one the movement checks ask, and it is the reason a fear is
+// worth refusing even when every bot is standing somewhere safe. Nothing the group does moves the
+// mob; the fear does, and it moves it a long way: out to the band above, then at random inside it
+// for the whole duration, dragging an active combat across whatever is in there.
+//
+// What actually pulls is Creature::Update, which has a creature in combat call for help on a timer
+// once it is more than ten yards from its spawn point. Fear guarantees that condition and then keeps
+// it true, so the feared mob spends the duration advertising the fight to everything it passes, and
+// anything that answers arrives already hostile. This is the whole of why fearing in a dungeon is
+// the thing players are told never to do, and the bots did it on a plain attacker count.
+//
+// Refused on any unengaged creature in the band rather than on a judgement about which of them would
+// answer, because the faction and flag rules that decide who assists are not knowable from here with
+// any confidence, and guessing wrong costs the run.
+bool CombatBotBaseAI::WouldFearPullExtraEnemies() const
+{
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, CB_FEAR_FLEE_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        Creature* pCreature = pEnemy->ToCreature();
+        if (!pCreature || !pCreature->IsAlive())
+            continue;
+
+        // Already in the fight, so it cannot be brought into it.
+        if (pCreature->IsInCombat())
+            continue;
+
+        if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+        {
+            time_t const now = time(nullptr);
+            if (!m_lastFearLog || (now - m_lastFearLog) >= CB_PULL_LOG_INTERVAL)
+            {
+                m_lastFearLog = now;
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] fearblock bot='%s' role=%s lvl=%u held a fear with '%s' (lvl %u) "
+                         "%.1fy away, inside the flee band, on map %u",
+                         me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                         pCreature->GetName(), pCreature->GetLevel(),
+                         me->GetDistance(pCreature), me->GetMapId());
+            }
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
 {
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
        (me->GetPowerPercent(POWER_MANA) > 10.0f || me->GetWeaponForAttack(RANGED_ATTACK, true, true)))
-        me->SetCasterChaseDistance(25.0f);
+    {
+        // The standoff a caster takes up is the movement it makes most, and it was the one movement
+        // with no thought behind it: twenty five yards from the mob being fought, in whatever
+        // direction the bot happened to already be, with reference to nothing else in the room. The
+        // aggro check went in on the two paths where a bot backs out of melee and not on this one,
+        // which is the one every ranged bot and every healer uses in every fight.
+        //
+        // Take the longest distance that is actually safe instead of the longest distance. The spot
+        // tested is the point that far from the victim along the bearing the bot is already on,
+        // which is where the chase generator settles it; an approximation, since the generator
+        // keeps adjusting as the target moves, but the same approximation the distancing check uses
+        // and near enough to catch a station sitting inside the next pack.
+        float chaseDistance = CB_CASTER_CHASE_DISTANCES[0];
+
+        for (float candidate : CB_CASTER_CHASE_DISTANCES)
+        {
+            float x, y, z;
+            pVictim->GetNearPoint(me, x, y, z, 0, candidate, pVictim->GetAngle(me));
+
+            chaseDistance = candidate;
+            if (!WouldPositionPullExtraEnemies(x, y, z))
+                break;
+        }
+
+        // Falling out of that loop without a safe answer leaves the closest, which is the least bad
+        // of them: nothing on the list is safe, so the bot may as well be standing where the fight
+        // it is already in already has aggro.
+        me->SetCasterChaseDistance(chaseDistance);
+    }
     else if (me->HasDistanceCasterMovement())
         me->SetCasterChaseDistance(0.0f);
 
