@@ -284,10 +284,14 @@ void ChaseMovementGenerator<T>::_setTargetLocation(T &owner)
     if (!m_bReachable && !!(pathType & PATHFIND_INCOMPLETE) && owner.HasUnitState(UNIT_STATE_ALLOW_INCOMPLETE_PATH))
         m_bReachable = true;
 
-    // Strictly, and including the chase to a target the group is already fighting. A bot that will
-    // not take the only route to the mob stands there and contributes nothing, which is the cost
-    // knowingly accepted here: an idle bot loses a fight, an extra pack loses the group.
-    if (RefusePathThatWouldPull(owner, path))
+    // Chase is refused if the path would pull something unengaged, with one exception: if the bot
+    // is already in active combat with this specific target, the fight is happening regardless and
+    // the bot needs to be able to close in. Refusing the path here leaves a melee bot standing
+    // still while its target is right in front of it -- the rogue staring at a mob a few yards
+    // away that was not moving because an adjacent unengaged mob sat inside the path's margin.
+    // Following does not get this exemption because the leader can be anywhere.
+    bool const botIsChasing = i_target.getTarget() && owner.GetVictim() == i_target.getTarget();
+    if (!botIsChasing && RefusePathThatWouldPull(owner, path))
         return;
 
     m_bRecalculateTravel = false;

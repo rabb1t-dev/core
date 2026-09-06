@@ -349,6 +349,8 @@ void PartyBotAI::BeginHold(float x, float y, float z, ObjectGuid pullTargetGuid)
 
     me->GetMotionMaster()->Clear(false, true);
     me->GetMotionMaster()->MoveIdle();
+
+    HoldPet(true);
 }
 
 void PartyBotAI::ReleaseHold()
@@ -357,8 +359,40 @@ void PartyBotAI::ReleaseHold()
     m_holdSince = 0;
     m_pullTargetGuid.Clear();
 
+    HoldPet(false);
+
     // Left idle by the hold, and ordinary AI only issues a follow when it finds the bot standing
     // still, so it picks the group back up on its own from here.
+}
+
+// Holding the bot was never enough by itself, because a pet is a second body taking its own orders.
+// The rotation goes on picking a target while the bot waits -- that is deliberate, so a held caster
+// can still cast at what is already in range -- and the warlock and hunter branches hand that target
+// straight to the pet, which then crosses the room the bot was told not to cross. The pack wakes and
+// the group is in the fight it was waiting to avoid, having stood perfectly still throughout.
+//
+// Passive rather than merely recalled, since a pet left aggressive picks its own fights out of
+// whatever wanders past. Following rather than staying, so it waits beside its owner instead of
+// wherever it happened to be standing when the order came.
+void PartyBotAI::HoldPet(bool hold)
+{
+    Pet* pPet = me->GetPet();
+    if (!pPet || !pPet->GetCharmInfo())
+        return;
+
+    if (hold)
+    {
+        pPet->GetCharmInfo()->SetReactState(REACT_PASSIVE);
+        pPet->GetCharmInfo()->SetCommandState(COMMAND_FOLLOW);
+        pPet->GetCharmInfo()->SetIsCommandAttack(false);
+        pPet->AttackStop();
+        return;
+    }
+
+    // Back to defending itself and its owner, which is where a summoned pet starts. Aggressive is
+    // not restored on purpose: nothing here set it, and it is the setting that makes a pet pull.
+    pPet->GetCharmInfo()->SetReactState(REACT_DEFENSIVE);
+    pPet->GetCharmInfo()->SetCommandState(COMMAND_FOLLOW);
 }
 
 bool PartyBotAI::ShouldBreakHold() const
@@ -439,8 +473,13 @@ float PartyBotAI::GetPullStandoffDistance() const
     if (!pRange)
         return 0.0f;
 
+    // Just inside the weapon's reach rather than comfortably inside it. The margin exists because the
+    // shot leaves on the weapon timer instead of when it is asked for, so a target drifting outwards
+    // in between would put the puller back to walking, but it was five yards and that is five yards
+    // of walking towards a pack on every pull that starts out of range. Two is enough for the drift
+    // and keeps the puller as close to standing still and shooting as its weapon allows.
     float const maxRange = pRange->maxRange;
-    return maxRange > 5.0f ? maxRange - 5.0f : maxRange;
+    return maxRange > 2.0f ? maxRange - 2.0f : maxRange;
 }
 
 // Take the shot, if it can be taken from where the bot is standing.
@@ -505,6 +544,11 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     if (me->IsMounted())
         me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
+    // The puller's own pet is held too, so that the shot is what pulls. Left to itself it charges
+    // the moment its owner takes a target, which is a body pull into the middle of the pack by the
+    // one bot that is supposed to be taking a single mob off the edge of it.
+    HoldPet(true);
+
     LogPull(GetRangedAttackSpellId() ? "ordered to pull at range" : "ordered to pull in melee");
     return true;
 }
@@ -515,6 +559,11 @@ void PartyBotAI::EndPull()
     m_pullSince = 0;
     me->SetAttackOrders(ObjectGuid());
     me->SetCasterChaseDistance(0.0f);
+
+    // Released unconditionally, including on the way into a hold, which re-holds it a moment later.
+    // The alternative is a pet left passive for the rest of the instance every time a pull is
+    // abandoned, and an abandoned pull is exactly when nobody is watching the pet.
+    HoldPet(false);
 }
 
 // Called on the steps of a pull rather than every tick, so it stays readable while a pull is being
@@ -2059,7 +2108,13 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     // any longer would only extend it to the rest of the room for nothing. Expiring it on the target
     // rather than on a timer is what keeps a bot from quietly keeping the exemption for a whole
     // instance after one order.
-    if (me->HasAttackOrders())
+    //
+    // Not while a pull is still running, though. The mob entering combat is the pull working, and it
+    // is also the moment the puller has to walk home past that same mob, so expiring the order there
+    // expires it exactly when it is needed. The log of one Wailing Caverns pull has both lines on the
+    // same second: "it bit, heading home", then the rule refusing the route home and the puller
+    // holding position in the open. EndPull clears the order for that case instead.
+    if (me->HasAttackOrders() && !IsPulling())
     {
         Unit* pOrdered = me->GetMap()->GetUnit(me->GetAttackOrders());
         if (!pOrdered || !pOrdered->IsAlive() || pOrdered->IsInCombat())
@@ -3028,7 +3083,8 @@ void PartyBotAI::UpdateOutOfCombatAI_Hunter()
                 return;
         }
 
-        if (Pet* pPet = me->GetPet())
+        // Not while holding. Sending the pet is the same pull as going itself, taken by proxy.
+        if (Pet* pPet = m_holdPosition ? nullptr : me->GetPet())
         {
             if (!pPet->GetVictim())
             {
@@ -3729,7 +3785,8 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
 
     if (Unit* pVictim = me->GetVictim())
     {
-        if (Pet* pPet = me->GetPet())
+        // Not while holding. Sending the pet is the same pull as going itself, taken by proxy.
+        if (Pet* pPet = m_holdPosition ? nullptr : me->GetPet())
         {
             if (!pPet->GetVictim())
             {

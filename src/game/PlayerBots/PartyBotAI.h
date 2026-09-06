@@ -99,6 +99,7 @@ public:
     void EndPull();
     bool UpdatePullSequence();
     void LogPull(char const* what) const;
+    void HoldPet(bool hold);
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
     bool FirePullAttack(Unit* pTarget);

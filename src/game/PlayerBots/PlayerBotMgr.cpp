@@ -1923,6 +1923,19 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
     PSendSysMessage("%s is pulling %s (%s); %u other party bot%s holding until it arrives.",
                     pPuller->GetName(), pTarget->GetName(), ranged ? "at range" : "in melee",
                     held, held == 1 ? " is" : "s are");
+
+    // Said out loud, because a puller walking is the thing that looks most like a puller ignoring
+    // the order, and the distance is the whole reason for it. A shot cannot be taken from further
+    // away than the weapon reaches, so the alternative to those yards is no pull at all.
+    float const standoff = pPullerAI->GetPullStandoffDistance();
+    float const distance = pPuller->GetDistance(pTarget);
+    if (standoff > 0.0f && distance > standoff)
+    {
+        PSendSysMessage("%s is %.0f yards away and can shoot from %.0f, so it has to close about "
+                        "%.0f yards first.", pPuller->GetName(), distance, standoff,
+                        distance - standoff);
+    }
+
     return true;
 }
 

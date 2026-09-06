@@ -3708,6 +3708,8 @@ static constexpr time_t CB_PULL_LOG_INTERVAL = 5;
 // standing closer than it would like is a worse caster, and a caster standing in the next pack's
 // aggro radius is a wipe.
 static constexpr float CB_CASTER_CHASE_DISTANCES[] = { 25.0f, 20.0f, 15.0f, 10.0f };
+static constexpr size_t CB_CASTER_CHASE_COUNT =
+    sizeof(CB_CASTER_CHASE_DISTANCES) / sizeof(CB_CASTER_CHASE_DISTANCES[0]);
 
 // Whether standing here would wake something the group is not already fighting.
 //
@@ -3816,6 +3818,22 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         // aggro check went in on the two paths where a bot backs out of melee and not on this one,
         // which is the one every ranged bot and every healer uses in every fight.
         //
+        // Good enough where it stands, so it stays there. A bot that can see its target and is
+        // already inside the band it would have picked has nothing to gain by shuffling into a
+        // tidier spot, and plenty to lose: the route to one runs past whatever else is in the room,
+        // the aggro rule turns the route down, and the bot spends the fight motionless having
+        // contributed nothing at all. One Wailing Caverns pull has a hunter refuse three firing
+        // positions in ten seconds while the group it had just pulled for died around it, every
+        // refusal correct in isolation and the sum of them a wipe.
+        //
+        // Bounded below as well as above, so this does not excuse standing in melee: a caster that
+        // has been closed on still backs out, which is what the distances below are for.
+        float const distance = me->GetDistance(pVictim);
+        if (distance <= CB_CASTER_CHASE_DISTANCES[0] &&
+            distance >= CB_CASTER_CHASE_DISTANCES[CB_CASTER_CHASE_COUNT - 1] &&
+            me->IsWithinLOSInMap(pVictim))
+            return;
+
         // Take the longest distance that is actually safe instead of the longest distance. The spot
         // tested is the point that far from the victim along the bearing the bot is already on,
         // which is where the chase generator settles it; an approximation, since the generator
