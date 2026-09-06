@@ -77,8 +77,21 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
         if (!pCreature)
             continue;
 
+        // A route only risks a pull where it takes the bot nearer to this creature than it already
+        // stands. Judged against the aggro band alone, a bot that has come to rest inside the band
+        // finds every point of every route in violation and cannot move at all -- not even away
+        // from the thing it is avoiding. That is not a corner case: the band is the aggro radius
+        // plus a margin, so a bot standing a stride outside a mob's aggro radius is inside it, and
+        // Wailing Caverns had two melee bots frozen through an entire fight 18 yards from an 18
+        // yard radius while the rest of the group killed things around them. Its own distance is
+        // the floor, which leaves retreating and circling available and refuses only real closing.
+        float const ownDistance = pCreature->GetDistance(owner.GetPositionX(), owner.GetPositionY(), owner.GetPositionZ());
+
         for (auto const& point : points)
         {
+            if (pCreature->GetDistance(point.x, point.y, point.z) >= ownDistance)
+                continue;
+
             if (owner.WouldPositionAggroCreature(pCreature, point.x, point.y, point.z, PULL_CHECK_MARGIN))
                 return pCreature;
         }
@@ -90,7 +103,7 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
 // Decline the move and stand still. Returning without launching leaves the generator to ask again on
 // its next update, so a bot held here resumes by itself the moment the route clears, whether that is
 // because the pack got pulled by someone else, died, or the target moved somewhere reachable.
-static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path)
+static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, char const* movement)
 {
     Creature* pCreature = FindPullOnPath(owner, path);
     if (!pCreature)
@@ -98,11 +111,14 @@ static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path)
 
     if (Player* pPlayer = owner.ToPlayer())
     {
+        // Which movement was refused matters more than the refusal. A chase declined leaves a bot
+        // idle in a fight it should be in; a follow declined leaves it behind on the way to one,
+        // and the two want different answers. The old line named neither.
         if (pPlayer->ShouldLogPullBlock())
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                     "[BotCombat] pullblock bot='%s' lvl=%u refused a route past '%s' (lvl %u, aggro "
+                     "[BotCombat] pullblock bot='%s' lvl=%u refused a %s route past '%s' (lvl %u, aggro "
                      "%.1fy, %.1fy away) on map %u and is holding position",
-                     pPlayer->GetName(), pPlayer->GetLevel(), pCreature->GetName(),
+                     pPlayer->GetName(), pPlayer->GetLevel(), movement, pCreature->GetName(),
                      pCreature->GetLevel(), pCreature->GetAttackDistance(&owner),
                      pCreature->GetDistance(&owner), pPlayer->GetMapId());
     }
@@ -291,7 +307,7 @@ void ChaseMovementGenerator<T>::_setTargetLocation(T &owner)
     // away that was not moving because an adjacent unengaged mob sat inside the path's margin.
     // Following does not get this exemption because the leader can be anywhere.
     bool const botIsChasing = i_target.getTarget() && owner.GetVictim() == i_target.getTarget();
-    if (!botIsChasing && RefusePathThatWouldPull(owner, path))
+    if (!botIsChasing && RefusePathThatWouldPull(owner, path, "chase"))
         return;
 
     m_bRecalculateTravel = false;
@@ -744,7 +760,7 @@ void FollowMovementGenerator<T>::_setTargetLocation(T &owner)
     // The follow is where most of the pulling actually came from, and the one an endpoint check in
     // the AI could never have covered: a bot trailing its leader re-picks this spot every time the
     // leader moves, so the route is chosen fresh several times a second all the way down a corridor.
-    if (RefusePathThatWouldPull(owner, path))
+    if (RefusePathThatWouldPull(owner, path, "follow"))
         return;
 
     m_bRecalculateTravel = false;
