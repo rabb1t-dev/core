@@ -104,6 +104,7 @@ public:
     float GetPullStandoffDistance() const;
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
+    bool IsWorthDotting(Unit const* pVictim) const;
     bool IsCastingFillerDamage() const;
     Player* GetGroupTank() const;
     Unit* SelectHealTargetOutOfReach() const;

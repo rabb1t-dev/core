@@ -159,6 +159,19 @@ static constexpr float PB_FILLER_PARTY_HEALTH = 90.0f;
 // asked for. Lower than the threshold above so the two do not argue over the same tick.
 static constexpr float PB_FILLER_ABANDON_HEALTH = 80.0f;
 
+// What a pack has to be carrying before damage-over-time spells are worth their cast time.
+// Expressed in multiples of the caster's own health because that scales with level at no cost: a
+// normal mob of the caster's level carries roughly a player's health, so this is a pack of about
+// two of them. Below it the mobs die inside a couple of direct casts and a dot never finishes.
+static constexpr float PB_DOT_WORTH_HEALTH_MULTIPLE = 2.0f;
+// A pack this size outlasts its own dots whatever each mob is carrying, and each dot ticks on a
+// separate target, so one cast is paid back several times over.
+static constexpr uint32 PB_DOT_WORTH_ENEMY_COUNT = 3;
+// A target already this far down dies to the next direct spell either way.
+static constexpr float PB_DOT_WORTH_TARGET_HEALTH = 50.0f;
+// How far out to look for the rest of the pack.
+static constexpr float PB_DOT_PACK_RADIUS = 30.0f;
+
 // How close the pulled mob has to get before the party stops waiting and fights it. Generous on
 // purpose: the point is to be sure the mob has committed to coming, and a held melee bot that breaks
 // a little early still only walks the last few yards rather than the length of the room.
@@ -4007,6 +4020,46 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
         SummonPetIfNeeded();
 }
 
+// Whether a damage-over-time spell will live long enough on this target to earn back the cast that
+// applies it. On trash it does not: the mob dies inside a couple of direct casts, so the dot is a
+// cast that delivered a fraction of its damage and a mob that took longer to die for it. Curse of
+// Agony is the plainest case, ramping so that most of its total lands in its final third, but
+// Corruption and Immolate lose on a short fight too, and between them they were taking every cast
+// the rotation had -- Shadow Bolt sits last, behind all three, and never got a look in.
+bool PartyBotAI::IsWorthDotting(Unit const* pVictim) const
+{
+    // Anything that is not an ordinary mob lives long enough for anything.
+    if (Creature const* pCreature = pVictim->ToCreature())
+    {
+        if (pCreature->GetCreatureInfo()->rank != CREATURE_ELITE_NORMAL)
+            return true;
+    }
+
+    if (pVictim->GetHealthPercent() < PB_DOT_WORTH_TARGET_HEALTH)
+        return false;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(pVictim, PB_DOT_PACK_RADIUS, enemies);
+
+    // Seeded with the target rather than trusting it to come back in its own neighbour search.
+    uint32 engaged = 1;
+    uint64 healthPool = pVictim->GetHealth();
+
+    for (Unit const* pEnemy : enemies)
+    {
+        if (pEnemy == pVictim || !pEnemy->IsInCombat())
+            continue;
+
+        ++engaged;
+        healthPool += pEnemy->GetHealth();
+    }
+
+    if (engaged >= PB_DOT_WORTH_ENEMY_COUNT)
+        return true;
+
+    return healthPool > uint64(me->GetMaxHealth() * PB_DOT_WORTH_HEALTH_MULTIPLE);
+}
+
 void PartyBotAI::UpdateInCombatAI_Warlock()
 {
     if (Unit* pVictim = me->GetVictim())
@@ -4069,6 +4122,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pImmolate &&
+            IsWorthDotting(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
@@ -4083,6 +4137,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pCorruption &&
+            IsWorthDotting(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pCorruption))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pCorruption) == SPELL_CAST_OK)
@@ -4091,6 +4146,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
 
         if (m_spells.warlock.pSiphonLife &&
            (me->GetHealthPercent() < 80.0f) &&
+            IsWorthDotting(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
@@ -4115,6 +4171,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pCurseofAgony &&
+            IsWorthDotting(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pCurseofAgony))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pCurseofAgony) == SPELL_CAST_OK)
