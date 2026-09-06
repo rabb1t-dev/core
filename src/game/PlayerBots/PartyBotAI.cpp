@@ -41,6 +41,13 @@ enum PartyBotSpells
     PB_SPELL_AUTO_SHOT = 75,
     PB_SPELL_SHOOT_WAND = 5019,
     PB_SPELL_HONORLESS_TARGET = 2479,
+    // The ranged attacks everyone else gets. Auto Shot above is the hunter's own and is granted with
+    // the class; these come with the weapon skill, so which one applies is a question about what the
+    // bot is holding rather than what class it is.
+    PB_SPELL_SHOOT_BOW = 2480,
+    PB_SPELL_SHOOT_GUN = 7918,
+    PB_SPELL_SHOOT_CROSSBOW = 7919,
+    PB_SPELL_THROW = 2764,
 };
 
 // How much nearer the destination a corpse run has to get before it counts as progressing.
@@ -141,6 +148,22 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 // distance that fixes being unable to see somebody is closer than the distance that fixes
 // being unable to reach them.
 #define PB_HEAL_REPOSITION_DIST 10.0f
+
+// How close the pulled mob has to get before the party stops waiting and fights it. Generous on
+// purpose: the point is to be sure the mob has committed to coming, and a held melee bot that breaks
+// a little early still only walks the last few yards rather than the length of the room.
+static constexpr float PB_PULL_ARRIVE_DIST = 12.0f;
+// How long a hold waits for a mob that never arrives. A pull can fail in ways nothing here can see:
+// the mob evades, roots itself on a ledge, gets killed by somebody else, or resets to its spawn. The
+// party standing still forever afterwards would be a worse failure than the one being handled, so
+// the hold expires and ordinary AI resumes.
+static constexpr int PB_PULL_HOLD_TIMEOUT = 45;
+// How long the puller itself keeps trying before giving the attempt up. Shorter than the hold above,
+// so that a puller which cannot reach or cannot fire stops before the party does.
+static constexpr int PB_PULL_SEQUENCE_TIMEOUT = 30;
+// How near the anchor counts as being back with the group. Loose enough that pathing around the
+// people already standing there does not leave the puller circling for a spot.
+static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
 
 // How far a bot backs off when it flees melee. Shared by the move and by the check that runs
 // ahead of it, so the position tested is always the position taken.
@@ -300,6 +323,285 @@ bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
         return false;
 
     return me->GetMotionMaster()->MoveDistance(pEnemy, PB_DISTANCING_RANGE);
+}
+
+// Stand here until the fight comes to us.
+//
+// Distinct from the pause behind .partybot pause, which stops the AI running at all: a paused bot
+// does not heal, does not defend itself and does not notice it is being eaten, which is acceptable
+// for parking a roster and not for waiting out a pull. Everything carries on here except the two
+// things that would spoil the wait, closing on a target and following the leader, so a held healer
+// still heals and a held caster still casts at whatever is already in range.
+void PartyBotAI::BeginHold(float x, float y, float z, ObjectGuid pullTargetGuid)
+{
+    m_holdPosition = true;
+    m_holdX = x;
+    m_holdY = y;
+    m_holdZ = z;
+    m_holdSince = time(nullptr);
+    m_pullTargetGuid = pullTargetGuid;
+
+    // Stopped once, here, rather than re-issued every tick. Refusing to start new movement is what
+    // keeps a held bot in place from now on, and repeatedly clearing the motion master would fight
+    // whatever the combat AI is legitimately doing, knockbacks and fear included.
+    if (!me->IsStopped())
+        me->StopMoving();
+
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MoveIdle();
+}
+
+void PartyBotAI::ReleaseHold()
+{
+    m_holdPosition = false;
+    m_holdSince = 0;
+    m_pullTargetGuid.Clear();
+
+    // Left idle by the hold, and ordinary AI only issues a follow when it finds the bot standing
+    // still, so it picks the group back up on its own from here.
+}
+
+bool PartyBotAI::ShouldBreakHold() const
+{
+    // Something is on us, so there is nothing left to protect by standing still.
+    if (!me->GetAttackers().empty())
+        return true;
+
+    time_t const now = time(nullptr);
+    if (m_holdSince && (now - m_holdSince) >= PB_PULL_HOLD_TIMEOUT)
+        return true;
+
+    // A hold asked for on its own waits to be told, and only the two conditions above cut it short.
+    if (m_pullTargetGuid.IsEmpty())
+        return false;
+
+    Unit* pTarget = me->GetMap()->GetUnit(m_pullTargetGuid);
+
+    // Whatever was being pulled is gone: killed on the way in, despawned, or reset to its spawn.
+    // Waiting on it is waiting on nothing.
+    if (!pTarget || !pTarget->IsAlive())
+        return true;
+
+    // Deliberately measured against this bot and not against the anchor. The party is spread over
+    // several yards, and the bot the mob reaches first is the one that most needs to be allowed to
+    // fight back.
+    return me->IsWithinDist(pTarget, PB_PULL_ARRIVE_DIST);
+}
+
+// Which ranged attack this bot has, if any.
+//
+// Auto Shot is asked for first and by name, because a hunter has it regardless of what is in the
+// ranged slot. For everyone else the answer is decided by the weapon: these spells come with the
+// weapon skill rather than the class, so a warrior holding a gun can pull with it and the same
+// warrior holding nothing cannot.
+uint32 PartyBotAI::GetRangedAttackSpellId() const
+{
+    if (me->HasSpell(PB_SPELL_AUTO_SHOT))
+        return PB_SPELL_AUTO_SHOT;
+
+    Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!pWeapon)
+        return 0;
+
+    ItemPrototype const* pProto = pWeapon->GetProto();
+    if (!pProto || pProto->Class != ITEM_CLASS_WEAPON)
+        return 0;
+
+    switch (pProto->SubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_BOW:
+            return PB_SPELL_SHOOT_BOW;
+        case ITEM_SUBCLASS_WEAPON_GUN:
+            return PB_SPELL_SHOOT_GUN;
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+            return PB_SPELL_SHOOT_CROSSBOW;
+        case ITEM_SUBCLASS_WEAPON_THROWN:
+            return PB_SPELL_THROW;
+    }
+
+    return 0;
+}
+
+// How close the puller needs to get. Short of the weapon's true maximum, since the mob has to still
+// be in range when the shot actually leaves rather than when the approach was decided, and a target
+// that steps a yard away mid-pull would otherwise put the puller back to walking.
+float PartyBotAI::GetPullStandoffDistance() const
+{
+    uint32 const spellId = GetRangedAttackSpellId();
+    if (!spellId)
+        return 0.0f;
+
+    SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(spellId);
+    if (!pSpell)
+        return 0.0f;
+
+    SpellRangeEntry const* pRange = sSpellRangeStore.LookupEntry(pSpell->rangeIndex);
+    if (!pRange)
+        return 0.0f;
+
+    float const maxRange = pRange->maxRange;
+    return maxRange > 5.0f ? maxRange - 5.0f : maxRange;
+}
+
+// Take the shot, if it can be taken from where the bot is standing.
+bool PartyBotAI::FirePullAttack(Unit* pTarget)
+{
+    if (!me->IsWithinLOSInMap(pTarget))
+        return false;
+
+    if (uint32 const spellId = GetRangedAttackSpellId())
+    {
+        SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(spellId);
+        if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
+            return false;
+
+        // A ranged attack will not start while the caster is moving, and stopping is wanted here
+        // anyway: this is the spot the puller shoots from and comes back to.
+        if (!me->IsStopped())
+            me->StopMoving();
+
+        me->SetFacingToObject(pTarget);
+        me->Attack(pTarget, false);
+
+        // Cast directly rather than through DoCastSpell, which would refuse this outright.
+        // GetThreatHeadroom gives no allowance at all against a mob that is not yet fighting
+        // anybody, on the grounds that casting into one is the pull. That is the right answer for a
+        // damage dealer opening too early and the wrong one here, where pulling is the instruction
+        // given. Auto Shot already reached the weapon by this route for the same reason.
+        return me->CastSpell(pTarget, spellId, false) == SPELL_CAST_OK;
+    }
+
+    // Nothing to shoot with, so the pull is made with a fist. Worth doing rather than refusing: it
+    // still brings the mob back to a group that is standing still, which is the point, and it is
+    // what a warrior without a gun would have to do anyway.
+    if (!me->CanReachWithMeleeAutoAttack(pTarget))
+        return false;
+
+    me->SetFacingToObject(pTarget);
+    return me->Attack(pTarget, true);
+}
+
+bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float anchorZ)
+{
+    if (!pTarget || !IsValidHostileTarget(pTarget))
+        return false;
+
+    m_pullTargetGuid = pTarget->GetObjectGuid();
+    m_pullPhase = PULL_PHASE_APPROACH;
+    m_pullSince = time(nullptr);
+    m_holdX = anchorX;
+    m_holdY = anchorY;
+    m_holdZ = anchorZ;
+
+    // The puller has to be free to move, whatever it was doing before.
+    m_holdPosition = false;
+    m_isBuffing = false;
+
+    // Excuse this one mob from the aggro rule, or the generators refuse every step of the approach:
+    // the mob being pulled is by definition one the group is not fighting yet, which is exactly what
+    // that rule exists to stay away from.
+    me->SetPullExemption(m_pullTargetGuid);
+
+    if (me->IsMounted())
+        me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
+
+    return true;
+}
+
+void PartyBotAI::EndPull()
+{
+    m_pullPhase = PULL_PHASE_NONE;
+    m_pullSince = 0;
+    me->SetPullExemption(ObjectGuid());
+    me->SetCasterChaseDistance(0.0f);
+}
+
+// Walk in, shoot, walk back. Returns true when the sequence has taken the tick for itself.
+bool PartyBotAI::UpdatePullSequence()
+{
+    Unit* pTarget = me->GetMap()->GetUnit(m_pullTargetGuid);
+    bool const expired = m_pullSince && (time(nullptr) - m_pullSince) >= PB_PULL_SEQUENCE_TIMEOUT;
+
+    if (!pTarget || !pTarget->IsAlive() || !IsValidHostileTarget(pTarget) || expired)
+    {
+        if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] pull bot='%s' gave up in phase %u (%s)",
+                     me->GetName(), uint32(m_pullPhase), expired ? "timed out" : "target gone");
+
+        EndPull();
+        return false;
+    }
+
+    switch (m_pullPhase)
+    {
+        case PULL_PHASE_APPROACH:
+        {
+            if (FirePullAttack(pTarget))
+            {
+                m_pullPhase = PULL_PHASE_FIRE;
+                return true;
+            }
+
+            float const standoff = GetPullStandoffDistance();
+            me->SetCasterChaseDistance(standoff);
+
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+                me->GetMotionMaster()->MoveChase(pTarget, 1.0f, 0.0f);
+
+            return true;
+        }
+        case PULL_PHASE_FIRE:
+        {
+            // Held still until the shot lands. A ranged attack fires on the weapon timer some way
+            // after it is asked for, and moving cancels it, so turning for home on the tick the cast
+            // began would produce a pull that never happened: the party waits, and the mob never
+            // comes. Combat on the target is the acknowledgement that it did happen.
+            if (!me->IsStopped())
+                me->StopMoving();
+
+            if (pTarget->IsInCombat())
+            {
+                m_pullPhase = PULL_PHASE_RETURN;
+                return true;
+            }
+
+            // Nothing in flight and nothing landed, so it was interrupted or never started. Ask
+            // again; the sequence timeout above is what stops this going on indefinitely.
+            if (!me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) && !me->IsNonMeleeSpellCasted())
+                FirePullAttack(pTarget);
+
+            return true;
+        }
+        case PULL_PHASE_RETURN:
+        {
+            if (me->GetDistance2d(m_holdX, m_holdY) <= PB_PULL_ANCHOR_TOLERANCE)
+            {
+                // Back with the group, and now waiting alongside it. Handing straight back to
+                // ordinary AI would send the puller out again at the mob it just shot, which is the
+                // behaviour this command exists to prevent, so it holds on the same terms as
+                // everyone else and breaks when the mob arrives.
+                ObjectGuid const pullTarget = m_pullTargetGuid;
+                EndPull();
+                BeginHold(m_holdX, m_holdY, m_holdZ, pullTarget);
+                return true;
+            }
+
+            // Auto Shot would keep the bot standing here firing, and the mob is meant to be
+            // following it home rather than trading shots at range.
+            if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+                me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
+
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+                me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
+
+            return true;
+        }
+        default:
+            break;
+    }
+
+    return false;
 }
 
 bool PartyBotAI::DrinkAndEat()
@@ -1701,6 +2003,17 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     m_leaderWaitSince = 0;
     m_corpseRunBestDistance = -1.0f;
 
+    // Ahead of the auto shot branch below, which returns on every tick that a ranged attack is
+    // running. The puller fires one, so leaving this until later would strand it shooting from the
+    // spot it pulled from and it would never reach the step where it stops and walks back.
+    if (IsPulling())
+    {
+        if (UpdatePullSequence())
+            return;
+    }
+    else if (m_holdPosition && ShouldBreakHold())
+        ReleaseHold();
+
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {
         // Stop auto shot if no target.
@@ -1795,10 +2108,21 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             if (pVictim)
                 me->AttackStop();
 
-            if (Unit* pVictim = SelectAttackTarget(pLeader))
+            if (Unit* pNewVictim = SelectAttackTarget(pLeader))
             {
-                AttackStart(pVictim);
-                return;
+                // Holding means not closing the distance. It does not mean standing there with no
+                // target: acquiring one costs nothing while the bot stays put, and it lets a held
+                // caster or hunter work on the mob as it comes in rather than waiting for it to
+                // finish arriving. A held melee bot simply cannot reach yet, which is the wait.
+                if (m_holdPosition)
+                {
+                    me->Attack(pNewVictim, true);
+                }
+                else
+                {
+                    AttackStart(pNewVictim);
+                    return;
+                }
             }
         }
     }
@@ -1833,7 +2157,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
     }
 
-    if (!me->IsMoving())
+    // Both branches below exist to close a distance, by chasing a target or by trailing the leader,
+    // and closing distances is the one thing a held bot must not do. Skipping the pair of them is
+    // the whole of what the hold enforces; the combat rotation underneath carries on as normal.
+    if (!me->IsMoving() && !m_holdPosition)
     {
         if (!pVictim)
         {
@@ -3549,6 +3876,12 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
         }
     }
 
+    // Charge is a gap closer, so a held warrior would leave the spot it was told to wait on and
+    // arrive in the pack alone. The hold acquires a target without approaching it deliberately, and
+    // this is the one rotation step that turns having a target into crossing the room.
+    if (m_holdPosition)
+        return;
+
     if (Unit* pVictim = me->GetVictim())
     {
         if (m_spells.warrior.pCharge &&
@@ -3957,7 +4290,9 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             }
         }
 
-        if (m_spells.warrior.pIntercept &&
+        // Another gap closer, so another way out of a hold. See the Charge gate out of combat.
+        if (!m_holdPosition &&
+            m_spells.warrior.pIntercept &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pIntercept))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pIntercept) == SPELL_CAST_OK)
@@ -4605,7 +4940,10 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                 BeginChasing(pVictim);
             }
 
-            if (m_spells.druid.pFeralCharge &&
+            // The third gap closer, and the last way a held bot could cross the room. See the
+            // Charge gate in the warrior's out of combat rotation.
+            if (!m_holdPosition &&
+                m_spells.druid.pFeralCharge &&
                 CanTryToCastSpell(pVictim, m_spells.druid.pFeralCharge))
             {
                 if (DoCastSpell(pVictim, m_spells.druid.pFeralCharge) == SPELL_CAST_OK)

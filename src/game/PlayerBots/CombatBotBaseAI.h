@@ -642,6 +642,11 @@ public:
     // why its fear never went off.
     mutable time_t m_lastPullLog = 0;
     mutable time_t m_lastFearLog = 0;
+    // Told to hold a spot and wait for the fight to arrive, rather than closing on it. Lives here
+    // rather than with the rest of the party bot's pull state so that BeginChasing, which every
+    // class rotation reaches for and which is defined on this class, can decline. A battleground bot
+    // never sets it.
+    bool m_holdPosition = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
 

@@ -3717,7 +3717,12 @@ static constexpr float CB_CASTER_CHASE_DISTANCES[] = { 25.0f, 20.0f, 15.0f, 10.0
 // position. The generators catch what these cannot, which is the route taken to get there.
 bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
 {
-    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN);
+    // Whatever this bot was sent to pull is excused, so that a puller working its way into range is
+    // not refused on account of its own target.
+    ObjectGuid const exemptGuid = me->GetPullExemption();
+    Unit const* pExempt = exemptGuid.IsEmpty() ? nullptr : me->GetMap()->GetUnit(exemptGuid);
+
+    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN, pExempt);
     if (!pCreature)
         return false;
 
@@ -3795,6 +3800,12 @@ bool CombatBotBaseAI::WouldFearPullExtraEnemies() const
 
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
 {
+    // A bot told to hold a spot does not chase, and this is the single door every chase in the class
+    // rotations goes through. Refusing here rather than at the dozen call sites is what keeps the
+    // hold from being one forgotten branch away from a bot wandering off on its own.
+    if (m_holdPosition)
+        return;
+
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&

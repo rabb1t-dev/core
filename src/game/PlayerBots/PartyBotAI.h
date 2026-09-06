@@ -21,6 +21,17 @@
 #include "Group.h"
 #include "ObjectAccessor.h"
 
+// Where a designated puller has got to. Firing is its own step rather than part of the approach
+// because a ranged attack does not leave the weapon the moment it is asked for: it is an auto repeat
+// spell that fires on the weapon timer, and moving cancels it. A puller that turned for home as soon
+// as it had cast would arrive back with the group having pulled nothing at all.
+enum PartyBotPullPhase
+{
+    PULL_PHASE_NONE,
+    PULL_PHASE_APPROACH,
+    PULL_PHASE_FIRE,
+    PULL_PHASE_RETURN,
+};
 
 class PartyBotAI : public CombatBotBaseAI
 {
@@ -79,6 +90,17 @@ public:
     bool FindInstanceEntrance(uint32 instanceMapId, float& x, float& y, float& z) const;
     bool WaitForLeaderBeforeRising();
     void LogDeathHold(char const* reason);
+    void BeginHold(float x, float y, float z, ObjectGuid pullTargetGuid);
+    void ReleaseHold();
+    bool IsHolding() const { return m_holdPosition; }
+    bool ShouldBreakHold() const;
+    bool BeginPull(Unit* pTarget, float anchorX, float anchorY, float anchorZ);
+    bool IsPulling() const { return m_pullPhase != PULL_PHASE_NONE; }
+    void EndPull();
+    bool UpdatePullSequence();
+    uint32 GetRangedAttackSpellId() const;
+    float GetPullStandoffDistance() const;
+    bool FirePullAttack(Unit* pTarget);
     Unit* SelectHealTargetOutOfReach() const;
     Unit const* GetCurrentFollowTarget() const;
     uint32 ScaleTankRage(uint32 rage) const;
@@ -143,6 +165,18 @@ public:
     // Throttle for the "still down" lines, which are otherwise asked for once a second for as
     // long as the bot stays dead.
     time_t m_lastDeathLog = 0;
+    // Coordinated pull. m_holdPosition itself lives on the base class, next to the chase it has to
+    // be able to refuse. The anchor is remembered so that the puller has somewhere to come back to,
+    // and so a bot shoved off its spot has somewhere to return to.
+    float m_holdX = 0.0f;
+    float m_holdY = 0.0f;
+    float m_holdZ = 0.0f;
+    time_t m_holdSince = 0;
+    // What the hold is waiting for. Empty for a hold asked for on its own, which then waits only for
+    // the order to release.
+    ObjectGuid m_pullTargetGuid;
+    PartyBotPullPhase m_pullPhase = PULL_PHASE_NONE;
+    time_t m_pullSince = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

@@ -1762,6 +1762,79 @@ bool ChatHandler::HandlePartyBotUnpauseCommand(char* args)
     return HandlePartyBotPauseHelper(args, false);
 }
 
+// The party bot AI behind a group member, or nothing if that member is a real player.
+static PartyBotAI* GetPartyBotAI(Player* pMember)
+{
+    if (!pMember || !pMember->AI())
+        return nullptr;
+
+    return dynamic_cast<PartyBotAI*>(pMember->AI());
+}
+
+// Which bot should do the pulling.
+//
+// Preference is about who can pull without walking into the pack: a hunter has Auto Shot and the
+// ammo for it, anyone holding a gun or a bow can do the same, and a tank is the fallback because it
+// is the one member that can afford to be hit on the way back if it comes to a body pull.
+static Player* SelectPuller(Group* pGroup, Player* pCommander)
+{
+    Player* pRangedPuller = nullptr;
+    Player* pTank = nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (pMember == pCommander)
+            continue;
+
+        PartyBotAI* pAI = GetPartyBotAI(pMember);
+        if (!pAI)
+            continue;
+
+        if (pAI->GetRangedAttackSpellId())
+        {
+            // A hunter is the best of these and is taken as soon as it is seen; anything else with
+            // something to shoot is kept in case no hunter turns up.
+            if (pMember->GetClass() == CLASS_HUNTER)
+                return pMember;
+
+            if (!pRangedPuller)
+                pRangedPuller = pMember;
+        }
+        else if (pAI->m_role == ROLE_TANK && !pTank)
+        {
+            pTank = pMember;
+        }
+    }
+
+    return pRangedPuller ? pRangedPuller : pTank;
+}
+
+// Hold every bot in the group except the puller, anchored where each already stands.
+static uint32 HoldGroupForPull(Group* pGroup, Player* pCommander, Player* pPuller, ObjectGuid pullTargetGuid)
+{
+    uint32 held = 0;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (pMember == pCommander || pMember == pPuller)
+            continue;
+
+        if (PartyBotAI* pAI = GetPartyBotAI(pMember))
+        {
+            // Anchored where the bot is standing rather than on the commander, so that a group
+            // already spread out over its formation stays spread out instead of piling onto one
+            // spot the moment it is told to wait.
+            pAI->BeginHold(pMember->GetPositionX(), pMember->GetPositionY(), pMember->GetPositionZ(),
+                           pullTargetGuid);
+            ++held;
+        }
+    }
+
+    return held;
+}
+
 bool ChatHandler::HandlePartyBotPullCommand(char* args)
 {
     Player* pPlayer = GetSession()->GetPlayer();
@@ -1781,37 +1854,121 @@ bool ChatHandler::HandlePartyBotPullCommand(char* args)
         return false;
     }
 
-    uint32 duration;
-    if (!ExtractUInt32(&args, duration))
-        duration = 10 * IN_MILLISECONDS;
+    // Named bot if one was given, otherwise the best available. Taking a name rather than a
+    // selection because the selection is already spoken for: it is the mob being pulled.
+    Player* pPuller = nullptr;
+    if (char* nameArg = ExtractArg(&args))
+    {
+        std::string name = nameArg;
+        if (!normalizePlayerName(name))
+        {
+            SendSysMessage("Invalid bot name.");
+            SetSentErrorMessage(true);
+            return false;
+        }
 
+        Player* pNamed = ObjectAccessor::FindPlayerByName(name.c_str());
+        if (!pNamed || !pNamed->IsInSameGroupWith(pPlayer) || !GetPartyBotAI(pNamed))
+        {
+            PSendSysMessage("%s is not a party bot in your group.", name.c_str());
+            SetSentErrorMessage(true);
+            return false;
+        }
+
+        pPuller = pNamed;
+    }
+    else
+    {
+        pPuller = SelectPuller(pGroup, pPlayer);
+    }
+
+    if (!pPuller)
+    {
+        SendSysMessage("No party bot in the group can pull.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PartyBotAI* pPullerAI = GetPartyBotAI(pPuller);
+    if (!pPuller->IsValidAttackTarget(pTarget) ||
+        !pPullerAI->BeginPull(pTarget, pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ()))
+    {
+        PSendSysMessage("%s cannot pull %s.", pPuller->GetName(), pTarget->GetName());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 const held = HoldGroupForPull(pGroup, pPlayer, pPuller, pTarget->GetObjectGuid());
+    bool const ranged = pPullerAI->GetRangedAttackSpellId() != 0;
+
+    PSendSysMessage("%s is pulling %s (%s); %u other party bot%s holding until it arrives.",
+                    pPuller->GetName(), pTarget->GetName(), ranged ? "at range" : "in melee",
+                    held, held == 1 ? " is" : "s are");
+    return true;
+}
+
+bool ChatHandler::HandlePartyBotHoldCommand(char* /*args*/)
+{
+    Player* pPlayer = GetSession()->GetPlayer();
+
+    Group* pGroup = pPlayer->GetGroup();
+    if (!pGroup)
+    {
+        SendSysMessage("You are not in a group.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // No pull target, so the hold waits to be told rather than waiting for a mob. That is the point
+    // of having it separately: pull with whatever you like and the group will not run out to meet it.
+    uint32 const held = HoldGroupForPull(pGroup, pPlayer, nullptr, ObjectGuid());
+    if (!held)
+    {
+        SendSysMessage("There are no party bots in the group.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PSendSysMessage("%u party bot%s holding position. They will still heal and fight what reaches "
+                    "them, and will break if attacked.", held, held == 1 ? " is" : "s are");
+    return true;
+}
+
+bool ChatHandler::HandlePartyBotReleaseCommand(char* /*args*/)
+{
+    Player* pPlayer = GetSession()->GetPlayer();
+
+    Group* pGroup = pPlayer->GetGroup();
+    if (!pGroup)
+    {
+        SendSysMessage("You are not in a group.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 released = 0;
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
-        if (Player* pMember = itr->getSource())
-        {
-            if (pMember == pPlayer)
-                continue;
+        Player* pMember = itr->getSource();
+        if (pMember == pPlayer)
+            continue;
 
-            if (pMember->AI())
+        if (PartyBotAI* pAI = GetPartyBotAI(pMember))
+        {
+            // Abandons a pull in progress as well as a plain hold, so that one command undoes
+            // whatever the group was told to do and there is no half-released state to reason about.
+            if (pAI->IsPulling())
+                pAI->EndPull();
+
+            if (pAI->IsHolding())
             {
-                if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
-                {
-                    if (pAI->m_role == ROLE_MELEE_DPS || pAI->m_role == ROLE_RANGE_DPS)
-                    {
-                        HandlePartyBotPauseApplyHelper(pMember, duration);
-                        continue;
-                    }
-                    else if (pAI->m_role == ROLE_TANK)
-                    {
-                        if (pMember->IsValidAttackTarget(pTarget))
-                            pAI->AttackStart(pTarget);
-                    }
-                }
+                pAI->ReleaseHold();
+                ++released;
             }
         }
     }
 
-    PSendSysMessage("Tank party bots are pulling %s, DPS party bots are paused for %d seconds.", pTarget->GetName(), (duration / IN_MILLISECONDS));
+    PSendSysMessage("%u party bot%s released.", released, released == 1 ? " was" : "s were");
     return true;
 }
 
