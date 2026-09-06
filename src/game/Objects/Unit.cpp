@@ -9761,13 +9761,16 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
 // being judged plus the widest radius the unit could end up sitting inside once it arrives.
 float const Unit::AGGRO_POSITION_SEARCH_RADIUS = 60.0f;
 
-Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const
+Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin, Unit const* pIgnore /*= nullptr*/) const
 {
     std::list<Unit*> enemies;
     GetEnemyListInRadiusAround(this, AGGRO_POSITION_SEARCH_RADIUS, enemies);
 
     for (Unit* pEnemy : enemies)
     {
+        if (pEnemy == pIgnore)
+            continue;
+
         Creature* pCreature = pEnemy->ToCreature();
         if (WouldPositionAggroCreature(pCreature, x, y, z, margin))
             return pCreature;

@@ -1995,6 +1995,11 @@ class Player final: public Unit
         // extra pack in a dungeon would leave an AV bot refusing to leave the starting cave.
         bool AvoidsAggroPulls() const { return m_avoidAggroPulls; }
         void SetAvoidAggroPulls(bool enable) { m_avoidAggroPulls = enable; }
+        // The one creature this player has been sent to pull, which the rule above must let it walk
+        // up to. Held as a guid rather than a pointer because it survives across ticks, and the mob
+        // can die or despawn in between.
+        ObjectGuid GetPullExemption() const { return m_pullExemptGuid; }
+        void SetPullExemption(ObjectGuid guid) { m_pullExemptGuid = guid; }
         // Throttle for the refusal log, which is asked on every recomputed path and would otherwise
         // write hundreds of identical lines a second while a bot holds still.
         bool ShouldLogPullBlock() const;
@@ -2404,6 +2409,7 @@ class Player final: public Unit
         bool   m_smartInstanceRebind;
         uint32 m_homebindTimer;
         bool   m_avoidAggroPulls = false;
+        ObjectGuid m_pullExemptGuid;
         mutable time_t m_lastPullBlockLog = 0;
 
         void ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr);

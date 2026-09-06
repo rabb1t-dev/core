@@ -65,10 +65,17 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
     if (enemies.empty())
         return nullptr;
 
+    // The mob this bot was sent to pull, which it has to be allowed to walk up to. Compared by
+    // guid rather than resolved to a pointer, since the answer is only ever used for this test.
+    ObjectGuid const exemptGuid = pPlayer->GetPullExemption();
+
     for (Unit* pEnemy : enemies)
     {
         Creature* pCreature = pEnemy->ToCreature();
         if (!pCreature)
+            continue;
+
+        if (!exemptGuid.IsEmpty() && pCreature->GetObjectGuid() == exemptGuid)
             continue;
 
         for (auto const& point : points)
