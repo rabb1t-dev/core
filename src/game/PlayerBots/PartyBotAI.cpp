@@ -149,6 +149,16 @@ static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
 // being unable to reach them.
 #define PB_HEAL_REPOSITION_DIST 10.0f
 
+// What a healer needs before it spends mana on damage rather than saving it. Both conditions have
+// to hold at once: a full bar while the tank sits at eighty percent means the next few seconds
+// belong to healing, and a group at full health with a third of a bar left means the mana does.
+static constexpr float PB_FILLER_MANA_PERCENT = 80.0f;
+static constexpr float PB_FILLER_PARTY_HEALTH = 90.0f;
+// When a filler cast already under way is worth throwing away. Smite is two and a half seconds and
+// nothing else can be cast during it, so without this the group's healing waits on damage nobody
+// asked for. Lower than the threshold above so the two do not argue over the same tick.
+static constexpr float PB_FILLER_ABANDON_HEALTH = 80.0f;
+
 // How close the pulled mob has to get before the party stops waiting and fights it. Generous on
 // purpose: the point is to be sure the mob has committed to coming, and a held melee bot that breaks
 // a little early still only walks the last few yards rather than the length of the room.
@@ -3658,8 +3668,91 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
         UpdateInCombatAI_Priest();
 }
 
+// Damage a healer can add without costing the group any healing, and the wand it should be firing
+// the rest of the time. Reached only after every heal has been considered and declined, so nothing
+// here can ever outrank one.
+//
+// A healer priest with a healthy group did nothing at all before this. The branch that handles
+// healing takes every healer, and the branch holding the damage spells and the wand is its else, so
+// a priest with nobody to heal fell out of the function having cast nothing: no wand, no dot, no
+// filler, for as long as the group stayed healthy. That is most of a trash fight.
+//
+// Deliberately no AttackStart. Attack sets a target without asking anything of the movement
+// generators, so the priest keeps its ground and its distance. AttackStart would send it walking
+// into melee, which for a healer is how it dies and how the group loses its healing.
+bool PartyBotAI::AddFillerDamage(Unit* pTarget)
+{
+    if (!pTarget || !IsValidHostileTarget(pTarget) || !me->IsWithinLOSInMap(pTarget))
+        return false;
+
+    bool const manaToSpare = me->GetPowerPercent(POWER_MANA) >= PB_FILLER_MANA_PERCENT &&
+                            !SelectHealTarget(PB_FILLER_PARTY_HEALTH, PB_FILLER_PARTY_HEALTH);
+
+    if (manaToSpare)
+    {
+        // Cheapest damage per point of mana in the book and instant, so it costs the group no
+        // healing latency at all. Only worth applying once: a dot recast on top of itself throws
+        // away every tick it had left.
+        if (m_spells.priest.pShadowWordPain &&
+           !pTarget->HasAura(m_spells.priest.pShadowWordPain->Id) &&
+            CanTryToCastSpell(pTarget, m_spells.priest.pShadowWordPain))
+        {
+            if (DoCastSpell(pTarget, m_spells.priest.pShadowWordPain) == SPELL_CAST_OK)
+                return true;
+        }
+
+        if (m_spells.priest.pSmite &&
+            CanTryToCastSpell(pTarget, m_spells.priest.pSmite))
+        {
+            if (DoCastSpell(pTarget, m_spells.priest.pSmite) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+
+    // The wand asks for no mana whatsoever, so it is not gated on having any to spare: a healer
+    // saving every point for the tank should still be firing it. It is an autorepeat, so it sits on
+    // its own timer and gives way to a heal the moment one is wanted, then picks itself back up.
+    if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
+       !me->IsMoving() &&
+       !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+    {
+        SpellEntry const* pWand = sSpellMgr.GetSpellEntry(PB_SPELL_SHOOT_WAND);
+        if (pWand && pWand->IsTargetInRange(me, pTarget))
+        {
+            me->SetFacingToObject(pTarget);
+            me->Attack(pTarget, false);
+            return me->CastSpell(pTarget, PB_SPELL_SHOOT_WAND, false) == SPELL_CAST_OK;
+        }
+    }
+
+    return false;
+}
+
+// Whether the spell currently going out is one of the fillers above. Cheaper than tracking a flag
+// through the cast and it cannot fall out of step with what was actually cast.
+bool PartyBotAI::IsCastingFillerDamage() const
+{
+    Spell const* pSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell || !pSpell->m_spellInfo)
+        return false;
+
+    uint32 const id = pSpell->m_spellInfo->Id;
+    return (m_spells.priest.pSmite && id == m_spells.priest.pSmite->Id) ||
+           (m_spells.priest.pShadowWordPain && id == m_spells.priest.pShadowWordPain->Id);
+}
+
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
+    // A filler nuke is worth abandoning the instant somebody actually needs healing. Nothing else
+    // can be cast while one is going out, so a Smite started against a healthy group and left to
+    // run holds up the first heal of a fight that has just turned.
+    if (GetRole() == ROLE_HEALER &&
+        IsCastingFillerDamage() &&
+        SelectHealTarget(PB_FILLER_ABANDON_HEALTH, PB_FILLER_ABANDON_HEALTH))
+    {
+        me->InterruptNonMeleeSpells(false);
+    }
+
     // Shielding itself was the first thing this function did, on no condition beyond owning the
     // spell, and it returned, so the tick was spent. A priest standing safely at the back at full
     // health put the shield straight back up every time it lapsed, all fight. The capture that
@@ -3740,6 +3833,19 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
+
+        // Every heal has now been declined, and for a healer this used to be where the tick ended.
+        // A healer holds no victim of its own -- target acquisition in UpdateAI skips the role
+        // outright -- so the group's current target has to be looked up rather than read off, and
+        // it is only borrowed to shoot at, never chased.
+        // The leader is guaranteed by UpdateAI, which drops the bot outright without one, but
+        // SelectAttackTarget dereferences it, so it is not left to that guarantee holding.
+        if (GetRole() == ROLE_HEALER)
+        {
+            if (Player* pLeader = GetPartyLeader())
+                if (AddFillerDamage(SelectAttackTarget(pLeader)))
+                    return;
+        }
     }
     else if (Unit* pVictim = me->GetVictim())
     {
