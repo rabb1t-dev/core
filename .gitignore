@@ -120,3 +120,7 @@ migrations_list.h
 Progression.h
 
 __pycache__/
+
+# Editor and tooling state, not project code.
+.claude/
+.obsidian/
