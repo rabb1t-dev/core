@@ -261,6 +261,17 @@ public:
     // has no dungeon to have tactics for, is unaffected.
     virtual float GetTacticalStandoff(Unit const* /*pTarget*/) const { return 0.0f; }
     bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
+
+    // The route, not just where it ends. A destination clear of every aggro radius is no use if
+    // getting there crosses one, which is how a bot walks through a pack to stand safely past it.
+    bool WouldPathPullExtraEnemies(float x, float y, float z) const;
+
+    // A way to somewhere that the direct line cannot reach safely: the same destination approached
+    // off a bearing, the way a player steers a few degrees wide of a camp rather than stopping.
+    // False when nothing within the search found a clear route.
+    bool FindSafeDetour(float destX, float destY, float destZ,
+                        float& outX, float& outY, float& outZ) const;
+
     bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();
 

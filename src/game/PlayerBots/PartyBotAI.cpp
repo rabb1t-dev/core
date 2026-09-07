@@ -244,6 +244,19 @@ enum PbInterruptPriority : uint32
 // spell list and has to be named.
 static constexpr uint32 PB_SPELL_WAR_STOMP = 20549;
 
+// Backing a fight away from a neighbouring camp.
+//
+// The margin is wider than the ordinary pull check: this is asking whether the fight is being had
+// uncomfortably close to something, not whether one step would wake it, and the whole point is to
+// act before anybody's repositioning does. The step is short because a tank that drags a mob too
+// far loses it to its leash, and the gap bounds keep the tank from walking a boss into the group
+// or wandering off after a leader who is halfway across the instance.
+static constexpr float PB_DRAG_BACK_MARGIN = 8.0f;
+static constexpr float PB_DRAG_BACK_STEP = 8.0f;
+static constexpr float PB_DRAG_BACK_MIN_GAP = 10.0f;
+static constexpr float PB_DRAG_BACK_MAX_GAP = 40.0f;
+static constexpr time_t PB_DRAG_BACK_INTERVAL = 5;
+
 // Walking out of the reach of something rooted or stunned on top of us.
 //
 // A minimum of what has to be left on the hold, so the walk buys more than the swing it costs: a
@@ -479,10 +492,14 @@ bool PartyBotAI::RunAwayFromTarget(Unit* pEnemy)
     // trade than starting a second one on top of it.
     float x, y, z;
     pEnemy->GetNearPoint(me, x, y, z, 0, PB_DISTANCING_RANGE, pEnemy->GetAngle(me));
-    if (WouldPositionPullExtraEnemies(x, y, z))
-        return false;
 
-    return me->GetMotionMaster()->MoveDistance(pEnemy, PB_DISTANCING_RANGE);
+    // Straight back if straight back is clear, and round the side if it is not. Refusing outright
+    // was the old answer and it meant a caster cornered between the thing hitting it and a camp
+    // behind stood there and took it, when a few degrees off the line would have done.
+    if (!WouldPathPullExtraEnemies(x, y, z))
+        return me->GetMotionMaster()->MoveDistance(pEnemy, PB_DISTANCING_RANGE);
+
+    return SafeMoveTo(x, y, z);
 }
 
 // Stand here until the fight comes to us.
@@ -3059,6 +3076,104 @@ static uint32 GetHeldInPlaceDurationMs(Unit const* pEnemy)
 //
 // Melee roles are excluded: being inside that radius is their job, and a rooted target is the best
 // thing that can happen to them.
+// Go there if the way is clear, go most of the way round if it is not, and only give up if there
+// is no way round at all.
+//
+// The refusals this replaces were all of the form "the route is not safe, so stay put", which is
+// half a decision: correct about the route and useless about the goal. In a corridor it is also
+// permanent, because standing still does not change what the direct line crosses, which is the
+// freezing that looks like the bot has stopped working.
+bool PartyBotAI::SafeMoveTo(float x, float y, float z)
+{
+    if (!WouldPathPullExtraEnemies(x, y, z))
+    {
+        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+        return true;
+    }
+
+    float detourX, detourY, detourZ;
+    if (!FindSafeDetour(x, y, z, detourX, detourY, detourZ))
+        return false;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] detour bot='%s' role=%s went wide to (%.1f %.1f) rather than "
+                 "straight at (%.1f %.1f)",
+                 me->GetName(), GetRoleName(GetRole()), detourX, detourY, x, y);
+    }
+
+    me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING);
+    return true;
+}
+
+// Back a fight away from whatever is standing next to it.
+//
+// The tank's job includes where the fight happens, and nothing here ever treated it as a decision.
+// A mob pulled from the edge of a camp stays at the edge of that camp for the whole fight, so every
+// bot that has to reposition during it - a rogue going for the rear, a healer stepping into range,
+// a caster backing out of melee - is doing so in a space bounded by a pack that is one stray step
+// from joining in. Moving the tank a few yards back towards the group moves all of that at once,
+// because everything on the tank follows the tank.
+//
+// Only the tank, only with aggro, and only when there is somewhere better: dragging a mob is how a
+// tank loses it if the drag goes further than the leash.
+bool PartyBotAI::DragFightAwayFromNeighbours()
+{
+    if (m_role != ROLE_TANK || !me->IsInCombat() || m_holdPosition || IsInDuel())
+        return false;
+
+    if (me->IsNonMeleeSpellCasted() || IsPulling())
+        return false;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastDragBack < PB_DRAG_BACK_INTERVAL)
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !me->CanReachWithMeleeAutoAttack(pVictim))
+        return false;
+
+    // Nothing to get away from.
+    if (!me->FindUnengagedCreatureAggroedByPosition(me->GetPositionX(), me->GetPositionY(),
+                                                    me->GetPositionZ(), PB_DRAG_BACK_MARGIN))
+        return false;
+
+    Player* pLeader = GetPartyLeader();
+    if (!pLeader || pLeader->GetMapId() != me->GetMapId())
+        return false;
+
+    // Back towards the group, not away from the camp: away from one camp is towards whatever else
+    // is out there, and the group's own position is the one place known to be clear, because the
+    // group is standing in it.
+    float const distanceToLeader = me->GetDistance(pLeader);
+    if (distanceToLeader < PB_DRAG_BACK_MIN_GAP || distanceToLeader > PB_DRAG_BACK_MAX_GAP)
+        return false;
+
+    float x, y, z;
+    me->GetNearPoint(me, x, y, z, 0, PB_DRAG_BACK_STEP, me->GetAngle(pLeader));
+
+    if (WouldPathPullExtraEnemies(x, y, z))
+        return false;
+
+    // And it has to actually be an improvement.
+    if (me->FindUnengagedCreatureAggroedByPosition(x, y, z, PB_DRAG_BACK_MARGIN))
+        return false;
+
+    m_lastDragBack = now;
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] dragback bot='%s' pulled '%s' %.1fy back towards the group to clear "
+                 "a neighbouring camp",
+                 me->GetName(), pVictim->GetName(), PB_DRAG_BACK_STEP);
+    }
+
+    return true;
+}
+
 bool PartyBotAI::StepAwayFromHeldAttacker()
 {
     if (m_role == ROLE_TANK || m_role == ROLE_MELEE_DPS)
@@ -3192,20 +3307,17 @@ bool PartyBotAI::RecoverLineOfSight()
     float x, y, z;
     pTarget->GetNearPoint(me, x, y, z, 0, stepTo, pTarget->GetAngle(me));
 
-    // The same rule the rest of the movement obeys. A firing line that wakes the next room is not
-    // a firing line, and standing blind is the better of the two.
-    if (WouldPositionPullExtraEnemies(x, y, z))
-    {
-        m_lastBlindStep = now;
-        return false;
-    }
-
     m_lastBlindStep = now;
 
     if (!me->IsStopped())
         me->StopMoving();
     me->GetMotionMaster()->Clear(false, true);
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+
+    // The same rule the rest of the movement obeys, with the same escape: a firing line that wakes
+    // the next room is not a firing line, but going a few degrees wide of the thing in the way is
+    // usually enough to get one, and standing blind is only better than the two of those failing.
+    if (!SafeMoveTo(x, y, z))
+        return false;
 
     if (IsCombatLogged())
     {
@@ -4621,6 +4733,12 @@ void PartyBotAI::UpdateInCombatAI()
     // casting instead of stepping is another swing of it.
     if (StepAwayFromHeldAttacker())
         return;
+
+    // The tank deciding where the fight happens, which is upstream of every other bot's
+    // positioning problem: move the fight and the rogue's rear, the healer's range and the
+    // caster's standoff all move with it. Does not return, because backing up a few yards is
+    // something a tank does while continuing to hold threat, not instead of it.
+    DragFightAwayFromNeighbours();
 
     // Ahead of every role, because an interrupt is worth more than whatever that role was going to
     // do with the tick and because the classes that own one are spread across all of them. Most

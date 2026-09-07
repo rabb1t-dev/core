@@ -4347,6 +4347,24 @@ void CombatBotBaseAI::UpdateVisualHonorRankBasedOnItems()
 // whole path, so a spot this class approves is not then refused on arrival.
 static constexpr float CB_PULL_CHECK_MARGIN = 3.0f;
 
+// How finely a route is sampled when asking whether walking it wakes anything, and a ceiling on
+// how many samples one answer costs. Four yards is comfortably inside any real aggro radius, so a
+// creature cannot sit entirely between two samples; the cap keeps a long march from turning one
+// movement decision into a hundred enemy searches.
+static constexpr float CB_PATH_SAMPLE_STEP = 4.0f;
+static constexpr uint32 CB_PATH_MAX_SAMPLES = 24;
+
+// Bearings tried when the direct line is not safe, nearest first, each one mirrored left and
+// right. Stops at two thirds of a right angle: past that the bot is walking sideways rather than
+// towards anything, and if nothing inside that arc is clear then there is no way through.
+static constexpr float CB_DETOUR_ANGLES[] =
+{
+    0.0f, M_PI_F / 12.0f, M_PI_F / 6.0f, M_PI_F / 4.0f, M_PI_F / 3.0f
+};
+
+// How far one leg of a detour goes before the decision is made again.
+static constexpr float CB_DETOUR_LEG_LENGTH = 12.0f;
+
 // How far a feared creature ends up from whoever feared it. A fear does not send a mob wandering a
 // few steps: FleeingMovementGenerator runs it out until it is between twenty eight and thirty eight
 // yards of the caster and then moves it at random inside that band for the rest of the duration.
@@ -4418,6 +4436,105 @@ bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z) c
 // Refused on any unengaged creature in the band rather than on a judgement about which of them would
 // answer, because the faction and flag rules that decide who assists are not knowable from here with
 // any confidence, and guessing wrong costs the run.
+// Whether walking there crosses anything's aggro radius on the way.
+//
+// The destination check on its own is what let a bot walk straight through a camp to stand safely
+// on the far side of it: MoveDistance and MovePoint both aggro-check where the bot ends up and
+// nothing about the ground between. Sampled rather than swept, which can miss a creature whose
+// radius fits entirely between two samples, but the step is well under any real aggro radius so
+// that needs a creature with almost none.
+bool CombatBotBaseAI::WouldPathPullExtraEnemies(float x, float y, float z) const
+{
+    if (me->HasAttackOrders())
+        return false;
+
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+    float const startZ = me->GetPositionZ();
+
+    float const dx = x - startX;
+    float const dy = y - startY;
+    float const dz = z - startZ;
+
+    float const distance = sqrt(dx * dx + dy * dy);
+    if (distance < CB_PATH_SAMPLE_STEP)
+        return WouldPositionPullExtraEnemies(x, y, z);
+
+    uint32 const steps = std::min(uint32(distance / CB_PATH_SAMPLE_STEP) + 1, CB_PATH_MAX_SAMPLES);
+
+    for (uint32 i = 1; i <= steps; ++i)
+    {
+        float const t = float(i) / float(steps);
+        if (WouldPositionPullExtraEnemies(startX + dx * t, startY + dy * t, startZ + dz * t))
+            return true;
+    }
+
+    return false;
+}
+
+// Steer around what the straight line would wake.
+//
+// A bot that refuses an unsafe route and then stands still is doing the safe thing and the useless
+// thing at once, which in a corridor is most of the time: the direct line clips a camp, the bot
+// stops, and it stays stopped because the line never changes. A player in that position walks a few
+// degrees wide and carries on, so this tries the same thing - the destination approached off a
+// bearing, widening until something is clear.
+//
+// Reports the first waypoint whose leg is safe, not the whole route. The caller moves to it and the
+// next update runs this again from there, so the detour is followed one leg at a time and re-judged
+// against wherever everything has moved to meanwhile.
+bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
+                                     float& outX, float& outY, float& outZ) const
+{
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+
+    float const dx = destX - startX;
+    float const dy = destY - startY;
+    float const distance = sqrt(dx * dx + dy * dy);
+
+    if (distance < CB_PATH_SAMPLE_STEP)
+        return false;
+
+    float const directAngle = atan2(dy, dx);
+
+    // How far along to place the waypoint. Short of the destination on a wide swing, because the
+    // point of swinging wide is to not be on the direct line, and a full length leg at forty five
+    // degrees ends up further from the destination than it started.
+    float const legLength = std::min(distance, CB_DETOUR_LEG_LENGTH);
+
+    for (float offset : CB_DETOUR_ANGLES)
+    {
+        // Both ways round, nearer bearings first, so the detour is the smallest one that works.
+        for (float sign : { 1.0f, -1.0f })
+        {
+            if (offset == 0.0f && sign < 0.0f)
+                continue;
+
+            float const angle = directAngle + offset * sign;
+            float const x = startX + cos(angle) * legLength;
+            float const y = startY + sin(angle) * legLength;
+            float z = me->GetPositionZ();
+
+            me->UpdateAllowedPositionZ(x, y, z);
+
+            if (WouldPathPullExtraEnemies(x, y, z))
+                continue;
+
+            // And it has to be somewhere the bot can actually walk to.
+            if (!me->IsWithinLOS(x, y, z + 2.0f))
+                continue;
+
+            outX = x;
+            outY = y;
+            outZ = z;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool CombatBotBaseAI::WouldFearPullExtraEnemies() const
 {
     std::list<Unit*> enemies;
@@ -4531,8 +4648,38 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
     else if (me->HasDistanceCasterMovement())
         me->SetCasterChaseDistance(0.0f);
 
+    // Melee damage stands behind its target, for Backstab and to stay off the front where a parry
+    // costs it. But behind the target is a position like any other, and this was the one position
+    // nothing ever checked: told to kill something on the edge of a camp, a rogue would walk around
+    // it into the camp, because the angle is handed to the chase generator and the generator has no
+    // idea what a pull is. Stand in front instead when the rear is not safe. Losing Backstab is a
+    // fraction of this bot's damage; waking a second pack costs the group the fight.
+    float chaseAngle = 0.0f;
+
+    if (m_role == ROLE_MELEE_DPS)
+    {
+        chaseAngle = M_PI_F;
+
+        float x, y, z;
+        pVictim->GetNearPoint(me, x, y, z, 0, pVictim->GetObjectBoundingRadius() + 1.0f,
+                              pVictim->GetOrientation() + M_PI_F);
+
+        if (WouldPositionPullExtraEnemies(x, y, z))
+        {
+            chaseAngle = 0.0f;
+
+            if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] frontstand bot='%s' stayed in front of '%s': behind it is "
+                         "inside something else's aggro radius",
+                         me->GetName(), pVictim->GetName());
+            }
+        }
+    }
+
     // we use dist = 1 always so we can specify angle, instead of spreading around target like mobs
-    me->GetMotionMaster()->MoveChase(pVictim, 1.0f, m_role == ROLE_MELEE_DPS ? M_PI_F : 0.0f);
+    me->GetMotionMaster()->MoveChase(pVictim, 1.0f, chaseAngle);
 }
 
 // A totem benefits the shaman's own party within this range of where it was planted, which is

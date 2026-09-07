@@ -1708,7 +1708,19 @@ bool HandlePartyBotComeToMeHelper(Player* pBot, Player* pPlayer)
                 pAI->ReleaseHold();
 
             pBot->InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
-            pBot->MonsterMove(pPlayer->GetPositionX(), pPlayer->GetPositionY(), pPlayer->GetPositionZ());
+
+            // Straight there if the line is clear, and a leg round the side if it is not. This
+            // used to be an unconditional MonsterMove, which in a tight instance means the bot
+            // walks the shortest line to its commander through whatever happens to be standing on
+            // it. SafeMoveTo takes the first safe leg instead; the follow that resumes on arrival
+            // closes the rest, re-judging as it goes.
+            if (!pAI->SafeMoveTo(pPlayer->GetPositionX(), pPlayer->GetPositionY(),
+                                 pPlayer->GetPositionZ()))
+            {
+                // No way round at all. Say so rather than appearing to obey and then not moving.
+                return false;
+            }
+
             return true;
         }
     }
