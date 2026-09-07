@@ -261,7 +261,6 @@ static constexpr float PB_GATHER_SHOUT_SAFETY_RADIUS = 14.0f;
 static constexpr uint32 PB_GATHER_SHOUT_MIN_TARGETS = 2;
 static constexpr float PB_GATHER_MAX_STRAY = 25.0f;
 static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
-static constexpr time_t PB_GATHER_MOVE_INTERVAL = 2;
 
 // Backing a fight away from a neighbouring camp.
 //
@@ -274,7 +273,16 @@ static constexpr float PB_DRAG_BACK_MARGIN = 8.0f;
 static constexpr float PB_DRAG_BACK_STEP = 8.0f;
 static constexpr float PB_DRAG_BACK_MIN_GAP = 10.0f;
 static constexpr float PB_DRAG_BACK_MAX_GAP = 40.0f;
-static constexpr time_t PB_DRAG_BACK_INTERVAL = 5;
+
+// A damage warrior's rage economy, in internal units: rage is stored at ten times its displayed
+// value, so 150 is fifteen rage. Bloodrage is reached for below the cost of the cheapest thing
+// worth casting, and the dump fires above the cost of Heroic Strike plus a little.
+static constexpr uint32 PB_WARRIOR_DPS_RAGE_LOW = 150;
+static constexpr uint32 PB_WARRIOR_DPS_RAGE_DUMP = 200;
+
+// How long between any two repositionings of a bot in combat, shared by every system that does it.
+// Long enough that a short walk completes and the bot settles before anything re-decides.
+static constexpr time_t PB_COMBAT_MOVE_INTERVAL = 3;
 
 // Walking out of the reach of something rooted or stunned on top of us.
 //
@@ -3260,6 +3268,28 @@ bool PartyBotAI::SafeMoveTo(float x, float y, float z)
 //
 // Only the tank, only with aggro, and only when there is somewhere better: dragging a mob is how a
 // tank loses it if the drag goes further than the leash.
+// Whether anything is allowed to reposition this bot right now.
+//
+// Three systems can move a warrior during a fight: the chase generator following its victim,
+// backing the fight off a neighbouring camp, and collecting loose adds. Each was sensible alone
+// and they had nothing in common, so the failure mode when they disagreed was a bot walking two
+// yards, re-deciding, and walking back - which from outside is a tank stuttering instead of
+// fighting. One clock and one rule: a point move already under way is left to finish, and nothing
+// else issues one until it has.
+bool PartyBotAI::CanIssueCombatMovement() const
+{
+    if (me->IsMoving() &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return false;
+
+    return (time(nullptr) - m_lastCombatMove) >= PB_COMBAT_MOVE_INTERVAL;
+}
+
+void PartyBotAI::NoteCombatMovement()
+{
+    m_lastCombatMove = time(nullptr);
+}
+
 // Everything currently hitting somebody who cannot take a hit.
 //
 // A loose enemy is one whose victim is a group member built to stand at range: a healer or a
@@ -3366,14 +3396,13 @@ bool PartyBotAI::GatherLooseEnemies()
         if (strayed < PB_GATHER_RETURN_DISTANCE)
             return false;
 
-        time_t const now = time(nullptr);
-        if (now - m_lastGatherMove < PB_GATHER_MOVE_INTERVAL)
+        if (!CanIssueCombatMovement())
             return false;
-
-        m_lastGatherMove = now;
 
         if (!SafeMoveTo(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ))
             return false;
+
+        NoteCombatMovement();
 
         if (IsCombatLogged())
         {
@@ -3382,7 +3411,11 @@ bool PartyBotAI::GatherLooseEnemies()
                      me->GetName(), strayed, uint32(me->GetAttackers().size()));
         }
 
-        return true;
+        // Walking is not what this bot does instead of fighting. Reported as not having consumed
+        // the tick so the rotation underneath still runs: a swing and a step happen at once in
+        // this game, and returning true here cost a warrior its whole rotation on every tick it
+        // repositioned.
+        return false;
     }
 
     // Threat on everything within reach in one global cooldown. Ahead of taunting or chasing any
@@ -3502,14 +3535,13 @@ bool PartyBotAI::GatherLooseEnemies()
         return false;
     }
 
-    time_t const now = time(nullptr);
-    if (now - m_lastGatherMove < PB_GATHER_MOVE_INTERVAL)
+    if (!CanIssueCombatMovement())
         return false;
-
-    m_lastGatherMove = now;
 
     if (!SafeMoveTo(pNearest->GetPositionX(), pNearest->GetPositionY(), pNearest->GetPositionZ()))
         return false;
+
+    NoteCombatMovement();
 
     if (IsCombatLogged())
     {
@@ -3518,7 +3550,8 @@ bool PartyBotAI::GatherLooseEnemies()
                  me->GetName(), GetRoleName(m_role), bestDistance, pNearest->GetName());
     }
 
-    return true;
+    // Walking towards it, and swinging at whatever is already in reach while doing so.
+    return false;
 }
 
 bool PartyBotAI::DragFightAwayFromNeighbours()
@@ -3529,8 +3562,7 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
     if (me->IsNonMeleeSpellCasted() || IsPulling())
         return false;
 
-    time_t const now = time(nullptr);
-    if (now - m_lastDragBack < PB_DRAG_BACK_INTERVAL)
+    if (!CanIssueCombatMovement())
         return false;
 
     Unit* pVictim = me->GetVictim();
@@ -3563,7 +3595,7 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
     if (me->FindUnengagedCreatureAggroedByPosition(x, y, z, PB_DRAG_BACK_MARGIN))
         return false;
 
-    m_lastDragBack = now;
+    NoteCombatMovement();
     me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
 
     if (IsCombatLogged())
@@ -7101,6 +7133,35 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             return;
         }
 
+        // Everything from here is a damage warrior, and the two abilities that decide how much
+        // damage one does were both missing from this list entirely. Splitting the tank's rotation
+        // out left them behind in it: across a whole run the tank used Bloodrage 113 times and
+        // Battle Shout 60, and the damage warrior managed four of each.
+        //
+        // Bloodrage first. It is free, it is off the global cooldown, it is twenty rage on a one
+        // minute cooldown, and a level twenty warrior spends most of a fight under fifteen rage -
+        // 165 ticks out of 194 in the capture - which is below the cost of every ability it owns.
+        // A warrior with no rage is a warrior auto-attacking, so this is worth more than anything
+        // it could be spent on.
+        if (m_spells.warrior.pBloodrage &&
+            me->GetPower(POWER_RAGE) < PB_WARRIOR_DPS_RAGE_LOW &&
+            CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBloodrage) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Then Battle Shout, which is not this warrior's damage but the whole group's: attack
+        // power for every melee in the party, on a two minute duration that nothing was renewing
+        // once a fight had started. Out of combat buffing covered the pull and nothing after it.
+        if (m_spells.warrior.pBattleShout &&
+           !me->HasAura(m_spells.warrior.pBattleShout->Id) &&
+            CanTryToCastSpell(me, m_spells.warrior.pBattleShout))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBattleShout) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.warrior.pExecute &&
            (pVictim->GetHealthPercent() < 20.0f) &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pExecute))
@@ -7310,7 +7371,13 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
             BeginChasing(pVictim);
         }
 
-        if (me->GetPower(POWER_RAGE) > 300)
+        // The rage dump, and the threshold was set for a warrior that has rage. Thirty is what a
+        // sixty warrior sits on between abilities; a twenty warrior reaches it a handful of times
+        // a fight, so Heroic Strike went out twelve times across a whole run against Overpower's
+        // 218. Twenty is enough for the fifteen it costs with a little left over, and being at the
+        // bottom of the list is correct for a dump: everything above it is either cheaper per
+        // point of damage or has a cooldown to respect.
+        if (me->GetPower(POWER_RAGE) > PB_WARRIOR_DPS_RAGE_DUMP)
         {
             if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1)
             {
@@ -7345,6 +7412,16 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
 bool PartyBotAI::ShouldEnterStealth() const
 {
     if (me->IsMounted())
+        return false;
+
+    // Stealth is for before a fight, not during one. Having a victim counted as a reason to
+    // stealth, and a victim is exactly what a rogue has once the fight has started, so it spent
+    // its openers re-stealthing into melee where the next swing broke it again: one run has 104
+    // Stealth casts and not a single Ambush, Garrote or Cheap Shot to show for them.
+    //
+    // Battlegrounds keep the old behaviour, where dropping out of a fight to re-stealth is a real
+    // move rather than a wasted global cooldown.
+    if (me->IsInCombat() && !me->InBattleGround())
         return false;
 
     if (me->GetVictim() || me->InBattleGround() || me->IsFFAPvP())

@@ -109,6 +109,8 @@ public:
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
     bool GatherLooseEnemies();
+    bool CanIssueCombatMovement() const;
+    void NoteCombatMovement();
     void CollectLooseEnemies(std::vector<Unit*>& out) const;
     Player* SelectResurrectionTarget(SpellEntry const* pSpellEntry) const;
     bool UseSelfResurrection();
@@ -263,16 +265,15 @@ public:
     // When this bot last walked out of a held mob's reach, so it steps once rather than every
     // tick for as long as the root lasts.
     time_t m_lastHeldStep = 0;
-    // When the tank last backed a fight away from a neighbouring camp, so it repositions once
-    // rather than shuffling backwards every tick it spends near one.
-    time_t m_lastDragBack = 0;
     // Where a warrior was standing when it began collecting, which is where the group already is
     // and so where the adds it collects should end up. Cleared when it leaves combat.
     bool m_hasGatherAnchor = false;
     float m_gatherAnchorX = 0.0f;
     float m_gatherAnchorY = 0.0f;
     float m_gatherAnchorZ = 0.0f;
-    time_t m_lastGatherMove = 0;
+    // One clock for every system that repositions a bot mid-fight, so they take turns rather than
+    // fight each other.
+    time_t m_lastCombatMove = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;
