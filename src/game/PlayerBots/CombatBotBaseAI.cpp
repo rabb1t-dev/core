@@ -3707,6 +3707,53 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (pTarget->IsImmuneToSpell(pSpellEntry, false))
         return false;
 
+    // What the target is, rather than what it resists.
+    //
+    // TargetCreatureType is a targeting restriction and not an immunity, so IsImmuneToSpell above
+    // never looks at it, and until now nothing else did either outside four hand-guarded crowd
+    // control sites. Shackle Undead was attempted 176 times in one Wailing Caverns run and failed
+    // 176 times, there being no undead in the instance, and Sap and Banish were not even among the
+    // four that were guarded. Every heal, buff, dispel and resurrection a bot casts carries a mask
+    // of zero, so this only ever refuses the spells that genuinely have a species in mind.
+    if (uint32 const allowedTypes = pSpellEntry->TargetCreatureType)
+    {
+        if (!(pTarget->GetCreatureTypeMask() & allowedTypes))
+            return false;
+    }
+
+    // Per-effect immunity, which is where taunt immunity lives.
+    //
+    // A taunt is nothing but its effect, so a creature flagged CREATURE_IMMUNITY_TAUNT is not
+    // immune to the spell by school or by mechanic and the check above waves it through: the tank
+    // spends the cooldown, the log records a successful cast, and the mob does not turn. The same
+    // holds for the stat and cast-speed immunities, and for any mechanic carried on the effect
+    // rather than on the spell.
+    //
+    // Refused only when every effect the spell has is blocked, so a nuke that also applies a
+    // debuff the target ignores is still cast for the nuke.
+    if (pTarget->ToCreature())
+    {
+        bool hasAnyEffect = false;
+        bool anyEffectLands = false;
+
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (!pSpellEntry->Effect[i])
+                continue;
+
+            hasAnyEffect = true;
+
+            if (!pTarget->IsImmuneToSpellEffect(pSpellEntry, SpellEffectIndex(i), false))
+            {
+                anyEffectLands = true;
+                break;
+            }
+        }
+
+        if (hasAnyEffect && !anyEffectLands)
+            return false;
+    }
+
     if (pSpellEntry->GetErrorAtShapeshiftedCast(me->GetShapeshiftForm()) != SPELL_CAST_OK)
         return false;
 

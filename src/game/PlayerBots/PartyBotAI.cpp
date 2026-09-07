@@ -2092,24 +2092,9 @@ bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget
     if (IsInDuel())
         return true;
 
-    // Most crowd control only takes on some kinds of creature, and nothing checked. Shackle
-    // Undead was attempted 176 times in one Wailing Caverns run and failed 176 times, because
-    // there is not a single undead in the instance: the priest spent the run trying to shackle
-    // snakes. Hibernate and Polymorph have the same restriction and would do the same thing.
-    if (uint32 const allowedTypes = pSpellEntry->TargetCreatureType)
-    {
-        if (!(pTarget->GetCreatureTypeMask() & allowedTypes))
-            return false;
-    }
-
-    // And where the creature is the right kind but immune anyway. The Nightmare Ectoplasms in
-    // that same instance are immune to root, so a mage would sink Frost Nova into them all day.
-    if (pTarget->IsImmuneToSpell(pSpellEntry, false))
-        return false;
-
-    if (pSpellEntry->Mechanic && pTarget->IsImmuneToMechanic(Mechanics(pSpellEntry->Mechanic)))
-        return false;
-
+    // Species and immunity are not checked here any more. Both live in CanTryToCastSpell, which
+    // every one of these sites already calls alongside this one, and which now covers the whole
+    // rotation rather than the four crowd control spells that happened to be guarded by hand.
     if (pSpellEntry->HasAuraInterruptFlag(AURA_INTERRUPT_DAMAGE_CANCELS) &&
         AreOthersOnSameTarget(pTarget->GetObjectGuid()))
         return false;
