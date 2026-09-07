@@ -144,6 +144,10 @@ enum CombatBotPoisons
 static constexpr uint32 CB_POISON_MIN_LEVEL = 20;
 static constexpr uint32 CB_POISON_STACK_SIZE = 10;
 
+// How many of the best weapons in a level band a bot picks between. One would mean every warrior
+// of a level carrying the same axe; the top handful means they all carry a good one.
+static constexpr uint32 CB_WEAPON_TOP_CHOICES = 4;
+
 // Speculative healing: starting a cast before anybody needs it, so that the heal lands at the
 // moment somebody does.
 //
@@ -211,6 +215,8 @@ public:
     PlayerPremadeSpecTemplate const* SelectPremadeSpecTemplate() const;
     void EquipPremadeGearTemplate();
     void EquipRandomGearInEmptySlots();
+    ItemPrototype const* SelectWeaponForSlot(std::vector<ItemPrototype const*> const& candidates,
+                                             uint8 slot) const;
     void AutoEquipGear(uint32 option);
     void LearnClassSpellsForLevel();
     void LearnRandomTalents();

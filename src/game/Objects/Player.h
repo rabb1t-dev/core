@@ -2034,6 +2034,8 @@ class Player final: public Unit
         /*********************************************************/
 
     private:
+        uint32 m_damageTally = 0;
+        uint32 m_healingTally = 0;
         bool m_isStandUpScheduled;
         uint32 m_detectInvisibilityTimer;
         uint32 m_ExtraFlags;
@@ -2054,6 +2056,18 @@ class Player final: public Unit
         void UpdateCorpseReclaimDelay();
     public:
         void ScheduleStandUp() { m_isStandUpScheduled = true; }
+
+        // Damage and healing done since something last asked, for the player bot combat log.
+        //
+        // A running tally rather than an event hook, because what the bot AI wants is a number per
+        // tick and what the core produces is one call per hit. Without it the log can say what a
+        // bot attempted and never what any of it was worth: a rotation change reads as a different
+        // list of spell names and nothing else, and "is this more damage" has to be inferred from
+        // how fast health bars move.
+        void AddDamageTally(uint32 amount) { m_damageTally += amount; }
+        void AddHealingTally(uint32 amount) { m_healingTally += amount; }
+        uint32 TakeDamageTally() { uint32 const v = m_damageTally; m_damageTally = 0; return v; }
+        uint32 TakeHealingTally() { uint32 const v = m_healingTally; m_healingTally = 0; return v; }
         bool IsStandUpScheduled() const { return m_isStandUpScheduled; }
         void ClearScheduledStandUp() { m_isStandUpScheduled = false; }
         UnitMountResult Mount(uint32 mount, uint32 spellId = 0) override;

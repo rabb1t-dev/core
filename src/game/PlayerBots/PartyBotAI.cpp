@@ -5106,14 +5106,14 @@ void PartyBotAI::LogCombatTick() const
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
                  "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u "
-                 "gcd=%u stance=%u",
+                 "gcd=%u stance=%u dmg=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  uint32(me->GetAttackers().size()),
                  pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
                  myThreat, topThreat, topName, uint32(hasAggro),
-                 gcd, uint32(me->GetShapeshiftForm()));
+                 gcd, uint32(me->GetShapeshiftForm()), me->TakeDamageTally());
         return;
     }
 
@@ -5143,7 +5143,7 @@ void PartyBotAI::LogCombatTick() const
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
                  "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u "
-                 "cp=%u cpmine=%u front=%u gcd=%u",
+                 "cp=%u cpmine=%u front=%u gcd=%u dmg=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
@@ -5154,7 +5154,7 @@ void PartyBotAI::LogCombatTick() const
                  uint32(me->IsStopped() ? 0 : 1),
                  uint32(m_holdPosition ? 1 : 0),
                  comboPoints, uint32(comboOnVictim ? 1 : 0),
-                 uint32(m_chasingInFront ? 1 : 0), gcd);
+                 uint32(m_chasingInFront ? 1 : 0), gcd, me->TakeDamageTally());
         return;
     }
 
@@ -5222,7 +5222,8 @@ void PartyBotAI::LogCombatTick() const
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u attackers=%u gcd=%u",
+             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u attackers=%u gcd=%u "
+             "healed=%u dmg=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",

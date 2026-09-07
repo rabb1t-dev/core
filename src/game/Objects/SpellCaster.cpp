@@ -769,6 +769,12 @@ int32 SpellCaster::DealHeal(Unit* pVictim, uint32 addhealth, SpellEntry const* s
 
     int32 gain = pVictim->ModifyHealth(int32(addhealth));
 
+    // Effective healing, not the size of the cast: gain is what the target actually took, so
+    // overheal is excluded and a healer topping somebody off at full health scores nothing for it.
+    // That is the number the healing work in the bot AI has been arguing about all along.
+    if (gain > 0 && IsPlayer())
+        static_cast<Player*>(this)->AddHealingTally(uint32(gain));
+
     SpellCaster* pHealer = this;
 
     if (IsCreature() && ((Creature*)this)->IsTotem())

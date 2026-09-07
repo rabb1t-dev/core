@@ -3462,6 +3462,90 @@ inline uint32 GetPrimaryItemStatForClassAndRole(uint8 playerClass, uint8 role)
     return ITEM_MOD_STAMINA;
 }
 
+// The weapon for a slot, chosen on what a weapon is for rather than by lot.
+//
+// Every slot was filled by SelectRandomContainerElement, a uniform pick across everything eligible,
+// which for armour is defensible - the primary stat filter has already run and one green chest is
+// much like another - and for a weapon is not. Weapon damage is the largest single term in a melee
+// character's output and it varies by a factor of two across the greens of any one level band, so
+// a warrior's damage was decided by a coin toss it then carried for the rest of the run. The stat
+// weights know this perfectly well, valuing weapon dps at fourteen against strength's five, but
+// they only ever saw the one item the roll had already produced: OptimizeEquipment rearranges what
+// a bot is carrying and cannot conjure the weapon it should have been given.
+//
+// Not the single best, though. The top few by damage, picked between, so warriors turning up with
+// good weapons does not mean every warrior turning up with the same one.
+ItemPrototype const* CombatBotBaseAI::SelectWeaponForSlot(
+    std::vector<ItemPrototype const*> const& candidates, uint8 slot) const
+{
+    if (slot != EQUIPMENT_SLOT_MAINHAND && slot != EQUIPMENT_SLOT_OFFHAND)
+        return nullptr;
+
+    auto weaponDps = [](ItemPrototype const* pProto) -> float
+    {
+        if (!pProto || pProto->Class != ITEM_CLASS_WEAPON || pProto->Delay <= 0)
+            return 0.0f;
+
+        float damage = 0.0f;
+        for (uint32 i = 0; i < MAX_ITEM_PROTO_DAMAGES; ++i)
+            damage += (pProto->Damage[i].DamageMin + pProto->Damage[i].DamageMax) * 0.5f;
+
+        return damage / (float(pProto->Delay) / 1000.0f);
+    };
+
+    // A rogue's damage runs through Backstab and its openers, and all three of those want a dagger
+    // in the hand doing the stabbing. Handing it the highest damage axe in the band is a downgrade
+    // dressed as an upgrade: the swing is bigger and Backstab, Ambush and Garrote are all gone.
+    bool const wantsDagger = me->GetClass() == CLASS_ROGUE &&
+                             slot == EQUIPMENT_SLOT_MAINHAND;
+
+    // A tank that takes a two-hander has nowhere to put a shield, and the slot is filled here
+    // before anything gets to notice.
+    bool const refuseTwoHand = (m_role == ROLE_TANK) && IsShieldClass(me->GetClass());
+
+    std::vector<ItemPrototype const*> ranked;
+    for (ItemPrototype const* pProto : candidates)
+    {
+        if (weaponDps(pProto) <= 0.0f)
+            continue;
+
+        if (refuseTwoHand && pProto->InventoryType == INVTYPE_2HWEAPON)
+            continue;
+
+        if (wantsDagger && pProto->SubClass != ITEM_SUBCLASS_WEAPON_DAGGER)
+            continue;
+
+        ranked.push_back(pProto);
+    }
+
+    // A rogue with no dagger in the band is better off with the best of whatever there is than
+    // with nothing in its hand at all.
+    if (ranked.empty() && wantsDagger)
+    {
+        for (ItemPrototype const* pProto : candidates)
+            if (weaponDps(pProto) > 0.0f)
+                ranked.push_back(pProto);
+    }
+
+    if (ranked.empty())
+        return nullptr;
+
+    std::sort(ranked.begin(), ranked.end(),
+        [&weaponDps](ItemPrototype const* a, ItemPrototype const* b)
+        {
+            float const da = weaponDps(a);
+            float const db = weaponDps(b);
+            if (da != db)
+                return da > db;
+
+            // Ties settled on id so two bots offered the same choice do not disagree by accident.
+            return a->ItemId < b->ItemId;
+        });
+
+    size_t const pool = std::min<size_t>(ranked.size(), CB_WEAPON_TOP_CHOICES);
+    return ranked[urand(0, uint32(pool) - 1)];
+}
+
 void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 {
     LearnArmorProficiencies();
@@ -3670,7 +3754,9 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
         if (itr.second.empty())
             continue;
 
-        ItemPrototype const* pProto = SelectRandomContainerElement(itr.second);
+        ItemPrototype const* pProto = SelectWeaponForSlot(itr.second, itr.first);
+        if (!pProto)
+            pProto = SelectRandomContainerElement(itr.second);
         if (!pProto)
             continue;
 

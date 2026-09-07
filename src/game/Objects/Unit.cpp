@@ -648,6 +648,11 @@ uint32 Unit::DealDamage(Unit* pVictim, uint32 damage, CleanDamage const* cleanDa
 #define SKIP_STEALTH (pVictim == this)
 #endif
 
+    // Credited to whoever dealt it, before any of the bookkeeping below can return early. Only
+    // damage to something else: self damage and environmental damage are not output.
+    if (damage && pVictim != this && IsPlayer())
+        static_cast<Player*>(this)->AddDamageTally(damage);
+
     // remove affects from attacker at any non-DoT damage (including 0 damage)
     if (damagetype != DOT)
     {
