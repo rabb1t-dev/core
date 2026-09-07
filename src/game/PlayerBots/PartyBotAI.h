@@ -109,6 +109,7 @@ public:
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
     bool GatherLooseEnemies();
+    void ReconsiderMeleeChaseAngle();
     bool CanIssueCombatMovement() const;
     void NoteCombatMovement();
     void CollectLooseEnemies(std::vector<Unit*>& out) const;
@@ -274,6 +275,7 @@ public:
     // One clock for every system that repositions a bot mid-fight, so they take turns rather than
     // fight each other.
     time_t m_lastCombatMove = 0;
+    time_t m_lastFacingCheck = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

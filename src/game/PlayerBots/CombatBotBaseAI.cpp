@@ -1894,19 +1894,44 @@ void CombatBotBaseAI::PopulateSpellData()
                 return nullptr;
             };
 
-            std::vector<SpellEntry const*> vPoisons;
-            for (SpellEntry const* pKnownPoison : { pKnownDeadlyPoison, pKnownInstantPoison,
-                                                    pKnownCripplingPoison, pKnownWoundPoison,
-                                                    pKnownMindNumbingPoison })
+            // Damage poisons, best first, and chosen rather than rolled for. Both weapons used to
+            // take a random pick out of everything known, so a rogue could spend a dungeon with
+            // Mind-numbing Poison on one hand and Crippling on the other: two effects that do no
+            // damage at all, on a class whose poisons are a real part of its output.
+            //
+            // Deadly leads where it is known, being the strongest, and Instant takes the off hand
+            // behind it. Below thirty only Instant exists and it goes on both.
+            SpellEntry const* pBestDamagePoison = nullptr;
+            SpellEntry const* pInstant = GetPoisonEnchant(pKnownInstantPoison);
+
+            for (SpellEntry const* pKnownPoison : { pKnownDeadlyPoison, pKnownWoundPoison,
+                                                    pKnownInstantPoison })
             {
                 if (SpellEntry const* pPoisonSpell = GetPoisonEnchant(pKnownPoison))
-                    vPoisons.push_back(pPoisonSpell);
+                {
+                    pBestDamagePoison = pPoisonSpell;
+                    break;
+                }
             }
 
-            if (!vPoisons.empty())
+            if (pBestDamagePoison)
             {
-                m_spells.rogue.pMainHandPoison = SelectRandomContainerElement(vPoisons);
-                m_spells.rogue.pOffHandPoison = SelectRandomContainerElement(vPoisons);
+                m_spells.rogue.pMainHandPoison = pBestDamagePoison;
+                m_spells.rogue.pOffHandPoison = pInstant ? pInstant : pBestDamagePoison;
+            }
+            else
+            {
+                // Nothing that does damage. A utility poison is still better than a bare weapon.
+                for (SpellEntry const* pKnownPoison : { pKnownCripplingPoison,
+                                                        pKnownMindNumbingPoison })
+                {
+                    if (SpellEntry const* pPoisonSpell = GetPoisonEnchant(pKnownPoison))
+                    {
+                        m_spells.rogue.pMainHandPoison = pPoisonSpell;
+                        m_spells.rogue.pOffHandPoison = pPoisonSpell;
+                        break;
+                    }
+                }
             }
 
             break;
@@ -4025,6 +4050,74 @@ void CombatBotBaseAI::ApplyProvisionEnchants()
 
         enchantSlot(slot, GetBotArmorEnchant(slot, me->GetClass(), m_role, level));
     }
+
+    // What actually landed, once, at spawn. Everything else about a bot's preparation is visible
+    // in the combat log as casts; this happens before any of that and would otherwise be knowable
+    // only by inspecting the character in game.
+    if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+    {
+        uint32 enchanted = 0;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (pItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT))
+                    ++enchanted;
+
+        Item* pMainHand = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] provision bot='%s' role=%s lvl=%u enchanted=%u slots, weapon enchant=%u",
+                 me->GetName(), GetRoleName(m_role), level, enchanted,
+                 pMainHand ? pMainHand->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) : 0);
+    }
+}
+
+// Teach a rogue its poisons and hand it the vials.
+//
+// Poisons are not trainer spells. They come off a quest chain at twenty, so nothing that learns
+// class spells by level picks them up, and of the premade rogue templates only the 29, 39 and 60
+// ones list the Poisons skill at all - the level 19 template, which is what a rogue running an
+// early dungeon is built from, teaches neither the skill nor a single poison. The result is a
+// rogue that has never in its life applied one, and poisons are a real part of a rogue's damage.
+//
+// Learned rather than granted as items because the selection above reads the trade spell the
+// rogue knows and finds the enchant by name from it, so an unlearned poison is invisible however
+// many vials are in the bags.
+void CombatBotBaseAI::LearnRoguePoisons()
+{
+    if (me->GetClass() != CLASS_ROGUE)
+        return;
+
+    uint32 const level = me->GetLevel();
+
+    // Instant Poison is the first of them and it is a level twenty spell.
+    if (level < CB_POISON_MIN_LEVEL)
+        return;
+
+    // The skill itself, which is what makes a vial applicable at all.
+    if (!me->HasSpell(CB_SPELL_POISONS_SKILL))
+        me->LearnSpell(CB_SPELL_POISONS_SKILL, false, false);
+
+    struct RoguePoison { uint32 spellId; uint32 itemId; uint32 minLevel; };
+
+    static RoguePoison const poisons[] =
+    {
+        { CB_SPELL_INSTANT_POISON,  CB_ITEM_INSTANT_POISON,  20 },
+        { CB_SPELL_DEADLY_POISON,   CB_ITEM_DEADLY_POISON,   30 },
+        { CB_SPELL_WOUND_POISON,    CB_ITEM_WOUND_POISON,    32 },
+    };
+
+    for (RoguePoison const& poison : poisons)
+    {
+        if (level < poison.minLevel)
+            continue;
+
+        if (!me->HasSpell(poison.spellId))
+            me->LearnSpell(poison.spellId, false, false);
+
+        // A vial is consumed per application, so a stack rather than one.
+        if (!me->HasItemCount(poison.itemId, 1))
+            AddItemToInventory(poison.itemId, CB_POISON_STACK_SIZE);
+    }
 }
 
 // Put the consumables in the bags. Drinking them is UseProvisionConsumables' job, and happens out
@@ -4032,6 +4125,8 @@ void CombatBotBaseAI::ApplyProvisionEnchants()
 void CombatBotBaseAI::StockProvisionConsumables()
 {
     uint32 const level = me->GetLevel();
+
+    LearnRoguePoisons();
 
     for (auto const& choice : GetBotConsumables(me->GetClass(), m_role, level))
     {
@@ -4723,6 +4818,11 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
                          me->GetName(), pVictim->GetName());
             }
         }
+
+        // Remembered so it can be undone. Standing in front costs Backstab, both stealth openers,
+        // and the rule that nothing can parry or block what it cannot see, so it is a fallback for
+        // as long as the rear is unsafe and no longer.
+        m_chasingInFront = (chaseAngle == 0.0f);
     }
 
     // we use dist = 1 always so we can specify angle, instead of spreading around target like mobs

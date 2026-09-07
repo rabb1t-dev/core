@@ -127,6 +127,23 @@ enum CombatBotRacials
     CB_SPELL_BERSERKING = 26297,            // troll: haste
 };
 
+// Rogue poisons. Off a quest chain rather than a trainer, so nothing that learns spells by level
+// finds them and only some of the premade templates list them.
+enum CombatBotPoisons
+{
+    CB_SPELL_POISONS_SKILL = 2842,          // grants the Poisons trade skill
+    CB_SPELL_INSTANT_POISON = 8681,         // level 20, makes item 6947
+    CB_SPELL_DEADLY_POISON = 2835,          // level 30, makes item 2892
+    CB_SPELL_WOUND_POISON = 13220,          // level 32, makes item 10918
+
+    CB_ITEM_INSTANT_POISON = 6947,
+    CB_ITEM_DEADLY_POISON = 2892,
+    CB_ITEM_WOUND_POISON = 10918,
+};
+
+static constexpr uint32 CB_POISON_MIN_LEVEL = 20;
+static constexpr uint32 CB_POISON_STACK_SIZE = 10;
+
 // Speculative healing: starting a cast before anybody needs it, so that the heal lands at the
 // moment somebody does.
 //
@@ -202,6 +219,7 @@ public:
     // consumables a real group turns up carrying. See BotProvisions.h for what and why.
     void ApplyProvisionEnchants();
     void StockProvisionConsumables();
+    void LearnRoguePoisons();
     bool UseProvisionConsumables();
 
     // Starting a heal before anybody needs it, and throwing it away if nobody comes to need it.
@@ -777,6 +795,12 @@ public:
     bool m_equipCheckPending = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
+
+    // Whether a melee bot settled in front of its target rather than behind it, which it only does
+    // when behind would have meant standing in something else's aggro radius. Recorded so the
+    // decision can be revisited: the chase generator is issued once and runs until something
+    // clears it, so without this the fallback lasts the whole fight.
+    mutable bool m_chasingInFront = false;
 
     // Who the heal currently in flight was begun for on spec, rather than because they were
     // already hurt. Empty whenever this bot is not holding such a cast.

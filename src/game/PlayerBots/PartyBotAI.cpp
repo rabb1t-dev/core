@@ -280,6 +280,11 @@ static constexpr float PB_DRAG_BACK_MAX_GAP = 40.0f;
 static constexpr uint32 PB_WARRIOR_DPS_RAGE_LOW = 150;
 static constexpr uint32 PB_WARRIOR_DPS_RAGE_DUMP = 200;
 
+// How often a melee bot rechecks whether it can get back behind its target. Short enough that it
+// returns to the rear promptly once the tank has moved the fight, long enough not to re-issue a
+// chase every tick.
+static constexpr time_t PB_MELEE_FACING_INTERVAL = 3;
+
 // How long between any two repositionings of a bot in combat, shared by every system that does it.
 // Long enough that a short walk completes and the bot settles before anything re-decides.
 static constexpr time_t PB_COMBAT_MOVE_INTERVAL = 3;
@@ -762,7 +767,24 @@ bool PartyBotAI::KeepBusy()
 
                         me->Attack(pVictim, false);
                         if (me->CastSpell(pVictim, pRanged, false) == SPELL_CAST_OK)
+                        {
+                            // Logged here rather than through DoCastSpell, which is what starts an
+                            // autorepeat rather than firing a shot and so would report a cast per
+                            // volley instead of per start. Without this a wanding priest and an
+                            // idle one are the same three lines of log, which is how the wand that
+                            // never fired went unnoticed for a whole run.
+                            if (IsCombatLogged())
+                            {
+                                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                         "[BotCombat] ranged bot='%s' role=%s started '%s' on '%s' "
+                                         "at %.1fy",
+                                         me->GetName(), GetRoleName(m_role),
+                                         pRanged->SpellName[0].c_str(), pVictim->GetName(),
+                                         me->GetDistance(pVictim));
+                            }
+
                             return true;
+                        }
                     }
                 }
             }
@@ -3268,6 +3290,57 @@ bool PartyBotAI::SafeMoveTo(float x, float y, float z)
 //
 // Only the tank, only with aggro, and only when there is somewhere better: dragging a mob is how a
 // tank loses it if the drag goes further than the leash.
+// Get back behind the target once it is safe to be there.
+//
+// Standing in front is a fallback, taken only when the spot behind the target sits inside
+// something else's aggro radius, and it is an expensive one: it gives up Backstab, both stealth
+// openers, and the rule that nothing parries or blocks what it cannot see. It has to end when the
+// reason for it does.
+//
+// It would not have. BeginChasing is called only when the movement generator has gone idle, and a
+// chase does not go idle while its target lives, so the angle chosen in the first second of a
+// fight was the angle for all of it - a rogue driven in front by a camp stayed in front for the
+// rest of the fight even after the tank had dragged the mob well clear of it.
+void PartyBotAI::ReconsiderMeleeChaseAngle()
+{
+    if (m_role != ROLE_MELEE_DPS || !me->IsInCombat() || m_holdPosition)
+        return;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim)
+        return;
+
+    // Only while actually chasing. A point move or a hold is somebody else's decision.
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+        return;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastFacingCheck < PB_MELEE_FACING_INTERVAL)
+        return;
+
+    m_lastFacingCheck = now;
+
+    float x, y, z;
+    pVictim->GetNearPoint(me, x, y, z, 0, pVictim->GetObjectBoundingRadius() + 1.0f,
+                          pVictim->GetOrientation() + M_PI_F);
+
+    bool const rearUnsafe = WouldPositionPullExtraEnemies(x, y, z);
+
+    // Already where it ought to be.
+    if (rearUnsafe == m_chasingInFront)
+        return;
+
+    BeginChasing(pVictim);
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] reface bot='%s' moved to the %s of '%s': the rear is now %s",
+                 me->GetName(), rearUnsafe ? "front" : "rear", pVictim->GetName(),
+                 rearUnsafe ? "unsafe" : "clear");
+    }
+}
+
 // Whether anything is allowed to reposition this bot right now.
 //
 // Three systems can move a warrior during a fight: the chase generator following its victim,
@@ -5055,9 +5128,22 @@ void PartyBotAI::LogCombatTick() const
         // Distance and reach together, since out of range is the commonest reason a bot with a
         // target is doing nothing at all, and the two roles fail it in opposite directions: a
         // melee bot stopped short of its victim, a caster driven inside its own standoff.
+        // Combo points, and whose they are. A rogue's whole damage profile turns on whether the
+        // points it has built are being spent, and the log could not answer that at all: the fix
+        // for a rotation that produced 712 builders and no Eviscerate has to be verifiable by
+        // something other than counting Eviscerates and hoping.
+        uint32 comboPoints = 0;
+        bool comboOnVictim = false;
+        if (me->GetClass() == CLASS_ROGUE || me->GetClass() == CLASS_DRUID)
+        {
+            comboPoints = me->GetComboPoints();
+            comboOnVictim = pVictim && me->GetComboTargetGuid() == pVictim->GetObjectGuid();
+        }
+
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
-                 "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u gcd=%u",
+                 "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u "
+                 "cp=%u cpmine=%u front=%u gcd=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
@@ -5066,7 +5152,9 @@ void PartyBotAI::LogCombatTick() const
                  uint32(meleeOn ? 1 : 0), autoRepeat,
                  uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
                  uint32(me->IsStopped() ? 0 : 1),
-                 uint32(m_holdPosition ? 1 : 0), gcd);
+                 uint32(m_holdPosition ? 1 : 0),
+                 comboPoints, uint32(comboOnVictim ? 1 : 0),
+                 uint32(m_chasingInFront ? 1 : 0), gcd);
         return;
     }
 
@@ -5174,6 +5262,9 @@ void PartyBotAI::UpdateInCombatAI()
     // caster's standoff all move with it. Does not return, because backing up a few yards is
     // something a tank does while continuing to hold threat, not instead of it.
     DragFightAwayFromNeighbours();
+
+    // Melee getting back behind its target once whatever drove it round the front has gone.
+    ReconsiderMeleeChaseAngle();
 
     // Warriors collecting whatever is loose onto themselves and walking it back to the group.
     // Above the rotation because a caster being chewed on is worth more than this warrior's next
