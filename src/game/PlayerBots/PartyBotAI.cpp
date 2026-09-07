@@ -247,6 +247,22 @@ enum PbInterruptPriority : uint32
 // spell list and has to be named.
 static constexpr uint32 PB_SPELL_WAR_STOMP = 20549;
 
+// Collecting loose enemies onto a warrior and walking them back to the group.
+//
+// The search range is how far a warrior will look for something worth fetching, and the stray
+// bound is measured from the anchor rather than from the warrior, because what needs preventing is
+// a warrior wandering off after an add and taking the fight with it. The shout radius is what
+// Demoralizing Shout is believed to reach; the safety radius is what gets scanned for anything not
+// yet in the fight, deliberately wider, since being wrong about the first costs a global cooldown
+// and being wrong about the second costs a pack.
+static constexpr float PB_GATHER_SEARCH_RANGE = 30.0f;
+static constexpr float PB_GATHER_SHOUT_RADIUS = 10.0f;
+static constexpr float PB_GATHER_SHOUT_SAFETY_RADIUS = 14.0f;
+static constexpr uint32 PB_GATHER_SHOUT_MIN_TARGETS = 2;
+static constexpr float PB_GATHER_MAX_STRAY = 25.0f;
+static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
+static constexpr time_t PB_GATHER_MOVE_INTERVAL = 2;
+
 // Backing a fight away from a neighbouring camp.
 //
 // The margin is wider than the ordinary pull check: this is asking whether the fight is being had
@@ -3244,6 +3260,267 @@ bool PartyBotAI::SafeMoveTo(float x, float y, float z)
 //
 // Only the tank, only with aggro, and only when there is somewhere better: dragging a mob is how a
 // tank loses it if the drag goes further than the leash.
+// Everything currently hitting somebody who cannot take a hit.
+//
+// A loose enemy is one whose victim is a group member built to stand at range: a healer or a
+// caster. Whatever is on the tank is by definition not loose, and whatever is on another melee is
+// a fair trade rather than an emergency, so neither counts.
+void PartyBotAI::CollectLooseEnemies(std::vector<Unit*>& out) const
+{
+    out.clear();
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+
+        if (pMember->GetMap() != me->GetMap())
+            continue;
+
+        CombatBotRoles const role = GetEffectiveRole(pMember);
+        if (role != ROLE_HEALER && role != ROLE_RANGE_DPS)
+            continue;
+
+        for (Unit* pAttacker : pMember->GetAttackers())
+        {
+            if (!pAttacker || !pAttacker->IsAlive() || pAttacker->GetVictim() == me)
+                continue;
+
+            if (!IsValidHostileTarget(pAttacker))
+                continue;
+
+            if (!me->IsWithinDist(pAttacker, PB_GATHER_SEARCH_RANGE))
+                continue;
+
+            // Not worth crossing a room for, and not worth a global cooldown either.
+            if (Creature const* pCreature = pAttacker->ToCreature())
+                if (pCreature->GetCreatureType() == CREATURE_TYPE_CRITTER)
+                    continue;
+
+            if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
+                continue;
+
+            if (std::find(out.begin(), out.end(), pAttacker) == out.end())
+                out.push_back(pAttacker);
+        }
+    }
+}
+
+// Collect what is loose and bring it back to where the group is standing.
+//
+// This is what a warrior in a competent group spends a fight doing and what none of these bots did
+// at all: everything loose stayed on whoever it had picked until a taunt happened to come off
+// cooldown, and taunt is one target every ten seconds. Watching a hardcore group clear this
+// instance, both warriors spend the Mutanus fight running the adds into a pile for the mage,
+// which is a behaviour made of three ordinary parts and no encounter knowledge.
+//
+// Any warrior, not only the tank. A damage warrior cannot taunt - taunt is Defensive Stance and it
+// is in Battle - but it can hit the thing, and threat from hitting it is enough to take a Deviate
+// off a priest. Demoralizing Shout is the piece that makes it a group behaviour rather than a
+// single peel: it is on no cooldown, works in any stance, reaches ten yards, and lands threat on
+// everything in that radius at once.
+bool PartyBotAI::GatherLooseEnemies()
+{
+    if (me->GetClass() != CLASS_WARRIOR)
+        return false;
+
+    if (!me->IsInCombat())
+    {
+        m_hasGatherAnchor = false;
+        return false;
+    }
+
+    if (m_holdPosition || IsInDuel() || IsPulling() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    // Where the collected adds are meant to end up. Taken the first time this runs in a fight,
+    // which is where the warrior was standing when the group engaged, and so where the group is.
+    if (!m_hasGatherAnchor)
+    {
+        m_hasGatherAnchor = true;
+        m_gatherAnchorX = me->GetPositionX();
+        m_gatherAnchorY = me->GetPositionY();
+        m_gatherAnchorZ = me->GetPositionZ();
+    }
+
+    std::vector<Unit*> loose;
+    CollectLooseEnemies(loose);
+
+    if (loose.empty())
+    {
+        // Nothing left to fetch. Walk whatever is already following back to the anchor so it piles
+        // up there rather than wherever the last add happened to be standing, which is the half of
+        // this that turns a peel into a pull. Only worth doing while something is actually in tow.
+        if (me->GetAttackers().empty())
+            return false;
+
+        float const strayed = me->GetDistance(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ);
+        if (strayed < PB_GATHER_RETURN_DISTANCE)
+            return false;
+
+        time_t const now = time(nullptr);
+        if (now - m_lastGatherMove < PB_GATHER_MOVE_INTERVAL)
+            return false;
+
+        m_lastGatherMove = now;
+
+        if (!SafeMoveTo(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ))
+            return false;
+
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] herd bot='%s' walked %.1fy back to the anchor with %u in tow",
+                     me->GetName(), strayed, uint32(me->GetAttackers().size()));
+        }
+
+        return true;
+    }
+
+    // Threat on everything within reach in one global cooldown. Ahead of taunting or chasing any
+    // individual add because it is the only thing here that scales with the number of them, and
+    // because on no cooldown there is nothing to save it for.
+    if (m_spells.warrior.pDemoralizingShout)
+    {
+        // Everything in the radius, not just the loose ones: the shout lands on all of them and
+        // the threat on each is worth having, so a fight with one loose add and three already on
+        // this warrior is still worth shouting.
+        //
+        // And everything means everything. An area effect does not ask whether a creature is part
+        // of the fight before hitting it, so a shout with an unengaged mob standing inside it is a
+        // pull, not a peel - the one way this behaviour could turn into the exact disaster the
+        // rest of the awareness work exists to prevent. One unengaged creature in radius and the
+        // shout is off.
+        // Scanned wider than the shout reaches. The radius is read from a DBC index rather than
+        // written down here, so treating ten yards as exact is a guess, and the direction to be
+        // wrong in is obvious: counting one enemy too few costs a shout, catching one unengaged
+        // mob costs the group a second pack.
+        std::list<Unit*> nearby;
+        me->GetEnemyListInRadiusAround(me, PB_GATHER_SHOUT_SAFETY_RADIUS, nearby);
+
+        uint32 inRadius = 0;
+        bool wouldPull = false;
+
+        for (Unit* pEnemy : nearby)
+        {
+            if (!pEnemy || !pEnemy->IsAlive() || !IsValidHostileTarget(pEnemy))
+                continue;
+
+            // Not yet in the fight, and inside the blast. That is a pull, not a peel.
+            if (!IsEngagedWithGroup(pEnemy))
+            {
+                wouldPull = true;
+                break;
+            }
+
+            if (me->IsWithinDist(pEnemy, PB_GATHER_SHOUT_RADIUS))
+                ++inRadius;
+        }
+
+        if (wouldPull && IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] herd bot='%s' held its shout: something not in the fight is "
+                     "standing inside the radius", me->GetName());
+        }
+
+        if (!wouldPull &&
+            inRadius >= PB_GATHER_SHOUT_MIN_TARGETS &&
+            CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pDemoralizingShout) == SPELL_CAST_OK)
+            {
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] herd bot='%s' shouted %u loose enemies onto itself",
+                             me->GetName(), inRadius);
+                }
+
+                return true;
+            }
+        }
+    }
+
+    // Otherwise go and get the nearest one. Bounded by how far it is from the anchor rather than
+    // from the warrior, because the thing being protected against is a warrior that walks off
+    // after an add and takes the fight with it.
+    Unit* pNearest = nullptr;
+    float bestDistance = 0.0f;
+
+    for (Unit* pLoose : loose)
+    {
+        if (pLoose->GetDistance(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ) > PB_GATHER_MAX_STRAY)
+            continue;
+
+        float const distance = me->GetDistance(pLoose);
+        if (!pNearest || distance < bestDistance)
+        {
+            pNearest = pLoose;
+            bestDistance = distance;
+        }
+    }
+
+    if (!pNearest)
+        return false;
+
+    // Already on it, so the rotation's own threat is doing the work and there is nothing to add.
+    if (me->CanReachWithMeleeAutoAttack(pNearest))
+    {
+        // Except for a damage warrior, which has no taunt and so takes an add by hitting it. Only
+        // worth switching for something on a healer: a caster can survive a Deviate for the few
+        // seconds the focus target has left, and a healer being hit is how groups die.
+        if (m_role != ROLE_TANK && me->GetVictim() != pNearest)
+        {
+            if (Player* pHealer = FindGroupHealer())
+            {
+                if (pNearest->GetVictim() == pHealer)
+                {
+                    AttackStart(pNearest);
+
+                    if (IsCombatLogged())
+                    {
+                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                 "[BotCombat] herd bot='%s' role=%s switched onto '%s' to take it "
+                                 "off the healer", me->GetName(), GetRoleName(m_role),
+                                 pNearest->GetName());
+                    }
+
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    time_t const now = time(nullptr);
+    if (now - m_lastGatherMove < PB_GATHER_MOVE_INTERVAL)
+        return false;
+
+    m_lastGatherMove = now;
+
+    if (!SafeMoveTo(pNearest->GetPositionX(), pNearest->GetPositionY(), pNearest->GetPositionZ()))
+        return false;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] herd bot='%s' role=%s went %.1fy to fetch '%s' off a caster",
+                 me->GetName(), GetRoleName(m_role), bestDistance, pNearest->GetName());
+    }
+
+    return true;
+}
+
 bool PartyBotAI::DragFightAwayFromNeighbours()
 {
     if (m_role != ROLE_TANK || !me->IsInCombat() || m_holdPosition || IsInDuel())
@@ -4865,6 +5142,12 @@ void PartyBotAI::UpdateInCombatAI()
     // caster's standoff all move with it. Does not return, because backing up a few yards is
     // something a tank does while continuing to hold threat, not instead of it.
     DragFightAwayFromNeighbours();
+
+    // Warriors collecting whatever is loose onto themselves and walking it back to the group.
+    // Above the rotation because a caster being chewed on is worth more than this warrior's next
+    // ability, and it commits the tick only when it actually did something.
+    if (GatherLooseEnemies())
+        return;
 
     // Ahead of every role, because an interrupt is worth more than whatever that role was going to
     // do with the tick and because the classes that own one are spread across all of them. Most
