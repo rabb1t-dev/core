@@ -933,6 +933,55 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
             botRole = ROLE_TANK;
         }
 
+        // An explicit role after the class, so that the classes with more than one job can be
+        // asked for the one that is wanted. Without this the role came from AutoAssignRole, which
+        // infers it from talents, and at low level the only templates authored are damage twinks -
+        // so a shaman asked for as a healer arrived as enhancement, and a druid as balance.
+        //
+        // Only consumed when it really is a role name: the next argument is otherwise a level, and
+        // taking it for a role would eat it. The parse position is restored on a miss so the level
+        // and spec that follow are unaffected.
+        if (botClass && botRole == ROLE_INVALID)
+        {
+            char* argsBeforeRole = args;
+            if (char* argRole = ExtractArg(&args))
+            {
+                std::string roleOption = argRole;
+                CombatBotRoles requested = ROLE_INVALID;
+
+                if (roleOption == "tank")
+                    requested = ROLE_TANK;
+                else if (roleOption == "healer" || roleOption == "heal")
+                    requested = ROLE_HEALER;
+                else if (roleOption == "meleedps" || roleOption == "melee")
+                    requested = ROLE_MELEE_DPS;
+                else if (roleOption == "rangedps" || roleOption == "ranged" || roleOption == "caster")
+                    requested = ROLE_RANGE_DPS;
+                else if (roleOption == "dps")
+                    requested = CombatBotBaseAI::IsMeleeDamageClass(botClass) ? ROLE_MELEE_DPS
+                                                                             : ROLE_RANGE_DPS;
+
+                if (requested == ROLE_INVALID)
+                {
+                    // Not a role, so it belongs to whoever parses next.
+                    args = argsBeforeRole;
+                }
+                else if (!CombatBotBaseAI::GetDefaultSpecNameForRole(botClass, requested))
+                {
+                    // Refused rather than quietly ignored. A mage asked to tank has no talent
+                    // tree, no armour and no threat tools for it, and spawning something that
+                    // cannot do the job is worse than saying so.
+                    PSendSysMessage("That class cannot fill the %s role.", roleOption.c_str());
+                    SetSentErrorMessage(true);
+                    return false;
+                }
+                else
+                {
+                    botRole = requested;
+                }
+            }
+        }
+
         // Prevent setting a custom level for bots unless the account is a GM or skipping checks is enabled.
         if (GetSession()->GetSecurity() > SEC_PLAYER || sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
             ExtractUInt32(&args, botLevel);

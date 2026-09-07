@@ -14,8 +14,17 @@
 #include "CharacterDatabaseCache.h"
 #include "Utilities/Random.h"
 #include "ItemEvaluator.h"
+#include "DungeonTactics.h"
 
+#include <iterator>
 #include <random>
+
+// How close to expiry an aura has to be before recasting it is worth a global cooldown.
+//
+// One global cooldown's worth, near enough. Shorter and the bot lets the effect lapse for the
+// gap between the aura ending and the next tick noticing; longer and it starts clipping ticks off
+// dots that still had useful life in them, which costs more than it saves.
+static constexpr uint32 CB_AURA_REFRESH_WINDOW_MS = 1500;
 
 enum CombatBotSpells
 {
@@ -238,10 +247,30 @@ void CombatBotBaseAI::PopulateSpellData()
             if (!pOldSpell)
                 return true;
 
-            uint32 newRank = pSpellEntry->GetRank();
-            if (newRank)
-                return newRank > pOldSpell->GetRank();
+            uint32 const newRank = pSpellEntry->GetRank();
+            uint32 const oldRank = pOldSpell->GetRank();
 
+            if (newRank && oldRank)
+                return newRank > oldRank;
+
+            // Only one of them sits in a rank chain, and that is the one the bot means. The other
+            // is something that merely shares the name: a proc, a trigger, an item effect. This
+            // used to fall straight through to comparing raw spell ids, which are not ordered by
+            // rank in vanilla and are frequently *reverse* ordered, because a spell added in a
+            // later patch gets a higher id than the whole original chain.
+            //
+            // That cost a wipe. "Lightning Shield" names both the shaman's buff, whose top rank is
+            // 10432 and carries "Rank 7", and 26365, the unranked damage proc the buff fires when
+            // something hits the shaman. 26365 has no rank text, so the old rule compared ids,
+            // 26365 won, and every shaman bot in the game held the proc in its Lightning Shield
+            // slot. The proc applies no aura and costs no mana, so it cast successfully, changed
+            // nothing, and was therefore still worth casting on the next tick - forever. A healer
+            // shaman spent entire fights casting it instead of healing, and the group died around
+            // it. Raising the tick rate turned that from one wasted tick a second into all of them.
+            if (newRank != oldRank)
+                return newRank > oldRank;
+
+            // Neither is ranked, so there is nothing better to go on than the id.
             return pSpellEntry->Id > pOldSpell->Id;
         };
 
@@ -468,7 +497,11 @@ void CombatBotBaseAI::PopulateSpellData()
                 }
                 else if (pSpellEntry->SpellName[0].find("Lightning Shield") != std::string::npos)
                 {
-                    if (IsHigherRankSpell(m_spells.shaman.pLightningShield))
+                    // The name is shared with the damage proc the buff fires, and the slot wants
+                    // the buff. Asked of the spell rather than of its id, so this holds however
+                    // the ranks are numbered.
+                    if (pSpellEntry->IsSpellAppliesAura() &&
+                        IsHigherRankSpell(m_spells.shaman.pLightningShield))
                         m_spells.shaman.pLightningShield = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Ghost Wolf") != std::string::npos)
@@ -2044,7 +2077,30 @@ static Item* FindCarriedItemApplyingSpell(Player const* pPlayer, SpellEntry cons
 
 void CombatBotBaseAI::AddAllSpellReagents()
 {
-    for (const auto& pSpell : m_spells.raw.spells)
+    // m_spells.raw is a view over the class union and nothing else, so walking it alone misses
+    // every spell held outside it. That is the totem pool and the blessing pool, and the totem
+    // pool is the one that costs something: a shaman totem needs the matching totem item in the
+    // bag, the shaman never had one, and Spell::CheckCast answers SPELL_FAILED_ITEM_GONE. One
+    // Wailing Caverns run has Searing Totem refused six hundred and forty seven times for it -
+    // the fire slot has never worked on any shaman bot, in any fight.
+    //
+    // Collected into one list rather than stocked by a second loop so that the "have I got one
+    // already" test still sees the whole set, and a spell that appears in both pools is only
+    // paid for once.
+    std::vector<SpellEntry const*> spellsNeedingReagents(std::begin(m_spells.raw.spells),
+                                                         std::end(m_spells.raw.spells));
+    for (SpellEntry const* pTotem : { m_totems.pWindfury, m_totems.pGraceOfAir,
+                                      m_totems.pNatureResistance, m_totems.pWindwall,
+                                      m_totems.pTranquilAir, m_totems.pStrengthOfEarth,
+                                      m_totems.pStoneskin, m_totems.pStoneclaw, m_totems.pTremor,
+                                      m_totems.pEarthbind, m_totems.pSearing, m_totems.pMagma,
+                                      m_totems.pFireNova, m_totems.pFlametongue,
+                                      m_totems.pFrostResistance, m_totems.pManaSpring,
+                                      m_totems.pHealingStream, m_totems.pPoisonCleansing,
+                                      m_totems.pDiseaseCleansing, m_totems.pFireResistance })
+        spellsNeedingReagents.push_back(pTotem);
+
+    for (const auto& pSpell : spellsNeedingReagents)
     {
         if (pSpell)
         {
@@ -2238,6 +2294,79 @@ float CombatBotBaseAI::GetMaxHealSpellRange() const
     return range > 0.0f ? range : 30.0f;
 }
 
+// The health threshold this bot will actually heal to, after rationing against its own mana.
+//
+// Out of combat none of this applies: mana regenerates freely between pulls and topping the group
+// off before the next one is exactly what the bar is for.
+float CombatBotBaseAI::GetManaAdjustedHealPercent(float requestedPercent) const
+{
+    if (!me->IsInCombat() || me->GetPowerType() != POWER_MANA)
+        return requestedPercent;
+
+    float const manaPercent = me->GetPowerPercent(POWER_MANA);
+
+    if (manaPercent >= CB_HEAL_MANA_CONSERVE_PERCENT)
+        return requestedPercent;
+
+    if (manaPercent >= CB_HEAL_MANA_CRITICAL_PERCENT)
+        return std::min(requestedPercent, CB_HEAL_CONSERVE_CAP_PERCENT);
+
+    return std::min(requestedPercent, CB_HEAL_CRITICAL_CAP_PERCENT);
+}
+
+// Whether the last of the mana is being kept for the tank alone.
+//
+// Only true when there is a tank to keep it for. A healer in a group without one would otherwise
+// stop healing entirely at thirty percent mana, which is worse than spending it badly.
+bool CombatBotBaseAI::IsRationingHealsForTank() const
+{
+    if (!me->IsInCombat() || me->GetPowerType() != POWER_MANA)
+        return false;
+
+    if (me->GetPowerPercent(POWER_MANA) >= CB_HEAL_MANA_CRITICAL_PERCENT)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+
+        if (GetEffectiveRole(pMember) == ROLE_TANK)
+            return true;
+    }
+
+    return false;
+}
+
+// Whether this bot is itself already committed to a heal on that unit.
+//
+// AreOthersOnSameTarget only ever looked at other group members, so nothing stopped a healer
+// stacking its own casts. A heal resolves when the cast finishes, not when it starts, so the
+// target's health still reads low on the next tick and the same target wins the comparison again.
+// The priest capture has several such pairs two seconds apart against health that had not moved.
+bool CombatBotBaseAI::IsAlreadyHealing(ObjectGuid guid) const
+{
+    for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_MAX_SPELL; ++i)
+    {
+        Spell const* pSpell = me->GetCurrentSpell(CurrentSpellTypes(i));
+        if (!pSpell || !pSpell->m_spellInfo)
+            continue;
+
+        if (!pSpell->m_spellInfo->IsHealSpell())
+            continue;
+
+        if (pSpell->m_targets.getUnitTargetGuid() == guid)
+            return true;
+    }
+
+    return false;
+}
+
 bool CombatBotBaseAI::IsValidHealTarget(Unit const* pTarget, float healthPercent) const
 {
     return (pTarget->GetHealthPercent() < healthPercent) &&
@@ -2248,45 +2377,84 @@ bool CombatBotBaseAI::IsValidHealTarget(Unit const* pTarget, float healthPercent
 
 Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPercent) const
 {
+    // A healer's own life is the group's healing, so this one is not rationed.
     if (me->GetHealthPercent() < selfHealPercent)
         return me;
 
     if (IsInDuel())
         return nullptr;
 
+    float const healPercent = GetManaAdjustedHealPercent(groupHealPercent);
+    bool const tankOnly = IsRationingHealsForTank();
+
     Unit* pTarget = nullptr;
-    float healthPercent = 100.0f;
+
+    // Ranked by health with a tank credited some, rather than by health alone. Kept separate from
+    // the health figure so the pet fallback below still compares like with like.
+    float bestScore = 100.0f;
 
     if (Group* pGroup = me->GetGroup())
     {
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
-            if (Unit* pMember = itr->getSource())
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+
+            // We already checked self.
+            if (pMember == me)
+                continue;
+
+            bool const isTank = GetEffectiveRole(pMember) == ROLE_TANK;
+
+            // Down to the last of the bar, and somebody is holding the mobs. Everything else can
+            // wait for the tank to live long enough for the fight to end.
+            if (tankOnly && !isTank)
+                continue;
+
+            // Avoid all healers picking same target.
+            if (pTarget && !isTank && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
+                continue;
+
+            // Including this bot's own cast already in flight.
+            if (IsAlreadyHealing(pMember->GetObjectGuid()))
+                continue;
+
+            if (IsValidHealTarget(pMember, healPercent))
             {
-                // We already checked self.
-                if (pMember == me)
-                    continue;
-
-                // Avoid all healers picking same target.
-                if (pTarget && !IsTankClass(pMember->GetClass()) && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
-                    continue;
-
-                // Check if we should heal party member.
-                if ((IsValidHealTarget(pMember, groupHealPercent) &&
-                    healthPercent > pMember->GetHealthPercent()) ||
-                    // Or a pet if there are no injured players.
-                    (!pTarget && (pMember = pMember->GetPet()) &&
-                      IsValidHealTarget(pMember, groupHealPercent)))
+                float const score = pMember->GetHealthPercent() - (isTank ? CB_HEAL_TANK_PRIORITY_BONUS : 0.0f);
+                if (score < bestScore)
                 {
-                    healthPercent = pMember->GetHealthPercent();
+                    bestScore = score;
                     pTarget = pMember;
                 }
             }
         }
-    }
 
-    if (healthPercent == 100.0f)
-        return nullptr;
+        // Pets, only once no player needs the cast and only out of combat. Four of the priest's
+        // nineteen casts in the capture went into a crocolisk while its owner's group was losing
+        // people, and a pet is the one member of a group that can be resummoned for free.
+        if (!pTarget && !me->IsInCombat())
+        {
+            for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                Player* pMember = itr->getSource();
+                if (!pMember || pMember == me)
+                    continue;
+
+                Pet* pPet = pMember->GetPet();
+                if (!pPet || IsAlreadyHealing(pPet->GetObjectGuid()))
+                    continue;
+
+                if (IsValidHealTarget(pPet, healPercent) &&
+                    pPet->GetHealthPercent() < bestScore)
+                {
+                    bestScore = pPet->GetHealthPercent();
+                    pTarget = pPet;
+                }
+            }
+        }
+    }
 
     return pTarget;
 }
@@ -2300,18 +2468,24 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
     if (IsInDuel())
         return nullptr;
 
+    float const healPercent = GetManaAdjustedHealPercent(groupHealPercent);
+    bool const tankOnly = IsRationingHealsForTank();
+
     if (Group* pGroup = me->GetGroup())
     {
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
-            if (Unit* pMember = itr->getSource())
+            if (Player* pMember = itr->getSource())
             {
                 // We already checked self.
                 if (pMember == me)
                     continue;
 
+                if (tankOnly && GetEffectiveRole(pMember) != ROLE_TANK)
+                    continue;
+
                 // Check if we should heal party member.
-                if (IsValidHealTarget(pMember, groupHealPercent) &&
+                if (IsValidHealTarget(pMember, healPercent) &&
                    !pMember->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
                     return pMember;
             }
@@ -2323,6 +2497,12 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
 
 bool CombatBotBaseAI::FindAndPreHealTarget()
 {
+    // Predicting the next hit is a luxury paid for out of the same bar as answering the last one.
+    // Once the bar is down to the conserve band this bot heals damage that has actually landed.
+    if (me->IsInCombat() && me->GetPowerType() == POWER_MANA &&
+        me->GetPowerPercent(POWER_MANA) < CB_HEAL_MANA_CONSERVE_PERCENT)
+        return false;
+
     Unit* pTarget = me;
     int32 maxIncomingDamage = GetIncomingdamage(me);
 
@@ -2835,6 +3015,11 @@ PlayerPremadeSpecTemplate const* CombatBotBaseAI::SelectPremadeSpecTemplate() co
     // difference. It is what a class with no ordered spec still falls back to.
     if (vSpecs.empty())
     {
+        // Strictly below, and that is not a preference but a requirement:
+        // ApplyPremadeSpecTemplateToPlayer drags a character *up* to an unordered template's level,
+        // so handing a level 20 bot the level 60 healer build would make it a level 60 bot. That is
+        // why a low level bot cannot simply be given the right tree, and why the roles authored at
+        // 19, 29, 39 and 49 are the only ones reachable there.
         for (const auto& itr : sObjectMgr.GetPlayerPremadeSpecTemplates())
         {
             if (itr.second.requiredClass == me->GetClass() &&
@@ -2880,6 +3065,21 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
     if (PlayerPremadeSpecTemplate const* pSpec = SelectPremadeSpecTemplate())
     {
         sObjectMgr.ApplyPremadeSpecTemplateToPlayer(pSpec->entry, me);
+
+        // Say so when the build does not match the job. The bot still works - its spellbook is
+        // filled in by level below and its rotation and gearing both follow m_role, not the
+        // template - but its talents are somebody else's, and that is worth one line in the log
+        // rather than being discovered from a fight going badly.
+        if (m_role != ROLE_INVALID && pSpec->role != m_role)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                     "CombatBot: '%s' (class %u, level %u) wanted role %s but the only premade spec "
+                     "at or below its level is '%s', which is a %s build. Talents will be wrong "
+                     "until a %s template is authored for this level.",
+                     me->GetName(), uint32(me->GetClass()), me->GetLevel(), GetRoleName(m_role),
+                     pSpec->name.c_str(), GetRoleName(pSpec->role), GetRoleName(m_role));
+        }
+
         if (m_role == ROLE_INVALID)
             m_role = pSpec->role;
 
@@ -3353,8 +3553,54 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     if (pSpellEntry->GetErrorAtShapeshiftedCast(me->GetShapeshiftForm()) != SPELL_CAST_OK)
         return false;
 
-    if (pSpellEntry->IsSpellAppliesAura() && pTarget->HasAura(pSpellEntry->Id))
-        return false;
+    // An aura already on the target used to end the matter outright, and that one line was the
+    // single largest cap on bot damage in the file. It has no notion of duration and none of
+    // stacks, so every damage over time effect had to fall off completely before it could be cast
+    // again - and then only be noticed on some later tick - and Sunder Armor stopped dead at one
+    // stack when five is the entire point of it. The same held for Serpent Sting, Corruption,
+    // Immolate, Curse of Agony and every self buff the bot lets lapse before renewing.
+    //
+    // Three cases, in order.
+    if (pSpellEntry->IsSpellAppliesAura())
+    {
+        if (SpellAuraHolder* pHolder = pTarget->GetSpellAuraHolder(pSpellEntry->Id))
+        {
+            uint32 const maxStacks = pSpellEntry->GetStackAmount();
+            int32 const duration = pHolder->GetAuraDuration();
+
+            // A stacking debuff that carries no damage of its own is Sunder Armor and its like:
+            // what it buys is the group's melee damage while it climbs, and the bot's own threat
+            // every time it lands including at full stacks, which is what the tank's rotation
+            // already says it wants from it. Nothing is thrown away by recasting one, because
+            // there are no remaining ticks to throw away.
+            //
+            // A stacking effect that does tick - Deadly Poison - is not in that class and falls
+            // through to the duration rule below once its stack is full, because recasting it
+            // early does discard ticks already paid for.
+            bool const isDamageOverTime = pSpellEntry->HasAura(SPELL_AURA_PERIODIC_DAMAGE) ||
+                                          pSpellEntry->HasAura(SPELL_AURA_PERIODIC_LEECH);
+
+            if (maxStacks > 1 && !isDamageOverTime)
+            {
+                // fall through and cast
+            }
+            // Room left on the stack.
+            else if (maxStacks > 1 && pHolder->GetStackAmount() < maxStacks)
+            {
+                // fall through and cast
+            }
+            // A permanent aura is never worth recasting. Duration is reported as -1 for those,
+            // and reapplying one costs a global cooldown for nothing at all.
+            else if (duration < 0)
+                return false;
+            // About to expire, so renewing it now costs at most the tail of one tick and saves
+            // the gap that would otherwise open between it dropping and the bot noticing.
+            // Deliberately not earlier than that: refreshing a fresh dot throws away everything
+            // already paid for, which is the opposite mistake and just as expensive.
+            else if (uint32(duration) > CB_AURA_REFRESH_WINDOW_MS)
+                return false;
+        }
+    }
 
     // Asked of the spell, which knows the three range indices that do not mean what the number in
     // the range store says. Reading maxRange straight, as this did, is right for the ordinary case
@@ -3432,14 +3678,22 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     //
     // Setting the orientation outright is the way out for a bot: there is no client sending it
     // a facing to respect, and the movespline SetFacingToObject would launch is both unwanted
-    // mid-chase and the reason it refuses in the first place. Only when the bot really is not
-    // facing the target, so a bot already running at its target is left alone.
-    if (me != pTarget)
+    // mid-chase and the reason it refuses in the first place.
+    //
+    // It has to be set on both paths, which it was not, and the path it was missing from is the
+    // one a stationary caster takes every cast. SetFacingToObject writes the new angle into
+    // m_movementInfo and leaves m_position alone, and it is m_position that HasInArc reads, so
+    // the branch that looked like it turned the bot turned only the copy the client is told
+    // about. Casts kept failing with SPELL_FAILED_UNIT_NOT_INFRONT after the turn: seventy eight
+    // of them in one Wailing Caverns run, every one from a bot standing still.
+    //
+    // So face for the client's benefit where that is allowed, and set the orientation for the
+    // arc check's benefit always. Only when the bot really is not facing the target, so a bot
+    // already running at its target is left alone.
+    if (me != pTarget && !me->HasInArc(pTarget))
     {
-        if (me->IsStopped())
-            me->SetFacingToObject(pTarget);
-        else if (!me->HasInArc(pTarget))
-            me->SetOrientation(me->GetAngle(pTarget));
+        me->SetFacingToObject(pTarget);
+        me->SetOrientation(me->GetAngle(pTarget));
     }
 
     if (me->IsMounted())
@@ -3566,21 +3820,70 @@ void CombatBotBaseAI::AddHunterAmmo()
 // bags, and whether something on a corpse is worth rolling for. Scoring a drop on one set of weights
 // and then re-scoring it on another after winning it is how a bot ends up rolling for gear it then
 // declines to wear.
+// The weight row a class of this role should be geared against, when nobody has named one.
+//
+// Class and role together, because role alone cannot answer it. The four names this replaced -
+// "tank", "healer", "fury", "shadow-pve" - are warrior and priest specs, and only warriors and
+// priests have rows under them. Every other class missed the lookup entirely and fell through to
+// ItemEvaluator's last resort, which is the alphabetically first row for the class: a resto shaman
+// was geared to "elemental-pve" and a feral druid to "balance-pve", both of them caster rows, so a
+// healer and a cat were both being handed spell power.
+//
+// Names are the ones that actually exist in raidguild_stat_weight, checked against it rather than
+// guessed, so a miss here means a genuinely unauthored combination rather than a typo.
+char const* CombatBotBaseAI::GetDefaultSpecNameForRole(uint8 classId, CombatBotRoles role)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+            if (role == ROLE_TANK)      return "protection-pve";
+            if (role == ROLE_MELEE_DPS) return "fury";
+            break;
+        case CLASS_PALADIN:
+            if (role == ROLE_TANK)      return "protection-pve";
+            if (role == ROLE_HEALER)    return "holy-pve";
+            if (role == ROLE_MELEE_DPS) return "retribution-pve";
+            break;
+        case CLASS_HUNTER:
+            if (role == ROLE_RANGE_DPS) return "mm-sv-pve";
+            break;
+        case CLASS_ROGUE:
+            if (role == ROLE_MELEE_DPS) return "combat-swords-pve";
+            break;
+        case CLASS_PRIEST:
+            if (role == ROLE_HEALER)    return "holy-pve";
+            if (role == ROLE_RANGE_DPS) return "shadow-pve";
+            break;
+        case CLASS_SHAMAN:
+            if (role == ROLE_HEALER)    return "resto-pve";
+            if (role == ROLE_MELEE_DPS) return "enhancement-pve";
+            if (role == ROLE_RANGE_DPS) return "elemental-pve";
+            break;
+        case CLASS_MAGE:
+            if (role == ROLE_RANGE_DPS) return "frost-pve";
+            break;
+        case CLASS_WARLOCK:
+            if (role == ROLE_RANGE_DPS) return "sm-ruin-pve";
+            break;
+        case CLASS_DRUID:
+            if (role == ROLE_TANK)      return "feral-bear-pve";
+            if (role == ROLE_HEALER)    return "resto-swiftmend-pve";
+            if (role == ROLE_MELEE_DPS) return "feral-cat-pve";
+            if (role == ROLE_RANGE_DPS) return "balance-pve";
+            break;
+    }
+
+    return nullptr;
+}
+
 StatWeights const* CombatBotBaseAI::GetStatWeights() const
 {
-    // Prefer the roster's authored spec; fall back to the short role name so a member that
-    // has not been given one still has a weight row to resolve against.
+    // Prefer the roster's authored spec; otherwise the class and role together decide it.
     std::string spec = m_specName;
     if (spec.empty())
     {
-        switch (m_role)
-        {
-            case ROLE_TANK:      spec = "tank"; break;
-            case ROLE_HEALER:    spec = "healer"; break;
-            case ROLE_MELEE_DPS: spec = "fury"; break;
-            case ROLE_RANGE_DPS: spec = "shadow-pve"; break;
-            default: break;
-        }
+        if (char const* pDefault = GetDefaultSpecNameForRole(me->GetClass(), m_role))
+            spec = pDefault;
     }
 
     return sItemEvaluator.GetWeights(me->GetClass(), spec);
@@ -3607,7 +3910,11 @@ void CombatBotBaseAI::EquipOrUseNewItem()
 
     if (StatWeights const* pWeights = GetStatWeights())
     {
-        sItemEvaluator.OptimizeEquipment(me, *pWeights);
+        // A tank of a class that can hold a shield must hold one. The evaluator cannot work this
+        // out from stat weights, because block and armour rarely outscore a two-hander's damage,
+        // and the abilities lost are not stats at all.
+        bool const requireShield = (m_role == ROLE_TANK) && IsShieldClass(me->GetClass());
+        sItemEvaluator.OptimizeEquipment(me, *pWeights, requireShield);
         return;
     }
 
@@ -3839,11 +4146,19 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         // positions in ten seconds while the group it had just pulled for died around it, every
         // refusal correct in isolation and the sum of them a wipe.
         //
+        // What this particular creature demands, which is nothing at all unless the instance says
+        // otherwise. Where it says something it is because the creature has a melee area effect
+        // with a published radius - Grasping Vines reaches ten yards and roots and stuns
+        // everything inside it - and the ten yard floor below is inside that.
+        float const tacticalStandoff = GetTacticalStandoff(pVictim);
+        float const minimumDistance = std::max(tacticalStandoff,
+                                               CB_CASTER_CHASE_DISTANCES[CB_CASTER_CHASE_COUNT - 1]);
+
         // Bounded below as well as above, so this does not excuse standing in melee: a caster that
         // has been closed on still backs out, which is what the distances below are for.
         float const distance = me->GetDistance(pVictim);
         if (distance <= CB_CASTER_CHASE_DISTANCES[0] &&
-            distance >= CB_CASTER_CHASE_DISTANCES[CB_CASTER_CHASE_COUNT - 1] &&
+            distance >= minimumDistance &&
             me->IsWithinLOSInMap(pVictim))
             return;
 
@@ -3852,10 +4167,19 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         // which is where the chase generator settles it; an approximation, since the generator
         // keeps adjusting as the target moves, but the same approximation the distancing check uses
         // and near enough to catch a station sitting inside the next pack.
-        float chaseDistance = CB_CASTER_CHASE_DISTANCES[0];
+        // Seeded with the floor as well as the ceiling, because a creature demanding more room than
+        // the longest candidate on the list breaks out of the loop before the body ever runs, and
+        // the seed is then the whole answer.
+        float chaseDistance = std::max(CB_CASTER_CHASE_DISTANCES[0], minimumDistance);
 
         for (float candidate : CB_CASTER_CHASE_DISTANCES)
         {
+            // Never walk in past what the creature demands. The list descends, so once a candidate
+            // is inside the floor every remaining one is too, and the last safe distance already
+            // held in chaseDistance is the answer.
+            if (candidate < minimumDistance)
+                break;
+
             float x, y, z;
             pVictim->GetNearPoint(me, x, y, z, 0, candidate, pVictim->GetAngle(me));
 
@@ -4012,6 +4336,15 @@ SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
             consider(m_totems.pWindwall);
             break;
         case TOTEM_SLOT_EARTH:
+            // Tremor sits last for good reason in most of the game: it does nothing whatever in a
+            // dungeon that never sleeps, fears or charms anybody, and the two totems ahead of it
+            // always do something. Where the instance is built around crowd control aimed at the
+            // group, that ordering is exactly backwards, and a slept healer is not a smaller
+            // problem than a few points of missing armour.
+            if (DungeonTactics const* pTactics = GetDungeonTactics(me->GetMapId()))
+                if (pTactics->wantsTremorTotem)
+                    consider(m_totems.pTremor);
+
             if (audience.melee)
                 consider(m_totems.pStrengthOfEarth);
             consider(m_totems.pStoneskin);

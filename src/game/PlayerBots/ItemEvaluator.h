@@ -189,7 +189,13 @@ class ItemEvaluator
         // so set bonuses and caps decide swaps that per-slot scoring would get wrong.
         // Never settles for a loadout worse than the one already worn. Displaced gear goes
         // to bags or mail through AutoUnequipItemFromSlot; nothing is destroyed.
-        uint32 OptimizeEquipment(Player* pPlayer, StatWeights const& weights) const;
+        // requireShield forces a one-hander and a shield rather than letting the score choose.
+        // A tank that can hold a shield has to hold one: the loadout score only sees stats, and a
+        // two-hander frequently wins on stats while silently forfeiting Shield Bash, Shield Block
+        // and every point of block chance. One capture has a warrior tank refuse fifty nine
+        // interrupts in a row with SPELL_FAILED_EQUIPPED_ITEM_CLASS for exactly this reason.
+        uint32 OptimizeEquipment(Player* pPlayer, StatWeights const& weights,
+                                 bool requireShield = false) const;
 
     private:
         void ApplySpell(ResolvedStats& stats, SpellEntry const* pSpell) const;

@@ -366,6 +366,11 @@ public:
     // cooldown system
     virtual void AddGCD(SpellEntry const* spellEntry, uint32 forcedDuration = 0, bool updateClient = false);
     virtual bool HasGCD(SpellEntry const* spellEntry) const;
+    // Milliseconds left on the global cooldown, or zero when there is none. HasGCD answers only
+    // yes or no, which is enough to refuse a cast and not enough to schedule anything: a caller
+    // that wants to act the instant it is allowed to has to know when that is, and without this it
+    // can only poll and accept whatever quantization error its own tick rate carries.
+    uint32 GetGCDTimeRemaining(SpellEntry const* spellEntry) const;
     void ResetGCD(SpellEntry const* spellEntry = nullptr);
     virtual void AddCooldown(SpellEntry const* spellEntry, ItemPrototype const* itemProto = nullptr, bool permanent = false, uint32 forcedDuration = 0);
     virtual void RemoveSpellCooldown(SpellEntry const* spellEntry, bool updateClient = true);

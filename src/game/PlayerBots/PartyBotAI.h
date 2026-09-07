@@ -18,6 +18,7 @@
 #define MANGOS_PARTYBOTAI_H
 
 #include "CombatBotBaseAI.h"
+#include "DungeonTactics.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
 
@@ -82,6 +83,26 @@ public:
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
+
+    // Instance tactics, and the generic combat behaviour that measuring one instance exposed as
+    // missing everywhere. Only GetTacticalStandoff and the escort pair read m_tactics; the rest are
+    // ungated, because nothing about interrupting a heal or finding a firing line is particular to
+    // one dungeon.
+    void RefreshDungeonTactics();
+    float GetTacticalStandoff(Unit const* pTarget) const final;
+    bool IsEngagedWithGroup(Unit const* pEnemy) const;
+    bool IsTargetInCurrentFight(Unit const* pTarget) const;
+    Unit* SelectGroupFocusTarget() const;
+    bool CrowdControlOffFocus();
+    SpellEntry const* GetInterruptSpell() const;
+    bool IsWorthInterrupting(Unit const* pCaster) const;
+    Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell) const;
+    bool InterruptHostileCasters();
+    Unit* SelectPeelTarget() const;
+    bool PeelForTheHealer();
+    Creature* FindGuardedEscort() const;
+    Unit* SelectEscortAttackTarget() const;
+    bool RecoverLineOfSight();
     Player* SelectResurrectionTarget(SpellEntry const* pSpellEntry) const;
     bool UseSelfResurrection();
     void AddSelfResurrectionReagent();
@@ -112,6 +133,7 @@ public:
     SpellEntry const* GetInstantPullSpell() const;
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
+    bool KeepBusy();
     bool IsWorthDotting(Unit const* pVictim) const;
     void UpdateLootRolls();
     bool ShouldDeferRollToPlayers(Roll const* pRoll) const;
@@ -215,6 +237,22 @@ public:
     // When the shot currently being waited on was asked for, so that a queued autorepeat which is
     // never going to fire can be told apart from one that simply has not come round yet.
     time_t m_pullShotSince = 0;
+    // What this instance asks of the bots, looked up once per map rather than per tick, and null
+    // for the great majority of maps that ask nothing. The map it was looked up for is kept
+    // alongside it because a bot changes maps without being reinitialised.
+    DungeonTactics const* m_tactics = nullptr;
+    uint32 m_tacticsMapId = 0;
+    // What the bot last could not see, and for how many ticks running. A bot standing behind rock
+    // is the single most common wasted tick in a cave instance, and the count is what tells a
+    // corner that will clear itself apart from one that will not.
+    // The last creature taunted off the healer, and when. Without it a mob still running from the
+    // healer to the tank still counts as being on the healer, and gets taunted again every time it
+    // is looked at.
+    ObjectGuid m_lastPeelGuid;
+    time_t m_lastPeelTime = 0;
+    ObjectGuid m_blindTargetGuid;
+    uint32 m_blindTicks = 0;
+    time_t m_lastBlindStep = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

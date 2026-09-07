@@ -35,6 +35,7 @@
 #include "Utilities/Random.h"
 
 #include <random>
+#include <unordered_map>
 
 enum PartyBotSpells
 {
@@ -228,6 +229,80 @@ static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
 // How far a bot backs off when it flees melee. Shared by the move and by the check that runs
 // ahead of it, so the position tested is always the position taken.
 static constexpr float PB_DISTANCING_RANGE = 15.0f;
+
+// How many consecutive ticks a bot spends unable to see its own target before it stops arguing
+// with the wall and walks. Four ticks is one second. Not one tick: a mob crossing behind a pillar
+// is out of sight for a moment and clears on its own, and moving for that would have a bot
+// chasing every rock in the room.
+static constexpr uint32 PB_BLIND_TICKS_BEFORE_MOVING = 4;
+// Seconds between attempts to find a firing line. Long enough for the walk to finish, since the
+// refusals keep arriving while it is under way and would otherwise re-launch it every tick.
+static constexpr time_t PB_BLIND_STEP_INTERVAL = 3;
+// The closest a bot will put itself while looking for one. Inside every ranged attack in the game
+// and outside the melee a caster has no business standing in.
+static constexpr float PB_BLIND_STEP_MIN_DISTANCE = 15.0f;
+// Beyond this the bot does not try to find a firing line at all. Comfortably past every spell
+// range a levelling bot has, so anything further off is a target it should not be holding rather
+// than one it cannot see.
+static constexpr float PB_BLIND_MAX_TARGET_DISTANCE = 40.0f;
+// The most ground one attempt will cover. Short, because only the destination of a move is checked
+// for what it might wake and the route is not, so the shorter the move the smaller the exposure.
+static constexpr float PB_BLIND_STEP_MAX_TRAVEL = 12.0f;
+
+// How far below the tank's own level a creature has to be before peeling it off the healer is not
+// worth a taunt. Generous, because a low level mob in a dungeon is still usually part of a pull;
+// what this excludes is the ambient wildlife.
+static constexpr uint32 PB_PEEL_LEVEL_FLOOR = 8;
+// Seconds before the same creature may be peeled again. Longer than the run from the healer to the
+// tank, so a mob already on its way is not taunted a second time for not having arrived yet.
+static constexpr time_t PB_PEEL_REPEAT_INTERVAL = 8;
+
+// How long an interrupt already spent on a creature keeps the next bot off it.
+//
+// An interrupt resolves when the spell lands, not when it is cast, so for a moment afterwards the
+// creature is still in SPELL_STATE_PREPARING and still looks like it needs interrupting. Every bot
+// evaluating inside that moment reaches the same conclusion and pays for the same cast.
+//
+// One capture has eight interrupts stopping six casts: Shield Bash and Kick landing on one Druid's
+// Slumber in the same second, and Earth Shock and Kick on another. Kick is a ten second cooldown,
+// so each of those left the group an interrupt short for the next ten seconds, which is where the
+// sleeps that got through came from.
+//
+// Comfortably longer than the resolution delay and shorter than any interrupt cooldown, so it
+// cannot suppress a genuine second cast: the school lockout an interrupt applies is longer than
+// this by itself.
+static constexpr uint32 PB_INTERRUPT_SHARE_WINDOW_MS = 1500;
+
+// Which creatures the group has just spent an interrupt on. Shared across bots because that is the
+// whole point: the question is not what this bot has done but what the group has already paid for.
+// Keyed on the creature rather than on the cast, because a cast has no identity to key on.
+static std::unordered_map<uint64, uint32> g_recentGroupInterrupts;
+
+static bool WasRecentlyInterrupted(ObjectGuid guid)
+{
+    auto itr = g_recentGroupInterrupts.find(guid.GetRawValue());
+    if (itr == g_recentGroupInterrupts.end())
+        return false;
+
+    return WorldTimer::getMSTimeDiff(itr->second, WorldTimer::getMSTime()) < PB_INTERRUPT_SHARE_WINDOW_MS;
+}
+
+static void NoteGroupInterrupt(ObjectGuid guid)
+{
+    uint32 const now = WorldTimer::getMSTime();
+
+    // Swept here rather than on a timer, since this is the only thing that grows the map and a
+    // fight involves a handful of creatures rather than thousands.
+    for (auto itr = g_recentGroupInterrupts.begin(); itr != g_recentGroupInterrupts.end();)
+    {
+        if (WorldTimer::getMSTimeDiff(itr->second, now) >= PB_INTERRUPT_SHARE_WINDOW_MS)
+            itr = g_recentGroupInterrupts.erase(itr);
+        else
+            ++itr;
+    }
+
+    g_recentGroupInterrupts[guid.GetRawValue()] = now;
+}
 // Seconds between lines while a bot is down. It is asked once a second for as long as the bot
 // stays dead, which is precisely the stretch that is worth reading and far too often to log.
 static constexpr time_t PB_DEATH_LOG_INTERVAL = 5;
@@ -551,9 +626,89 @@ uint32 PartyBotAI::GetRangedAttackSpellId() const
             return PB_SPELL_SHOOT_CROSSBOW;
         case ITEM_SUBCLASS_WEAPON_THROWN:
             return PB_SPELL_THROW;
+        // A wand belongs on this list for the same reason the rest do: it is a ranged attack the
+        // bot can fire, on its own timer, for no mana. It was missing, so the one class of weapon
+        // carried by every bot that runs out of mana was the one this function could not name, and
+        // the only code that fired a wand at all was a priest-specific branch.
+        case ITEM_SUBCLASS_WEAPON_WAND:
+            return PB_SPELL_SHOOT_WAND;
     }
 
     return 0;
+}
+
+// Something, rather than nothing.
+//
+// The rotations are if-chains that fall out of the bottom when nothing matched, and falling out of
+// the bottom means the bot stands there. That happens far more than it sounds: a caster out of
+// mana, a melee bot out of rage or energy, anybody whose one useful spell is on cooldown, and every
+// healer with nobody to heal. None of those is a reason to contribute zero.
+//
+// Ordered by what it costs the bot to do. A wand or a bow costs nothing at all and fires on its own
+// timer, so it is never the wrong answer; melee is last because it is worth little and, for a
+// caster, means being somewhere unpleasant. Nothing here moves the bot: this is about using the
+// position it is already in, and closing distance is a decision that belongs to the movement code
+// and its aggro rules.
+bool PartyBotAI::KeepBusy()
+{
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !IsValidHostileTarget(pVictim))
+        return false;
+
+    // Already committed to something this tick.
+    if (me->IsNonMeleeSpellCasted(false, false, true) ||
+        me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) || me->IsMounted())
+        return false;
+
+    float const distance = me->GetCombatDistance(pVictim);
+
+    // A ranged attack, if the bot is carrying one it can fire from where it stands. Moving cancels
+    // an autorepeat before it ever goes off, so a bot mid-walk is left alone rather than made to
+    // start one it will immediately lose.
+    if (!me->IsMoving() && me->IsWithinLOSInMap(pVictim))
+    {
+        // The hunter dead zone. Inside it the shot is refused, and the interrupt further up would
+        // cancel it again next tick, so offering one here would be a loop rather than an attack.
+        bool const insideMinimumRange = (me->GetClass() == CLASS_HUNTER) && (distance < 8.0f);
+
+        if (!insideMinimumRange)
+        {
+            if (uint32 const rangedSpellId = GetRangedAttackSpellId())
+            {
+                if (SpellEntry const* pRanged = sSpellMgr.GetSpellEntry(rangedSpellId))
+                {
+                    if (pRanged->IsTargetInRange(me, pVictim))
+                    {
+                        // Set the orientation rather than asking to be turned. SetFacingToObject
+                        // launches a facing movespline, a movespline is movement, and movement
+                        // cancels an autorepeat: the priest wand path used to call it before every
+                        // shot, so each tick cancelled the shot the previous tick had started and
+                        // the wand never actually fired. Writing the angle costs nothing and moves
+                        // nothing.
+                        if (!me->HasInArc(pVictim))
+                            me->SetOrientation(me->GetAngle(pVictim));
+
+                        me->Attack(pVictim, false);
+                        if (me->CastSpell(pVictim, pRanged, false) == SPELL_CAST_OK)
+                            return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Failing that, swing at it, but only if it is already standing in reach. This is the mage with
+    // an empty mana bar and a staff in its hands: poor damage, and strictly better than watching.
+    if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+        me->CanReachWithMeleeAutoAttack(pVictim))
+    {
+        return me->Attack(pVictim, true);
+    }
+
+    return false;
 }
 
 // How close the puller needs to get. Short of the weapon's true maximum, since the mob has to still
@@ -613,7 +768,8 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
         if (!me->CanReachWithMeleeAutoAttack(pTarget))
             return false;
 
-        me->SetFacingToObject(pTarget);
+        if (!me->HasInArc(pTarget))
+            me->SetOrientation(me->GetAngle(pTarget));
         return me->Attack(pTarget, true);
     }
 
@@ -637,7 +793,12 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
     me->GetMotionMaster()->Clear(false, true);
     me->GetMotionMaster()->MoveIdle();
 
-    me->SetFacingToObject(pTarget);
+    // Written, not splined, and this line used to undo the three above it. StopMoving is here
+    // precisely to clear the movement flags that stop a ranged attack firing, and
+    // SetFacingToObject then launched a facing movespline, which sets them straight back. Turning
+    // by assignment costs nothing and moves nothing.
+    if (!me->HasInArc(pTarget))
+        me->SetOrientation(me->GetAngle(pTarget));
     me->Attack(pTarget, false);
 
     // Cast directly rather than through DoCastSpell, which would refuse this outright.
@@ -1861,6 +2022,23 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
         }
     }
 
+    // Last, because it is the most expensive test in the function and every cheaper one above can
+    // reject a spell without paying for it.
+    //
+    // Do not offer a cast at something the bot cannot see. CheckCast performs this same test and
+    // refuses the spell for it, so nothing is lost by asking first and a great deal is saved: the
+    // rotation is a list, a refused spell falls through to the next one, and a bot behind a wall
+    // walks the whole list several times a second for as long as the wall is there. Eight hundred
+    // and twenty six casts in one Wailing Caverns run went nowhere for this reason, and every one
+    // of them was logged as though it were a decision.
+    //
+    // Only offensive spells, and only against somebody else: a heal refused for line of sight is
+    // still worth attempting, because the healer moves to fix that and the refusal is how it finds
+    // out it needs to.
+    if (pTarget && pTarget != me && !pSpellEntry->IsPositiveSpell() &&
+        !me->IsWithinLOSInMap(pTarget))
+        return false;
+
     return true;
 }
 
@@ -1912,8 +2090,187 @@ Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
     return nullptr;
 }
 
+// The one thing the group is killing.
+//
+// Everything that damages reads this and nothing else, so the answer has to be stable: a focus that
+// changes its mind every tick is four bots running between mobs and landing nothing. Hence the
+// ordering below, which prefers the most deliberate signal available and only falls back to a
+// judgement of its own when there is none.
+//
+// A crowd-controlled mob can never be the answer. IsValidHostileTarget already refuses anything
+// carrying a break-on-damage aura, which is exactly the sapped, polymorphed, hibernated or shackled
+// mob the group has deliberately taken out of the fight.
+Unit* PartyBotAI::SelectGroupFocusTarget() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup || IsInDuel())
+        return nullptr;
+
+    // A pull or an explicit attack order outranks everything: both are instructions, and both are
+    // about a mob that is not yet part of any fight.
+    if (me->HasAttackOrders())
+    {
+        if (Unit* pOrdered = me->GetMap()->GetUnit(me->GetAttackOrders()))
+            if (IsValidHostileTarget(pOrdered))
+                return pOrdered;
+    }
+
+    // Then the mark, which is the one thing a player can say that means "this one next".
+    for (auto markId : m_marksToFocus)
+    {
+        if (Unit* pMarked = GetMarkedTarget(markId))
+            if (IsValidHostileTarget(pMarked) && IsEngagedWithGroup(pMarked))
+                return pMarked;
+    }
+
+    // Then the tank's target. Using it as the anchor is what makes focus fire and threat agree:
+    // damage aimed where the tank already holds aggro cannot pull the mob off it, and the threat
+    // ceiling then has room to let the damage through.
+    if (Player* pTank = GetGroupTank())
+    {
+        if (Unit* pTankVictim = pTank->GetVictim())
+            if (IsValidHostileTarget(pTankVictim) && IsEngagedWithGroup(pTankVictim))
+                return pTankVictim;
+    }
+
+    // Then whatever the player is on, since a player with a target has usually chosen it.
+    if (Player* pLeader = GetPartyLeader())
+    {
+        if (Unit* pLeaderVictim = pLeader->GetVictim())
+            if (IsValidHostileTarget(pLeaderVictim) && IsEngagedWithGroup(pLeaderVictim))
+                return pLeaderVictim;
+    }
+
+    // Nothing has been chosen for us, so finish something. The most hurt mob in the fight is the
+    // one closest to being off the board, and taking it off is worth more than spreading the same
+    // damage across the pack.
+    Unit* pWeakest = nullptr;
+    float weakestHealth = 0.0f;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember->GetMap() != me->GetMap())
+            continue;
+
+        for (const auto pAttacker : pMember->GetAttackers())
+        {
+            if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
+                continue;
+
+            float const health = pAttacker->GetHealthPercent();
+            if (!pWeakest || health < weakestHealth)
+            {
+                pWeakest = pAttacker;
+                weakestHealth = health;
+            }
+        }
+    }
+
+    return pWeakest;
+}
+
+// Take something out of the fight that nobody is killing yet.
+//
+// Only ever aimed away from the focus: crowd control on the mob the group is beating on is worse
+// than nothing, because the first hit breaks it and the cast is wasted. Aimed at anything else in
+// the pack it is a mob's whole damage output removed for the length of the fight, which at this
+// level is the difference between a healer that copes and one that does not.
+bool PartyBotAI::CrowdControlOffFocus()
+{
+    if (IsInDuel())
+        return false;
+
+    SpellEntry const* pSpellEntry = GetCrowdControlSpell();
+    if (!pSpellEntry)
+        return false;
+
+    // Marks are handled separately and take precedence: a player who has marked something for
+    // crowd control has said which mob, and this should not spend the cast on a different one.
+    if (!m_marksToCC.empty())
+        return false;
+
+    Unit* pFocus = SelectGroupFocusTarget();
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember->GetMap() != me->GetMap())
+            continue;
+
+        for (const auto pAttacker : pMember->GetAttackers())
+        {
+            if (pAttacker == pFocus)
+                continue;
+
+            // Already out of the fight, by this bot's hand or somebody else's.
+            if (pAttacker->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
+                continue;
+
+            if (!IsValidHostileTarget(pAttacker))
+                continue;
+
+            // Not the mob the tank is holding, even when it is not the focus: taking the tank's
+            // target out of its threat list is how a fight ends up with nobody tanking.
+            if (Player* pTank = GetGroupTank())
+                if (pTank->GetVictim() == pAttacker)
+                    continue;
+
+            // Somebody is already hitting it, so the control would break on the next swing.
+            if (AreOthersOnSameTarget(pAttacker->GetObjectGuid()))
+                continue;
+
+            if (!CanUseCrowdControl(pSpellEntry, pAttacker))
+                continue;
+
+            if (!CanTryToCastSpell(pAttacker, pSpellEntry))
+                continue;
+
+            if (DoCastSpell(pAttacker, pSpellEntry) == SPELL_CAST_OK)
+            {
+                // The bot was probably swinging at the focus a moment ago, and a melee swing at
+                // the thing just controlled would undo it.
+                me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] cc bot='%s' role=%s lvl=%u controlled '%s' (lvl %u) with "
+                             "'%s' while the group kills '%s'",
+                             me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                             pAttacker->GetName(), pAttacker->GetLevel(),
+                             pSpellEntry->SpellName[0].c_str(),
+                             pFocus ? pFocus->GetName() : "nothing");
+                }
+
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
 {
+    // A tank may only be handed something the group is already fighting. Applied here, at the one
+    // place every role picks a target, rather than at each of the branches below, so a candidate
+    // added later cannot quietly bypass it.
+    auto const accept = [this](Unit* pCandidate) -> Unit*
+    {
+        if (!pCandidate)
+            return nullptr;
+
+        if (m_role == ROLE_TANK && !IsTargetInCurrentFight(pCandidate))
+            return nullptr;
+
+        return pCandidate;
+    };
+
     if (IsInDuel())
     {
         if (me->m_duel->opponent && IsValidHostileTarget(me->m_duel->opponent))
@@ -1932,20 +2289,24 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
                     if (targetGuid.IsUnit())
                         if (Unit* pVictim = me->GetMap()->GetUnit(targetGuid))
                             if (IsValidHostileTarget(pVictim))
-                                return pVictim;
+                                if (Unit* pAccepted = accept(pVictim))
+                                    return pAccepted;
                 }
             }
         }
 
-        // Who is the leader attacking.
+        // Who is the leader attacking. Gated for a tank like everything else: a mob the leader has
+        // merely selected is not a mob anybody is fighting, and charging it is how the tank starts
+        // the second pull. Once the leader actually engages it, it passes.
         if (Unit* pVictim = pLeader->GetVictim())
         {
             if (IsValidHostileTarget(pVictim))
-                return pVictim;
+                if (Unit* pAccepted = accept(pVictim))
+                    return pAccepted;
         }
     }
 
-    // Who is attacking me.
+    // Who is attacking me. Never gated - something hitting the bot is in the fight by definition.
     for (const auto pAttacker : me->GetAttackers())
     {
         if (IsValidHostileTarget(pAttacker))
@@ -1976,6 +2337,44 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
     if (!pGroup)
         return nullptr;
 
+    // The first thing found that is hitting somebody, and the first thing found that the instance
+    // says is worth killing before the rest of its pack. Both are collected in one pass because
+    // the second only ever breaks a tie between candidates the first would have accepted: it never
+    // reaches past the group for a target, and it never overrules a mark or the leader's choice,
+    // both of which are settled before this is called.
+    Unit* pAnyAttacker = nullptr;
+    Unit* pPreferred = nullptr;
+    Unit* pMarked = nullptr;
+
+    auto const consider = [&](Unit* pAttacker)
+    {
+        if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
+            return;
+
+        if (!pAnyAttacker)
+            pAnyAttacker = pAttacker;
+
+        // A focus mark outranks everything else here. This scan is what the tank's defend rule
+        // reads, and it had no notion of marks at all, so the one command that exists to say
+        // "kill this" was the one thing it could not see.
+        if (!pMarked)
+        {
+            for (auto markId : m_marksToFocus)
+            {
+                if (pGroup->GetTargetWithIcon(markId) == pAttacker->GetObjectGuid())
+                {
+                    pMarked = pAttacker;
+                    break;
+                }
+            }
+        }
+
+        if (!pPreferred && m_tactics)
+            if (Creature const* pCreature = pAttacker->ToCreature())
+                if (m_tactics->IsFocusFirst(pCreature->GetEntry()))
+                    pPreferred = pAttacker;
+    };
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -1985,15 +2384,542 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
                 continue;
 
             for (const auto pAttacker : pMember->GetAttackers())
+                consider(pAttacker);
+        }
+    }
+
+    if (pMarked)
+        return pMarked;
+
+    if (pPreferred)
+        return pPreferred;
+
+    if (pAnyAttacker)
+        return pAnyAttacker;
+
+    // Nothing is on the group, which in an escort is exactly the moment the escort is being eaten.
+    // Checked last so that a party member under attack always outranks an NPC under attack.
+    return SelectEscortAttackTarget();
+}
+
+void PartyBotAI::RefreshDungeonTactics()
+{
+    // Looked up on a change of map rather than every tick, because the answer cannot change while
+    // the bot stands still and the lookup walks a table. A bot is not reinitialised when it is
+    // summoned into an instance, so the map it was last asked about is what says whether to ask
+    // again.
+    if (m_tacticsMapId == me->GetMapId())
+        return;
+
+    m_tacticsMapId = me->GetMapId();
+    m_tactics = GetDungeonTactics(m_tacticsMapId);
+}
+
+float PartyBotAI::GetTacticalStandoff(Unit const* pTarget) const
+{
+    if (!m_tactics || !pTarget)
+        return 0.0f;
+
+    Creature const* pCreature = pTarget->ToCreature();
+    if (!pCreature)
+        return 0.0f;
+
+    return m_tactics->GetRangedStandoff(pCreature->GetEntry());
+}
+
+// Whether this enemy is part of the fight the group is already having, as opposed to something
+// standing in the room minding its own business.
+//
+// Every tactic below spends something on the answer - an interrupt, a taunt, a bot's attention -
+// and spending any of it on a creature the group has not engaged is how a pull becomes two pulls.
+bool PartyBotAI::IsEngagedWithGroup(Unit const* pEnemy) const
+{
+    if (!pEnemy || !pEnemy->IsInCombat())
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsInWorld() || pMember->GetMap() != me->GetMap())
+            continue;
+
+        if (pEnemy->GetVictim() == pMember)
+            return true;
+
+        for (const auto pAttacker : pMember->GetAttackers())
+            if (pAttacker == pEnemy)
+                return true;
+
+        // A pet holding the mob counts. A hunter's pet is often the only thing on an add for the
+        // first few seconds, and those are the seconds an interrupt is wanted in.
+        if (Pet* pPet = pMember->GetPet())
+        {
+            if (pEnemy->GetVictim() == pPet)
+                return true;
+
+            for (const auto pAttacker : pPet->GetAttackers())
+                if (pAttacker == pEnemy)
+                    return true;
+        }
+    }
+
+    return false;
+}
+
+// The one ability this bot can stop a cast with, or nothing.
+//
+// Deliberately a single answer rather than a list. A bot gets one attempt per tick and the choice
+// between two interrupts is never interesting: what matters is that the bot has one at all, and
+// most of them do not.
+// Whether this target belongs to the fight the group is actually having.
+//
+// The rule a tank has to obey and did not: never bring in something nobody has pulled. A tank that
+// picks its target from anything it can see turns one fight into two, and it does so at the worst
+// moment, because the reason it is looking for a new target at all is that the current one is
+// keeping it busy.
+//
+// Two exemptions, both of them explicit instructions rather than choices the bot made: an attack
+// order from .partybot attackstart, and a pull in progress. Refusing those would be refusing the
+// command, and starting a fight is precisely what they are for.
+bool PartyBotAI::IsTargetInCurrentFight(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    if (IsInDuel())
+        return true;
+
+    if (me->HasAttackOrders() && me->GetAttackOrders() == pTarget->GetObjectGuid())
+        return true;
+
+    if (IsPulling())
+        return true;
+
+    return IsEngagedWithGroup(pTarget);
+}
+
+SpellEntry const* PartyBotAI::GetInterruptSpell() const
+{
+    switch (me->GetClass())
+    {
+        case CLASS_WARRIOR:
+            // Shield Bash ahead of Pummel because it is the one a tank can use without leaving
+            // Defensive Stance - but only with a shield actually equipped. CanTryToCastSpell does
+            // not check the weapon class, which the first live run made obvious: twenty Shield
+            // Bashes refused with SPELL_FAILED_EQUIPPED_ITEM_CLASS, every one of them an interrupt
+            // the group did not get.
+            if (m_spells.warrior.pShieldBash && IsWearingShield(me))
+                return m_spells.warrior.pShieldBash;
+            return m_spells.warrior.pPummel;
+        case CLASS_ROGUE:
+            return m_spells.rogue.pKick;
+        case CLASS_SHAMAN:
+            return m_spells.shaman.pEarthShock;
+        case CLASS_DRUID:
+            return m_spells.druid.pBash;
+    }
+
+    return nullptr;
+}
+
+// Whether what this creature is casting is worth an interrupt.
+//
+// Two kinds of cast, and the group cannot answer either by out-damaging it.
+//
+// A heal undoes work already paid for: the alternative to stopping it is dealing the same damage
+// twice. Crowd control aimed at the group takes a player out of the fight altogether, and at low
+// level losing the healer for six seconds is the fight. Everything else a mob casts is damage,
+// which is what a healer is for, and choosing among damage spells needs encounter knowledge a boss
+// script has and a bot does not.
+//
+// Not gated on the instance, deliberately. Wailing Caverns is where the absence was measured -
+// every Fanglord and every Druid of the Fang casts both Healing Touch and a sleep, a group at that
+// level does not out-damage the healing, and a slept healer is a wipe - but nothing about the
+// reasoning is particular to that dungeon, and gating it there would leave the same hole
+// everywhere else.
+bool PartyBotAI::IsWorthInterrupting(Unit const* pCaster) const
+{
+    Spell const* pSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell || pSpell->getState() != SPELL_STATE_PREPARING)
+        return false;
+
+    SpellEntry const* pSpellEntry = pSpell->m_spellInfo;
+    if (!pSpellEntry)
+        return false;
+
+    if (pSpellEntry->IsHealSpell())
+        return true;
+
+    // Asked of the spell's mechanic rather than of a list of spell ids, so it covers Sleep,
+    // Druid's Slumber and Naralex's Nightmare without naming any of them, and covers whatever the
+    // next instance uses without being told.
+    switch (pSpellEntry->Mechanic)
+    {
+        case MECHANIC_CHARM:
+        case MECHANIC_FEAR:
+        case MECHANIC_SLEEP:
+        case MECHANIC_STUN:
+        case MECHANIC_POLYMORPH:
+        case MECHANIC_BANISH:
+        case MECHANIC_SHACKLE:
+        case MECHANIC_HORROR:
+        case MECHANIC_KNOCKOUT:
+        case MECHANIC_SILENCE:
+            return true;
+    }
+
+    return false;
+}
+
+Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell) const
+{
+    if (!pInterruptSpell)
+        return nullptr;
+
+    // Look no further than the ability reaches. Earth Shock is twenty yards and Kick is melee, so
+    // the same search serves both and neither wastes a scan on ground it cannot act on.
+    float range = 5.0f;
+    if (SpellRangeEntry const* pRange = sSpellRangeStore.LookupEntry(pInterruptSpell->rangeIndex))
+        range = pRange->maxRange;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, range, enemies);
+
+    // The bot's own target first, when it qualifies. Interrupting the mob already being hit costs
+    // nothing beyond the ability, where interrupting anything else adds the bot to a second
+    // creature's threat list.
+    if (Unit* pVictim = me->GetVictim())
+        if (IsValidHostileTarget(pVictim) && IsWorthInterrupting(pVictim) &&
+            me->IsWithinDist(pVictim, range) && me->IsWithinLOSInMap(pVictim) &&
+            !WasRecentlyInterrupted(pVictim->GetObjectGuid()))
+            return pVictim;
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (pEnemy == me->GetVictim())
+            continue;
+
+        if (!IsValidHostileTarget(pEnemy) || !IsEngagedWithGroup(pEnemy))
+            continue;
+
+        if (!IsWorthInterrupting(pEnemy) || !me->IsWithinLOSInMap(pEnemy))
+            continue;
+
+        if (WasRecentlyInterrupted(pEnemy->GetObjectGuid()))
+            continue;
+
+        return pEnemy;
+    }
+
+    return nullptr;
+}
+
+bool PartyBotAI::InterruptHostileCasters()
+{
+    if (IsInDuel())
+        return false;
+
+    SpellEntry const* pInterruptSpell = GetInterruptSpell();
+    if (!pInterruptSpell)
+        return false;
+
+    Unit* pCaster = SelectInterruptTarget(pInterruptSpell);
+    if (!pCaster)
+        return false;
+
+    // Read before the cast, because interrupting it is what makes it unreadable afterwards.
+    SpellEntry const* pInterrupted = nullptr;
+    if (Spell const* pTheirSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        pInterrupted = pTheirSpell->m_spellInfo;
+
+    if (!CanTryToCastSpell(pCaster, pInterruptSpell))
+        return false;
+
+    if (DoCastSpell(pCaster, pInterruptSpell) != SPELL_CAST_OK)
+        return false;
+
+    NoteGroupInterrupt(pCaster->GetObjectGuid());
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] interrupt bot='%s' role=%s lvl=%u stopped '%s' (lvl %u) casting "
+                 "'%s' with '%s'",
+                 me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                 pCaster->GetName(), pCaster->GetLevel(),
+                 pInterrupted ? pInterrupted->SpellName[0].c_str() : "something",
+                 pInterruptSpell->SpellName[0].c_str());
+    }
+
+    return true;
+}
+
+// A creature beating on somebody who is not the tank.
+//
+// This is the other half of no longer switching targets to chase loose adds. A tank that keeps the
+// mob it is holding still has to answer for the one that walked past it, and a taunt is how: it
+// costs a cooldown rather than the current target, which is the whole point.
+//
+// The healer first, because the healer dying ends the fight and everyone else dying merely costs a
+// corpse run; then whoever is worst off. The capture this was written from ends with the healer at
+// four attackers, thirty two percent health and seventeen percent mana, four seconds before the
+// group fell over, with the tank's own log line reading normally throughout.
+Unit* PartyBotAI::SelectPeelTarget() const
+{
+    if (m_role != ROLE_TANK)
+        return nullptr;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Player* pHealer = FindGroupHealer();
+
+    Unit* pBest = nullptr;
+    bool bestIsOnHealer = false;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+
+        if (pMember->GetMap() != me->GetMap())
+            continue;
+
+        // A second tank is not somebody to be rescued, and taunting off one is how two tanks spend
+        // an encounter trading a boss between them.
+        if (GetEffectiveRole(pMember) == ROLE_TANK)
+            continue;
+
+        bool const isHealer = (pMember == pHealer);
+
+        for (const auto pAttacker : pMember->GetAttackers())
+        {
+            // Already ours. Taunting it again would spend the cooldown on a mob that is on the
+            // tank and standing next to somebody only because they walked to it.
+            if (pAttacker->GetVictim() == me)
+                continue;
+
+            if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 30.0f))
+                continue;
+
+            // Not for things that cannot hurt anybody. One capture has the tank spending a Taunt
+            // on a level one Biletoad because it happened to be attacking the healer, which is the
+            // cooldown gone for the ten seconds something real might need it.
+            if (Creature const* pCreature = pAttacker->ToCreature())
+                if (pCreature->GetCreatureType() == CREATURE_TYPE_CRITTER)
+                    continue;
+
+            if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
+                continue;
+
+            // One peel per target per cooldown. A mob taunted a moment ago is already running at
+            // the tank and has not arrived, so its victim is still whoever it was hitting and it
+            // reads as needing the taunt again: one capture taunts a single Deviate Adder five
+            // times in forty seconds.
+            if (pAttacker->GetObjectGuid() == m_lastPeelGuid &&
+                (time(nullptr) - m_lastPeelTime) < PB_PEEL_REPEAT_INTERVAL)
+                continue;
+
+            // The healer outranks everyone; within a tier, the biggest thing is the one worth the
+            // cooldown, and health is the only proxy for that without a combat log.
+            if (!pBest ||
+                (isHealer && !bestIsOnHealer) ||
+                (isHealer == bestIsOnHealer && pAttacker->GetMaxHealth() > pBest->GetMaxHealth()))
             {
-                if (IsValidHostileTarget(pAttacker) &&
-                    me->IsWithinDist(pAttacker, 50.0f))
-                    return pAttacker;
+                pBest = pAttacker;
+                bestIsOnHealer = isHealer;
             }
         }
     }
 
+    return pBest;
+}
+
+bool PartyBotAI::PeelForTheHealer()
+{
+    Unit* pPeelTarget = SelectPeelTarget();
+    if (!pPeelTarget)
+        return false;
+
+    for (const auto& pSpellEntry : m_spellListTaunt)
+    {
+        if (!CanTryToCastSpell(pPeelTarget, pSpellEntry))
+            continue;
+
+        if (DoCastSpell(pPeelTarget, pSpellEntry) != SPELL_CAST_OK)
+            continue;
+
+        m_lastPeelGuid = pPeelTarget->GetObjectGuid();
+        m_lastPeelTime = time(nullptr);
+
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] peel bot='%s' lvl=%u pulled '%s' (lvl %u) off the group with '%s'",
+                     me->GetName(), me->GetLevel(), pPeelTarget->GetName(),
+                     pPeelTarget->GetLevel(), pSpellEntry->SpellName[0].c_str());
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+// The escort this instance asks the group to keep alive, if one is standing near enough to be the
+// group's problem.
+Creature* PartyBotAI::FindGuardedEscort() const
+{
+    if (!m_tactics || !m_tactics->escortNpcEntry)
+        return nullptr;
+
+    return me->FindNearestCreature(m_tactics->escortNpcEntry, m_tactics->escortGuardRadius);
+}
+
+Unit* PartyBotAI::SelectEscortAttackTarget() const
+{
+    Creature* pEscort = FindGuardedEscort();
+    if (!pEscort || !pEscort->IsAlive() || !pEscort->IsInCombat())
+        return nullptr;
+
+    // Only what is actually on him. A bot's threat rules are built entirely around the group, and
+    // an escort NPC is not a group member, so without this the party stands and watches the thing
+    // it came to protect get eaten by adds that never touched a player.
+    for (const auto pAttacker : pEscort->GetAttackers())
+        if (IsValidHostileTarget(pAttacker) && me->IsWithinDist(pAttacker, 50.0f))
+            return pAttacker;
+
+    if (Unit* pVictim = pEscort->GetVictim())
+        if (IsValidHostileTarget(pVictim) && me->IsWithinDist(pVictim, 50.0f))
+            return pVictim;
+
     return nullptr;
+}
+
+// Step somewhere the target can actually be seen from.
+//
+// Cave instances are the whole reason this exists. Of about eleven hundred refused damage casts in
+// one Wailing Caverns run, eight hundred and twenty six were SPELL_FAILED_LINE_OF_SIGHT: one
+// warlock, holding for a pull twenty nine yards from a Druid of the Fang with a wall between them,
+// spent an entire fight firing eight failed casts a second and contributed nothing whatsoever. The
+// rotation had no idea anything was wrong, because a refused cast simply falls through to the next
+// spell in the list and then round again.
+//
+// Asked about the bot's own target once a tick rather than inferred from refused casts, which is
+// how this started and could not work: CanTryToCastSpell now declines a cast at something it
+// cannot see, so the refusals that would have been counted never happen. One line of sight test a
+// tick is also cheaper than the several the rotation used to buy inside CheckCast for nothing.
+bool PartyBotAI::RecoverLineOfSight()
+{
+    // Ranged damage only, which is the one role this was ever about. The first live run had it
+    // walking the wrong people: a tank told to step in to fifteen yards from eighty five, when
+    // being in melee is its whole job and the chase already takes it there, and a healer marched
+    // towards a mob it merely could not see - a healer needs line of sight to the people it heals,
+    // and closing on the enemy to get it is exactly backwards.
+    if (GetRole() != ROLE_RANGE_DPS)
+    {
+        m_blindTargetGuid.Clear();
+        m_blindTicks = 0;
+        return false;
+    }
+
+    Unit* pTarget = me->GetVictim();
+    if (!pTarget || !pTarget->IsAlive() || pTarget->GetMap() != me->GetMap())
+    {
+        m_blindTargetGuid.Clear();
+        m_blindTicks = 0;
+        return false;
+    }
+
+    // A new target starts a new count. Otherwise a bot that spent a fight blind arrives at the
+    // next one already convinced it needs to move.
+    if (pTarget->GetObjectGuid() != m_blindTargetGuid)
+    {
+        m_blindTargetGuid = pTarget->GetObjectGuid();
+        m_blindTicks = 0;
+    }
+
+    // Whatever was in the way is no longer, either because the bot drifted or because the mob
+    // walked into the open. Nothing to do but forget it.
+    if (me->IsWithinLOSInMap(pTarget))
+    {
+        m_blindTicks = 0;
+        return false;
+    }
+
+    if (++m_blindTicks < PB_BLIND_TICKS_BEFORE_MOVING)
+        return false;
+
+    // A step takes time to finish and the count keeps climbing while it does, so without this the
+    // bot re-launches the same walk every tick and never arrives anywhere.
+    time_t const now = time(nullptr);
+    if (m_lastBlindStep && (now - m_lastBlindStep) < PB_BLIND_STEP_INTERVAL)
+        return false;
+
+    // Straight down the line towards the target, stopping at whatever standoff this bot would
+    // have taken anyway. A corner is cleared by getting closer to it far more reliably than by
+    // sidestepping, and stopping at the standoff is what keeps this from being a charge: a
+    // ranged bot ends up where a ranged bot belongs, and a melee bot was never blind for long
+    // enough to reach here.
+    float const distance = me->GetDistance(pTarget);
+
+    // Not from across the dungeon. Without this the rule reads "get within fifteen yards of the
+    // thing you cannot see" and acts on it at any range whatever: one capture has steps ordered
+    // from a hundred and thirty six yards, which is a bot walking the length of the instance and
+    // pulling everything on the way. A target that far away is not behind a corner, it is a stale
+    // victim, or one that fled, or one another group is fighting, and none of those is a walk.
+    if (distance > PB_BLIND_MAX_TARGET_DISTANCE)
+    {
+        m_blindTargetGuid.Clear();
+        m_blindTicks = 0;
+        return false;
+    }
+
+    float const standoff = std::max(GetTacticalStandoff(pTarget), PB_BLIND_STEP_MIN_DISTANCE);
+    if (distance <= standoff)
+        return false;
+
+    // A step, not a journey. Closing the whole gap in one order is what made this dangerous: the
+    // destination is aggro-checked and every yard of the route to it is not, so the longer the
+    // order the less the check is worth. Moving a little at a time means each leg is tested before
+    // it is walked, and a corner that needs two legs simply takes two.
+    float const stepTo = std::max(standoff, distance - PB_BLIND_STEP_MAX_TRAVEL);
+
+    float x, y, z;
+    pTarget->GetNearPoint(me, x, y, z, 0, stepTo, pTarget->GetAngle(me));
+
+    // The same rule the rest of the movement obeys. A firing line that wakes the next room is not
+    // a firing line, and standing blind is the better of the two.
+    if (WouldPositionPullExtraEnemies(x, y, z))
+    {
+        m_lastBlindStep = now;
+        return false;
+    }
+
+    m_lastBlindStep = now;
+
+    if (!me->IsStopped())
+        me->StopMoving();
+    me->GetMotionMaster()->Clear(false, true);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] blind bot='%s' role=%s lvl=%u could not see '%s' for %u casts from "
+                 "%.1fy, stepping in to %.1fy",
+                 me->GetName(), GetRoleName(GetRole()), me->GetLevel(), pTarget->GetName(),
+                 m_blindTicks, distance, standoff);
+    }
+
+    m_blindTicks = 0;
+    return true;
 }
 
 Player* PartyBotAI::SelectResurrectionTarget(SpellEntry const* pSpellEntry) const
@@ -2763,6 +3689,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (!pLeader->IsInWorld())
         return;
 
+    // Cheap, and has to run before anything that reads m_tactics: the group walks through the
+    // instance portal without any of this being reinitialised, so the map is the only signal that
+    // the tactics have changed.
+    RefreshDungeonTactics();
+
     if (pLeader->InBattleGround() &&
         !me->InBattleGround())
     {
@@ -2879,7 +3810,29 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     }
 
     if (me->IsNonMeleeSpellCasted(false, false, true))
+    {
+        // Come back exactly when the cast ends rather than on the next point of the tick grid.
+        //
+        // The timer is reset to a flat interval at the top of every pass, so evaluation happened on
+        // a fixed grid regardless of what the bot was doing, and a cast finishing between two grid
+        // points left it idle for the remainder. That is not an occasional loss, it is every cast:
+        // the phase is stable, so a two and a half second nuke on a quarter second grid gives up a
+        // fixed slice of throughput forever, and a chain of instants on the global cooldown gives
+        // up proportionally more because the window is shorter.
+        //
+        // Taking the smaller of the two keeps both properties. The intermediate wakes still happen
+        // while a long cast runs, so the heal cancellation just above still works and channels stay
+        // re-evaluable; but once the remaining time drops inside one interval the bot wakes on the
+        // completion itself and the gap closes to nothing.
+        if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+        {
+            uint32 const remaining = pCurrentSpell->GetCastedTime();
+            if (remaining && remaining < PB_UPDATE_INTERVAL)
+                m_updateTimer.Reset(remaining);
+        }
+
         return;
+    }
 
     if (me->GetTargetGuid() == me->GetObjectGuid())
         me->ClearTarget();
@@ -2949,27 +3902,51 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (GetRole() != ROLE_HEALER)
     {
-        if (!pVictim || !IsValidHostileTarget(pVictim))
-        {
-            if (pVictim)
-                me->AttackStop();
+        // Damage dealers converge on one target and stay on it. Every bot used to pick for itself
+        // from whatever was nearest or had hit it last, so four bots in one pack routinely worked
+        // four separate mobs: nothing died, everything kept hitting back, and the healer paid for
+        // all of it. Killing one thing at a time is worth more than any rotation change, because a
+        // dead mob deals no damage.
+        //
+        // The tank is excluded: it holds what it holds, and its target is what everyone else is
+        // reading. So is the healer, which has no victim to speak of.
+        Unit* pDesired = nullptr;
+        bool const focusFires = (GetRole() == ROLE_MELEE_DPS || GetRole() == ROLE_RANGE_DPS);
 
-            if (Unit* pNewVictim = SelectAttackTarget(pLeader))
+        if (focusFires)
+            pDesired = SelectGroupFocusTarget();
+
+        // Unlike the rule this replaced, a live target is not a reason to stop looking: the whole
+        // point of a focus is that it can move the group onto something else mid-fight, which is
+        // what marking a skull is for and what nothing here previously honoured.
+        bool const needsTarget = !pVictim || !IsValidHostileTarget(pVictim);
+
+        if (needsTarget || (pDesired && pDesired != pVictim))
+        {
+            if (!pDesired)
+                pDesired = SelectAttackTarget(pLeader);
+
+            if (pDesired && pDesired != pVictim)
             {
+                if (pVictim)
+                    me->AttackStop(true);
+
                 // Holding means not closing the distance. It does not mean standing there with no
                 // target: acquiring one costs nothing while the bot stays put, and it lets a held
                 // caster or hunter work on the mob as it comes in rather than waiting for it to
                 // finish arriving. A held melee bot simply cannot reach yet, which is the wait.
                 if (m_holdPosition)
                 {
-                    me->Attack(pNewVictim, true);
+                    me->Attack(pDesired, true);
                 }
                 else
                 {
-                    AttackStart(pNewVictim);
+                    AttackStart(pDesired);
                     return;
                 }
             }
+            else if (needsTarget && pVictim)
+                me->AttackStop();
         }
     }
 
@@ -3002,6 +3979,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         else if (me->IsMounted())
             me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
     }
+
+    // Ahead of the hold, and deliberately not subject to it. A hold means do not close on the mob
+    // and do not trail the leader; it has never meant stand behind a rock contributing nothing,
+    // which is what a held bot with no line of sight actually does. The step this takes stops at
+    // the standoff a ranged bot would have chosen anyway, so a held bot still ends up waiting,
+    // just somewhere it can shoot from.
+    if (me->IsInCombat() && RecoverLineOfSight())
+        return;
 
     // Both branches below exist to close a distance, by chasing a target or by trailing the leader,
     // and closing distances is the one thing a held bot must not do. Skipping the pair of them is
@@ -3051,6 +4036,25 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (me->IsInCombat())
         UpdateInCombatAI();
+
+    // Last, so that it reads the global cooldown the rotation above has just started rather than
+    // the one it inherited. Same argument as the cast timer: a chain of instants is governed by the
+    // global cooldown, it is the shorter of the two windows and so the more expensive one to round
+    // up, and waking on its expiry rather than on the next grid point is the difference between a
+    // bot that acts as soon as it is allowed to and one that acts on average half an interval late.
+    if (Spell* pCurrentSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        // Already scheduled against the cast, which finishes no earlier than the global cooldown
+        // it shares a start with, and is the wake actually wanted.
+        uint32 const remaining = pCurrentSpell->GetCastedTime();
+        if (remaining && remaining < PB_UPDATE_INTERVAL)
+            m_updateTimer.Reset(remaining);
+    }
+    else if (uint32 const gcdRemaining = me->GetGCDTimeRemaining(nullptr))
+    {
+        if (gcdRemaining < PB_UPDATE_INTERVAL)
+            m_updateTimer.Reset(gcdRemaining);
+    }
 }
 
 
@@ -3142,7 +4146,10 @@ void PartyBotAI::LogCombatTick() const
         float myThreat = 0.0f;
         float topThreat = 0.0f;
         char const* topName = "none";
-        bool holding = false;
+        // Named for what it means: whether this tank is top of its target's threat list. The
+        // ranged and melee lines spell their position hold "holding", and one field name meaning
+        // two different things by role has already caused one misreading of a capture.
+        bool hasAggro = false;
 
         if (pVictim && pVictim->CanHaveThreatList())
         {
@@ -3157,21 +4164,21 @@ void PartyBotAI::LogCombatTick() const
                 if (Unit const* pTopUnit = pTop->getTarget())
                 {
                     topName = pTopUnit->GetName();
-                    holding = (pTopUnit == me);
+                    hasAggro = (pTopUnit == me);
                 }
             }
         }
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
-                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' holding=%u "
+                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u "
                  "gcd=%u stance=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  uint32(me->GetAttackers().size()),
                  pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
-                 myThreat, topThreat, topName, uint32(holding),
+                 myThreat, topThreat, topName, uint32(hasAggro),
                  gcd, uint32(me->GetShapeshiftForm()));
         return;
     }
@@ -3241,18 +4248,37 @@ void PartyBotAI::LogCombatTick() const
             reason = "no_los";
         else if (!me->IsWithinDist(pWorst, reach))
             reason = "out_of_range";
+        else if (IsRationingHealsForTank() && GetEffectiveRole(pWorst) != ROLE_TANK)
+            reason = "rationed_tank_only";
+        else if (IsAlreadyHealing(pWorst->GetObjectGuid()))
+            reason = "heal_in_flight";
         else
             reason = "reachable";
     }
 
+    // Which mana band the rationing is in, so a healer that is deliberately holding back reads
+    // differently in the log from one that has nothing to cast. Without it, the tightened
+    // thresholds would look exactly like the idle healer they were added to stop.
+    char const* ration = "none";
+    if (me->IsInCombat() && me->GetPowerType() == POWER_MANA)
+    {
+        float const manaPercent = me->GetPowerPercent(POWER_MANA);
+        if (IsRationingHealsForTank())
+            ration = "tankonly";
+        else if (manaPercent < CB_HEAL_MANA_CRITICAL_PERCENT)
+            ration = "critical";
+        else if (manaPercent < CB_HEAL_MANA_CONSERVE_PERCENT)
+            ration = "conserve";
+    }
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f reach=%.0f wreason=%s incoming=%d casting=%u attackers=%u gcd=%u",
+             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u attackers=%u gcd=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",
              pWorst ? pWorst->GetHealthPercent() : 0.0f,
-             pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason,
+             pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason, ration,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
              uint32(me->GetAttackers().size()), gcd);
@@ -3268,14 +4294,37 @@ void PartyBotAI::UpdateInCombatAI()
     if (Unit* pVictim = me->GetVictim())
         HoldOpeningSwings(pVictim);
 
+    // Ahead of every role, because an interrupt is worth more than whatever that role was going to
+    // do with the tick and because the classes that own one are spread across all of them. Most
+    // bots have no interrupt at all and leave on the first line of it.
+    if (InterruptHostileCasters())
+        return;
+
     if (!IsInDuel())
     {
         if (m_role == ROLE_TANK)
         {
             Unit* pVictim = me->GetVictim();
 
-            // Defend party members.
-            if (!pVictim || pVictim->GetVictim() == me)
+            // Ahead of the two rules below, because neither of them fires for the case that
+            // actually kills groups. Both ask about the tank's own target: it has none, or the one
+            // it has has turned on somebody else. A tank happily holding one mob while a second
+            // walks past it into the healer satisfies neither, and so did nothing at all, which is
+            // how the run this was written from ended: the healer at four attackers and seventeen
+            // percent mana, four seconds from a wipe, with the tank's log line reading normally
+            // throughout.
+            if (PeelForTheHealer())
+                return;
+
+            // Defend party members - by taking a new target only when there is no target to keep.
+            //
+            // The condition here used to be "no victim, or my victim is attacking me", and the
+            // second half is a tank's success case: the mob is on you, which is the job. So every
+            // tick the tank was correctly holding aggro it went looking for somebody else's
+            // attacker and switched to it, dropping whatever it had - including a skull the group
+            // was told to kill. A loose add is a reason to taunt, which costs nothing and keeps the
+            // current target; it is not a reason to abandon the mob already being held.
+            if (!pVictim)
             {
                 if (pVictim = SelectPartyAttackTarget())
                 {
@@ -3310,6 +4359,10 @@ void PartyBotAI::UpdateInCombatAI()
             }
         }
         else if (CrowdControlMarkedTargets())
+            return;
+        // Nothing marked, so pick something sensible to take out of the fight. Behind the marked
+        // path so that an explicit instruction is never overridden by a guess.
+        else if (CrowdControlOffFocus())
             return;
     }
 
@@ -3349,6 +4402,11 @@ void PartyBotAI::UpdateInCombatAI()
 
     if (me->GetVictim())
         UseTrinketEffects();
+
+    // Last, and only reached when nothing above committed the tick. Every rotation is an if-chain
+    // that falls out of the bottom when nothing matched, and until now falling out of the bottom
+    // meant standing still.
+    KeepBusy();
 }
 
 bool PartyBotAI::CheckForDispelTargets()
@@ -4152,8 +5210,11 @@ void PartyBotAI::UpdateInCombatAI_Mage()
 
         if (me->GetEnemyCountInRadiusAround(me, 10.0f) > 1)
         {
+            // Guarded against the victim, which is what the cast below actually targets. Asking
+            // about the mage instead checked range and immunity on the wrong unit, so the guard
+            // was not guarding anything.
             if (m_spells.mage.pConeofCold && !me->IsMoving() &&
-                CanTryToCastSpell(me, m_spells.mage.pConeofCold))
+                CanTryToCastSpell(pVictim, m_spells.mage.pConeofCold))
             {
                 if (DoCastSpell(pVictim, m_spells.mage.pConeofCold) == SPELL_CAST_OK)
                     return;
@@ -4223,14 +5284,6 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (m_spells.mage.pScorch &&
-           (pVictim->GetHealthPercent() < 20.0f) &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
-        {
-            if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
-                return;
-        }
-
         if (m_spells.mage.pFrostbolt &&
             CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt))
         {
@@ -4252,6 +5305,18 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
+        // Below the two main nukes, and no longer carrying a twenty percent health gate it has no
+        // use for. Scorch is a cheap fast filler, not an execute; up where it used to sit it fired
+        // only in the last fifth of a fight, and ungating it in place would have replaced every
+        // Frostbolt the mage ever cast. Here it is what gets cast when the nukes above could not
+        // be, which is what a filler is for.
+        if (m_spells.mage.pScorch &&
+            CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
+        {
+            if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.mage.pEvocation &&
            (me->GetPowerPercent(POWER_MANA) < 30.0f) &&
            (GetAttackersInRangeCount(10.0f) == 0) &&
@@ -4261,11 +5326,8 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
-           !me->IsMoving() &&
-           (me->GetPowerPercent(POWER_MANA) < 5.0f) &&
-           !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-            me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
+        // Wanding is handled by KeepBusy at the end of the tick, for every class at once and only
+        // when there is a wand to fire.
     }
 }
 
@@ -4379,22 +5441,9 @@ bool PartyBotAI::AddFillerDamage(Unit* pTarget)
     }
 
     // The wand asks for no mana whatsoever, so it is not gated on having any to spare: a healer
-    // saving every point for the tank should still be firing it. It is an autorepeat, so it sits on
-    // its own timer and gives way to a heal the moment one is wanted, then picks itself back up.
-    if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
-       !me->IsMoving() &&
-       !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-    {
-        SpellEntry const* pWand = sSpellMgr.GetSpellEntry(PB_SPELL_SHOOT_WAND);
-        if (pWand && pWand->IsTargetInRange(me, pTarget))
-        {
-            me->SetFacingToObject(pTarget);
-            me->Attack(pTarget, false);
-            return me->CastSpell(pTarget, PB_SPELL_SHOOT_WAND, false) == SPELL_CAST_OK;
-        }
-    }
-
-    return false;
+    // saving every point for the tank should still be firing it. KeepBusy owns the firing itself,
+    // for every class at once and only where there is a wand to fire.
+    return KeepBusy();
 }
 
 // Whether the spell currently going out is one of the fillers above. Cheaper than tracking a flag
@@ -4736,14 +5785,6 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
-        if (m_spells.warlock.pSearingPain &&
-           (pVictim->GetHealthPercent() < 20.0f) &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pSearingPain))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pSearingPain) == SPELL_CAST_OK)
-                return;
-        }
-
         if (m_spells.warlock.pBanish &&
             me->GetAttackers().size() > 1)
         {
@@ -4764,18 +5805,12 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
-        if (m_spells.warlock.pDemonicSacrifice)
-        {
-            if (Pet* pPet = me->GetPet())
-            {
-                if (pPet->IsAlive() &&
-                    CanTryToCastSpell(pPet, m_spells.warlock.pDemonicSacrifice))
-                {
-                    if (DoCastSpell(pPet, m_spells.warlock.pDemonicSacrifice) == SPELL_CAST_OK)
-                        return;
-                }
-            }
-        }
+        // Demonic Sacrifice used to sit here, conditioned on nothing beyond the warlock having a
+        // living pet, so every warlock bot destroyed its own pet the moment it could and then
+        // fought the rest of the instance without one. The buff it leaves behind is worth having
+        // only for a build that has given up on the pet entirely, and nothing in the bot's spell
+        // data can tell that build apart from any other; until a spec profile exists to ask,
+        // keeping the pet is the better of the two guesses by a long way.
 
         if (m_spells.warlock.pImmolate &&
             IsWorthDotting(pVictim) &&
@@ -4856,8 +5891,24 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
+        // Underneath Shadow Bolt rather than above it, and no longer pretending to be an execute.
+        // Searing Pain is a filler nuke: the twenty percent health gate it used to carry is the
+        // one Shadowburn wants, copied onto a spell that has no such role, which left it dead for
+        // almost every second of every fight. Down here it is what the warlock casts when the
+        // Shadow Bolt above could not be cast, which is the only time it is the right answer.
+        if (m_spells.warlock.pSearingPain &&
+            CanTryToCastSpell(pVictim, m_spells.warlock.pSearingPain))
+        {
+            if (DoCastSpell(pVictim, m_spells.warlock.pSearingPain) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Tapped at thirty percent rather than ten. Life Tap is how a warlock funds the rest of
+        // the fight, and at ten percent the mana is already gone: the bot spent the intervening
+        // seconds unable to afford a Shadow Bolt, which is precisely the stretch the tap exists to
+        // prevent. The health floor is what keeps this from being a way to die.
         if (m_spells.warlock.pLifeTap &&
-           (me->GetPowerPercent(POWER_MANA) < 10.0f) &&
+           (me->GetPowerPercent(POWER_MANA) < 30.0f) &&
            (me->GetHealthPercent() > 70.0f) &&
             CanTryToCastSpell(me, m_spells.warlock.pLifeTap))
         {
@@ -4865,11 +5916,10 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
-        if (me->HasSpell(PB_SPELL_SHOOT_WAND) &&
-           !me->IsMoving() &&
-           (me->GetPowerPercent(POWER_MANA) < 5.0f) &&
-           !me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
-            me->CastSpell(pVictim, PB_SPELL_SHOOT_WAND, false);
+        // The wand tail that used to sit here is gone. KeepBusy fires one at the end of every
+        // combat tick that committed to nothing, which covers this case and several the mana
+        // threshold here never did - no target in casting range, everything on cooldown, silenced -
+        // and unlike this it first checks there is actually a wand equipped.
     }
 }
 
@@ -5551,35 +6601,48 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
             }
         }
 
-        if (me->GetComboPoints() > 4)
+        // Combo points belong to a target, not to the rogue, so a full bar earned on the last mob
+        // is worth nothing against this one. Reading the count alone said otherwise and the
+        // finisher was refused with SPELL_FAILED_NO_COMBO_POINTS - twenty times in one run, each
+        // one a wasted tick immediately after a target switch.
+        if (me->GetComboPoints() > 4 && me->GetComboTargetGuid() == pVictim->GetObjectGuid())
         {
-            std::vector<SpellEntry const*> vSpells;
+            // A finisher chosen at random was the single worst decision any rotation made. Two of
+            // the four are not damage at all: bosses are immune to Kidney Shot outright, and Expose
+            // Armor overwrites the warrior's Sunder Armor stacks, so a quarter of the rogue's
+            // finishers were actively taking damage away from the rest of the group. It is a
+            // priority list, and it always was; ordering it is the whole fix.
+            SpellEntry const* pComboSpell = nullptr;
 
-            // Give priority to Slice and Dice over other finishing moves.
+            // Slice and Dice first and by a wide margin: it is a multiplier on every auto attack
+            // for the rest of the fight, which is worth more than any single use of the energy.
+            // Not on a target about to die, where there is no rest of the fight to have.
             if (m_spells.rogue.pSliceAndDice &&
                !me->HasAura(m_spells.rogue.pSliceAndDice->Id) &&
                 pVictim->GetHealthPercent() > 10.0f)
-                vSpells.push_back(m_spells.rogue.pSliceAndDice);
-            else
             {
-                if (m_spells.rogue.pEviscerate)
-                    vSpells.push_back(m_spells.rogue.pEviscerate);
-                if (m_spells.rogue.pKidneyShot && !pVictim->IsImmuneToMechanic(MECHANIC_STUN))
-                    vSpells.push_back(m_spells.rogue.pKidneyShot);
-                if (m_spells.rogue.pExposeArmor)
-                    vSpells.push_back(m_spells.rogue.pExposeArmor);
-                if (m_spells.rogue.pRupture)
-                    vSpells.push_back(m_spells.rogue.pRupture);
+                pComboSpell = m_spells.rogue.pSliceAndDice;
+            }
+            // Then Rupture, but only where it will run: it beats Eviscerate over a long fight and
+            // loses badly on anything that dies inside its duration. IsWorthDotting is the same
+            // judgement the warlock makes about its own dots, so the two agree about what counts
+            // as a fight worth investing in.
+            else if (m_spells.rogue.pRupture &&
+                     IsWorthDotting(pVictim) &&
+                    !pVictim->HasAura(m_spells.rogue.pRupture->Id))
+            {
+                pComboSpell = m_spells.rogue.pRupture;
+            }
+            // Otherwise the damage. Eviscerate is what five combo points are for.
+            else if (m_spells.rogue.pEviscerate)
+            {
+                pComboSpell = m_spells.rogue.pEviscerate;
             }
 
-            if (!vSpells.empty())
+            if (pComboSpell && CanTryToCastSpell(pVictim, pComboSpell))
             {
-                SpellEntry const* pComboSpell = SelectRandomContainerElement(vSpells);
-                if (CanTryToCastSpell(pVictim, pComboSpell))
-                {
-                    if (DoCastSpell(pVictim, pComboSpell) == SPELL_CAST_OK)
-                        return;
-                }
+                if (DoCastSpell(pVictim, pComboSpell) == SPELL_CAST_OK)
+                    return;
             }
         }
 
@@ -5627,8 +6690,12 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
 
         if (!me->HasAuraType(SPELL_AURA_MOD_STEALTH))
         {
+            // Below thirty five rather than below eighty. Eighty percent health is the ordinary
+            // state of anything in melee, so the check passed almost immediately and the rogue's
+            // one real defensive cooldown was spent as an opener, every fight, and was never
+            // available for the fight that went wrong.
             if (m_spells.rogue.pEvasion &&
-               (me->GetHealthPercent() < 80.0f) &&
+               (me->GetHealthPercent() < 35.0f) &&
                ((GetAttackersInRangeCount(10.0f) > 2) || !IsRangedDamageClass(pVictim->GetClass())) &&
                 CanTryToCastSpell(me, m_spells.rogue.pEvasion))
             {
@@ -5650,7 +6717,12 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
             }
         }
 
+        // Backstab is refused from the front, and nothing here used to ask. It sits near the top
+        // of the rogue's list, so every tick spent in front of the target began by throwing the
+        // attempt away: forty seven refusals with SPELL_FAILED_NOT_BEHIND in a single run, which
+        // is forty seven Sinister Strikes that never happened.
         if (m_spells.rogue.pBackstab &&
+            me->IsBehindTarget(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.rogue.pBackstab))
         {
             if (DoCastSpell(pVictim, m_spells.rogue.pBackstab) == SPELL_CAST_OK)

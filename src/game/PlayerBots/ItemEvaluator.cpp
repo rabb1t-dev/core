@@ -840,7 +840,8 @@ namespace
     uint32 const MAX_OPTIMIZE_ROUNDS = 8;
 }
 
-uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weights) const
+uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weights,
+                                        bool requireShield) const
 {
     if (!pPlayer)
         return 0;
@@ -960,8 +961,25 @@ uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weig
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         for (Item* pItem : available)
-            if (CanWear(pPlayer, pItem, slot))
-                candidates[slot].push_back(pItem);
+        {
+            if (!CanWear(pPlayer, pItem, slot))
+                continue;
+
+            // A two-hander in the main hand is what empties the off-hand, so refusing it here is
+            // what leaves room for the shield. Refused as a candidate rather than corrected
+            // afterwards, because the hands are scored as a pair and a two-hander that reached the
+            // scoring could still win it.
+            if (requireShield && slot == EQUIPMENT_SLOT_MAINHAND && IsTwoHand(pItem))
+                continue;
+
+            // And nothing but a shield in the off-hand, so the slot cannot be spent on a holdable
+            // or an off-hand weapon that would keep the shield out.
+            if (requireShield && slot == EQUIPMENT_SLOT_OFFHAND &&
+                (!pItem->GetProto() || pItem->GetProto()->InventoryType != INVTYPE_SHIELD))
+                continue;
+
+            candidates[slot].push_back(pItem);
+        }
 
         // Best first, and ties broken on guid rather than left to whatever order the bags
         // happened to be walked in. Two members offered the same gear have to reach the same

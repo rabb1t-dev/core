@@ -75,6 +75,30 @@ struct HealAuraCompare
     }
 };
 
+// Mana bands a healer rations against, and how much it tightens up in each.
+//
+// A healer that treats every point of missing health as worth a cast spends its bar on the first
+// forty seconds of a fight and is a spectator for the rest of it. Two captures of the Wailing
+// Caverns escort show the shape of it: the shaman went from ninety six percent mana to one percent
+// in seventy eight seconds and died with the boss at half health, and the priest spent 1327 mana in
+// twenty six seconds, four casts of it into a hunter's pet and four more into an ally sitting above
+// eighty percent health. Neither ran out because the incoming damage was unsurvivable. They ran out
+// because nothing distinguished a tank about to die from a rogue that had taken one hit.
+//
+// So above the conserve band nothing changes and the thresholds each class asks for stand. Inside
+// it the bot stops topping anybody off. Below the critical band it spends only on whoever is
+// holding the mobs, because a live tank is the only thing keeping the rest of the group from being
+// hit at all.
+static constexpr float CB_HEAL_MANA_CONSERVE_PERCENT = 60.0f;
+static constexpr float CB_HEAL_MANA_CRITICAL_PERCENT = 30.0f;
+static constexpr float CB_HEAL_CONSERVE_CAP_PERCENT = 70.0f;
+static constexpr float CB_HEAL_CRITICAL_CAP_PERCENT = 50.0f;
+
+// How much health a tank is treated as being down by when ranking heal targets, so an equally hurt
+// damage dealer does not outrank it. Picked to be worth roughly one hit at the levels these bots
+// run dungeons at: enough to break the tie, not enough to ignore somebody genuinely dying.
+static constexpr float CB_HEAL_TANK_PRIORITY_BONUS = 15.0f;
+
 class CombatBotBaseAI : public PlayerBotAI
 {
 public:
@@ -124,6 +148,9 @@ public:
     bool IsValidBuffTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool IsValidHealTarget(Unit const* pTarget, float healthPercent = 100.0f) const;
     float GetMaxHealSpellRange() const;
+    float GetManaAdjustedHealPercent(float requestedPercent) const;
+    bool IsRationingHealsForTank() const;
+    bool IsAlreadyHealing(ObjectGuid guid) const;
     bool IsValidHostileTarget(Unit const* pTarget) const;
     bool IsValidDispelTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool FindAndPreHealTarget();
@@ -151,6 +178,7 @@ public:
 
     void EquipOrUseNewItem();
     StatWeights const* GetStatWeights() const;
+    static char const* GetDefaultSpecNameForRole(uint8 classId, CombatBotRoles role);
 
     // An item has arrived, from a trade, a corpse or a won roll. Only noted here: the wearing of it
     // is done out of combat, because re-solving the whole loadout mid-fight costs a tick the bot
@@ -162,6 +190,15 @@ public:
     uint8 GetHighestHonorRankFromEquippedItems() const;
     void UpdateVisualHonorRankBasedOnItems();
     void BeginChasing(Unit* pVictim) const;
+
+    // The closest a ranged bot or a healer may stand to this particular creature, whatever the
+    // ordinary standoff would have been. Zero, which is what every bot without instance tactics
+    // answers, leaves the standoff alone.
+    //
+    // Declared here because BeginChasing is where every standoff in the game is chosen and it
+    // lives on this class, and answered here as "no opinion" so that a battleground bot, which
+    // has no dungeon to have tactics for, is unaffected.
+    virtual float GetTacticalStandoff(Unit const* /*pTarget*/) const { return 0.0f; }
     bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
     bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();

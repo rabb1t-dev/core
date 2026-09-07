@@ -2149,6 +2149,36 @@ bool SpellCaster::HasGCD(SpellEntry const* spellEntry) const
     return !m_GCDCatMap.empty();
 }
 
+uint32 SpellCaster::GetGCDTimeRemaining(SpellEntry const* spellEntry) const
+{
+    // The longest of them when asked about no spell in particular, to match HasGCD(nullptr)
+    // answering whether any global cooldown is running at all.
+    TimePoint expiry = TimePoint::min();
+
+    if (spellEntry)
+    {
+        auto gcdItr = m_GCDCatMap.find(spellEntry->StartRecoveryCategory);
+        if (gcdItr == m_GCDCatMap.end())
+            return 0;
+
+        expiry = gcdItr->second;
+    }
+    else
+    {
+        for (auto const& itr : m_GCDCatMap)
+            expiry = std::max(expiry, itr.second);
+
+        if (expiry == TimePoint::min())
+            return 0;
+    }
+
+    TimePoint const now = sWorld.GetCurrentClockTime();
+    if (expiry <= now)
+        return 0;
+
+    return uint32(std::chrono::duration_cast<std::chrono::milliseconds>(expiry - now).count());
+}
+
 void SpellCaster::AddCooldown(SpellEntry const* spellEntry, ItemPrototype const* /*itemProto = nullptr*/, bool /*permanent = false*/, uint32 forcedDuration /*= 0*/)
 {
     uint32 recTimeDuration = forcedDuration ? forcedDuration : spellEntry->RecoveryTime;
