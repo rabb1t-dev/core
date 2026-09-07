@@ -307,6 +307,7 @@ public:
 
     bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();
+    bool IsBreakableCrowdControlInRange(float radius, Unit const* pAround = nullptr) const;
 
     // Who a totem dropped right now would actually reach.
     struct TotemAudience

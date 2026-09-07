@@ -109,6 +109,7 @@ public:
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
     bool GatherLooseEnemies();
+    bool GetGatherAnchor(float& x, float& y, float& z) const;
     void ReconsiderMeleeChaseAngle();
     bool CanIssueCombatMovement() const;
     void NoteCombatMovement();
@@ -266,12 +267,6 @@ public:
     // When this bot last walked out of a held mob's reach, so it steps once rather than every
     // tick for as long as the root lasts.
     time_t m_lastHeldStep = 0;
-    // Where a warrior was standing when it began collecting, which is where the group already is
-    // and so where the adds it collects should end up. Cleared when it leaves combat.
-    bool m_hasGatherAnchor = false;
-    float m_gatherAnchorX = 0.0f;
-    float m_gatherAnchorY = 0.0f;
-    float m_gatherAnchorZ = 0.0f;
     // One clock for every system that repositions a bot mid-fight, so they take turns rather than
     // fight each other.
     time_t m_lastCombatMove = 0;

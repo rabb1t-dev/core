@@ -260,6 +260,7 @@ static constexpr float PB_GATHER_SHOUT_RADIUS = 10.0f;
 static constexpr float PB_GATHER_SHOUT_SAFETY_RADIUS = 14.0f;
 static constexpr uint32 PB_GATHER_SHOUT_MIN_TARGETS = 2;
 static constexpr float PB_GATHER_MAX_STRAY = 25.0f;
+static constexpr float PB_GATHER_ANCHOR_MAX_RANGE = 60.0f;
 static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
 
 // Backing a fight away from a neighbouring camp.
@@ -3414,6 +3415,87 @@ void PartyBotAI::CollectLooseEnemies(std::vector<Unit*>& out) const
     }
 }
 
+// Where the collected adds are meant to end up.
+//
+// Read live from the group every tick rather than stamped once. The first version took the
+// warrior's own position at the moment it entered combat and held it for the rest of the fight,
+// on the reasoning that this is where the group engaged. In a dungeon that reasoning is wrong in
+// the one way that matters: combat does not drop between pulls. A group chain-pulling through
+// Wailing Caverns stays in combat for minutes at a time, so the anchor stayed pinned to the first
+// pull of the chain while the group walked on, and the warrior ran further and further backwards
+// to reach it - 16y, then 41y, then 53y in one capture, growing exactly as fast as the group
+// advanced. The same stale point was also measuring which loose adds were worth fetching, so by
+// then every real add read as too far from the anchor and got skipped. The warrior stopped
+// collecting anything and only kept running the wrong way.
+//
+// The tank is the anchor for a damage warrior, because the tank is the pile: an add dragged
+// anywhere else is an add the tank then has to go and fetch. A tank has no such anchor of its own
+// - it is standing on the pile already - so it falls through to the healer, which bounds how far
+// it will chase a loose add without ever asking it to walk backwards. Both are real standable
+// points rather than a computed average that can land inside a wall.
+bool PartyBotAI::GetGatherAnchor(float& x, float& y, float& z) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    if (m_role != ROLE_TANK)
+    {
+        if (Player* pTank = GetGroupTank())
+        {
+            if (me->GetDistance(pTank) <= PB_GATHER_ANCHOR_MAX_RANGE)
+            {
+                x = pTank->GetPositionX();
+                y = pTank->GetPositionY();
+                z = pTank->GetPositionZ();
+                return true;
+            }
+        }
+    }
+
+    Player* pAnchor = nullptr;
+    float bestDistance = 0.0f;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+
+        if (pMember->GetMap() != me->GetMap())
+            continue;
+
+        CombatBotRoles const role = GetEffectiveRole(pMember);
+        if (role != ROLE_HEALER && role != ROLE_RANGE_DPS)
+            continue;
+
+        // Far enough away to be a straggler or a body in another room rather than the group's
+        // back line, and dragging a pack of adds to one is worse than not collecting at all.
+        float const distance = me->GetDistance(pMember);
+        if (distance > PB_GATHER_ANCHOR_MAX_RANGE)
+            continue;
+
+        // The healer outright, otherwise the nearest of the casters.
+        bool const preferred = (role == ROLE_HEALER);
+        bool const currentIsHealer = pAnchor && GetEffectiveRole(pAnchor) == ROLE_HEALER;
+
+        if (!pAnchor || (preferred && !currentIsHealer) ||
+            (preferred == currentIsHealer && distance < bestDistance))
+        {
+            pAnchor = pMember;
+            bestDistance = distance;
+        }
+    }
+
+    if (!pAnchor)
+        return false;
+
+    x = pAnchor->GetPositionX();
+    y = pAnchor->GetPositionY();
+    z = pAnchor->GetPositionZ();
+    return true;
+}
+
 // Collect what is loose and bring it back to where the group is standing.
 //
 // This is what a warrior in a competent group spends a fight doing and what none of these bots did
@@ -3433,10 +3515,7 @@ bool PartyBotAI::GatherLooseEnemies()
         return false;
 
     if (!me->IsInCombat())
-    {
-        m_hasGatherAnchor = false;
         return false;
-    }
 
     if (m_holdPosition || IsInDuel() || IsPulling() || me->IsNonMeleeSpellCasted())
         return false;
@@ -3444,15 +3523,9 @@ bool PartyBotAI::GatherLooseEnemies()
     if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
         return false;
 
-    // Where the collected adds are meant to end up. Taken the first time this runs in a fight,
-    // which is where the warrior was standing when the group engaged, and so where the group is.
-    if (!m_hasGatherAnchor)
-    {
-        m_hasGatherAnchor = true;
-        m_gatherAnchorX = me->GetPositionX();
-        m_gatherAnchorY = me->GetPositionY();
-        m_gatherAnchorZ = me->GetPositionZ();
-    }
+    float anchorX, anchorY, anchorZ;
+    if (!GetGatherAnchor(anchorX, anchorY, anchorZ))
+        return false;
 
     std::vector<Unit*> loose;
     CollectLooseEnemies(loose);
@@ -3465,14 +3538,20 @@ bool PartyBotAI::GatherLooseEnemies()
         if (me->GetAttackers().empty())
             return false;
 
-        float const strayed = me->GetDistance(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ);
+        // Not the tank. The tank is where the pile belongs, so walking it towards the group's back
+        // line drags the whole fight into the casters - the exact thing the rest of this file
+        // spends its time preventing. Where a tank stands is DragFightAwayFromNeighbours' call.
+        if (m_role == ROLE_TANK)
+            return false;
+
+        float const strayed = me->GetDistance(anchorX, anchorY, anchorZ);
         if (strayed < PB_GATHER_RETURN_DISTANCE)
             return false;
 
         if (!CanIssueCombatMovement())
             return false;
 
-        if (!SafeMoveTo(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ))
+        if (!SafeMoveTo(anchorX, anchorY, anchorZ))
             return false;
 
         NoteCombatMovement();
@@ -3564,7 +3643,7 @@ bool PartyBotAI::GatherLooseEnemies()
 
     for (Unit* pLoose : loose)
     {
-        if (pLoose->GetDistance(m_gatherAnchorX, m_gatherAnchorY, m_gatherAnchorZ) > PB_GATHER_MAX_STRAY)
+        if (pLoose->GetDistance(anchorX, anchorY, anchorZ) > PB_GATHER_MAX_STRAY)
             continue;
 
         float const distance = me->GetDistance(pLoose);

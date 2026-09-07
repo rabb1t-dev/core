@@ -4922,6 +4922,10 @@ static float const TOTEM_AURA_RADIUS = 20.0f;
 // Magma Totem only reaches enemies packed in close, so it is worth the slot over Searing Totem
 // only when several of them are.
 static float const MAGMA_TOTEM_RADIUS = 8.0f;
+// How far a Searing Totem's bolt reaches. Read as a plain number rather than off the spell because
+// what it is guarding is a decision not to drop the totem at all, and being wrong by a yard in the
+// safe direction costs one totem while being wrong the other way costs the group a sheep.
+static float const SEARING_TOTEM_RANGE = 22.0f;
 
 CombatBotBaseAI::TotemAudience CombatBotBaseAI::SurveyTotemAudience() const
 {
@@ -5018,6 +5022,37 @@ bool CombatBotBaseAI::IsTotemSpellCoveredByAnotherShaman(TotemSlot slot, SpellEn
     return false;
 }
 
+// Is anything the group has deliberately taken out of the fight standing within reach of a totem
+// dropped here?
+//
+// A Searing Totem picks its own target - nearest attackable unit in range, every few seconds, with
+// no notion of what the group is doing - and a polymorphed mob is a perfectly valid attack target.
+// So the shaman drops its totem, the totem shoots the sheep, and the sheep is a Deviate again with
+// nobody expecting it. This is the same behaviour on retail and the same fix a real shaman uses:
+// the totem is not dropped while a sheep is in range of it.
+//
+// Break-on-damage is the whole test. A snare or a disarm on a mob is not crowd control that a bolt
+// ruins, and refusing to drop a damage totem near one would cost the shaman its damage for nothing.
+bool CombatBotBaseAI::IsBreakableCrowdControlInRange(float radius, Unit const* pAround) const
+{
+    if (!pAround)
+        pAround = me;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(pAround, radius, nearby);
+
+    for (Unit const* pEnemy : nearby)
+    {
+        if (!pEnemy || !pEnemy->IsAlive())
+            continue;
+
+        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            return true;
+    }
+
+    return false;
+}
+
 SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
 {
     TotemAudience const audience = SurveyTotemAudience();
@@ -5069,8 +5104,10 @@ SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
             break;
         case TOTEM_SLOT_FIRE:
             // Searing and Magma are the shaman's own damage, so they only earn the slot when
-            // there is something to shoot at.
-            if (me->GetVictim())
+            // there is something to shoot at - and when there is nothing in range they would shoot
+            // that the group wanted left alone. Flametongue below is a weapon imbue and harms
+            // nothing, so it still takes the slot and the shaman is not left without a fire totem.
+            if (me->GetVictim() && !IsBreakableCrowdControlInRange(SEARING_TOTEM_RANGE))
             {
                 if (GetAttackersInRangeCount(MAGMA_TOTEM_RADIUS) >= 3)
                     consider(m_totems.pMagma);
@@ -5098,6 +5135,27 @@ SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
 
 bool CombatBotBaseAI::SummonShamanTotems()
 {
+    // A totem already down is the case the gate in SelectTotemForSlot cannot reach: the sheep
+    // usually arrives after the totem, not before, and a totem that is already standing there is a
+    // slot this function skips. So it is pulled up instead. Checked around the totem rather than
+    // around the shaman, because the shaman has walked off and the totem has not.
+    if (Totem* pFireTotem = me->GetTotem(TOTEM_SLOT_FIRE))
+    {
+        if (pFireTotem->GetTotemType() == TOTEM_ACTIVE &&
+            IsBreakableCrowdControlInRange(SEARING_TOTEM_RANGE, pFireTotem))
+        {
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] totem bot='%s' pulled up '%s': something the group has "
+                         "crowd controlled walked into its range", me->GetName(),
+                         pFireTotem->GetName());
+            }
+
+            pFireTotem->UnSummon();
+        }
+    }
+
     // Asked per school at the moment a totem is dropped rather than reused from a choice made when
     // the bot learned its spells, because by now there is a group standing around it.
     static TotemSlot const totemSlots[] = { TOTEM_SLOT_AIR, TOTEM_SLOT_EARTH, TOTEM_SLOT_FIRE, TOTEM_SLOT_WATER };
