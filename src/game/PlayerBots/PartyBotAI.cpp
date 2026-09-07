@@ -4990,6 +4990,11 @@ void PartyBotAI::UpdateInCombatAI()
     if (me->GetVictim())
         UseTrinketEffects();
 
+    // Blood Fury and Berserking, on cooldowns several times longer than the fights they are used
+    // in, so there is nothing to save them for. Below the rotation because they are a multiplier on
+    // it rather than a substitute, and not returning, since neither costs the bot its tick.
+    UseOffensiveRacial();
+
     // Nothing needed healing this tick, which for a healer is the moment to start a cast anyway.
     // Below the rotation so a real heal always wins, and above KeepBusy because a heal already
     // two thirds cast when the tank takes a hit is worth considerably more than a wand shot.

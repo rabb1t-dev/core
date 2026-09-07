@@ -118,6 +118,15 @@ static constexpr float CB_HEAL_TANK_CEILING_BONUS = 7.0f;
 // Bracers and boots are what a real player enchants when the mats happen to be lying around.
 static constexpr int32 CB_ARMOR_ENCHANT_CHANCE = 50;
 
+// Racials, granted at character creation rather than trained, so they appear in no class spell
+// list and have to be named. War Stomp is handled with the interrupts in PartyBotAI.
+enum CombatBotRacials
+{
+    CB_SPELL_WILL_OF_THE_FORSAKEN = 7744,   // undead: breaks charm, fear and sleep
+    CB_SPELL_BLOOD_FURY = 20572,            // orc: attack power, at the cost of healing received
+    CB_SPELL_BERSERKING = 26297,            // troll: haste
+};
+
 // Speculative healing: starting a cast before anybody needs it, so that the heal lands at the
 // moment somebody does.
 //
@@ -292,6 +301,8 @@ public:
     bool UseTrinketEffects(bool onlyToBreakCC = false);
     bool UseItemEffect(Item* pItem, bool onlyToBreakCC = false);
     void BreakCrowdControlEffects();
+    bool HasCrowdControlOfMechanic(std::initializer_list<uint32> mechanics) const;
+    bool UseOffensiveRacial();
 
     virtual void UpdateInCombatAI() = 0;
     virtual void UpdateOutOfCombatAI() = 0;

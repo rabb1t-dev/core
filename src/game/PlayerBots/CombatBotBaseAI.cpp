@@ -4955,10 +4955,65 @@ bool CombatBotBaseAI::UseItemEffect(Item* pItem, bool onlyToBreakCC)
     return false;
 }
 
+// Whether any aura currently on this bot works by one of the given mechanics.
+//
+// Asked of the mechanic rather than the aura type because the two disagree in exactly the case
+// that matters: Sleep applies SPELL_AURA_MOD_STUN, so anything looking for a sleep by aura type
+// finds a stun and anything treating that as a stun reaches for the wrong answer.
+bool CombatBotBaseAI::HasCrowdControlOfMechanic(std::initializer_list<uint32> mechanics) const
+{
+    for (auto const& itr : me->GetSpellAuraHolderMap())
+    {
+        SpellEntry const* pEntry = itr.second ? itr.second->GetSpellProto() : nullptr;
+        if (!pEntry)
+            continue;
+
+        for (uint32 mechanic : mechanics)
+        {
+            if (pEntry->Mechanic == mechanic)
+                return true;
+
+            for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                if (pEntry->EffectMechanic[i] == mechanic)
+                    return true;
+        }
+    }
+
+    return false;
+}
+
 void CombatBotBaseAI::BreakCrowdControlEffects()
 {
     if (UseTrinketEffects(true))
         return;
+
+    // Will of the Forsaken, handed to every undead at character creation and never once used by a
+    // bot. It grants immunity to charm, fear and sleep - mechanics 1, 5 and 10, written into the
+    // spell as three MECHANIC_IMMUNITY auras - and because Spell::CheckCast derives its
+    // mechanic_immune from the spell being cast, it is castable while under all three. That is the
+    // whole point of the ability and it is the only answer an undead rogue or mage has to a sleep.
+    //
+    // Checked against those three mechanics specifically rather than against being controlled at
+    // all, because it does not break a stun and it is on a two minute cooldown: spending it on
+    // something it cannot cure is worse than not having it.
+    if (me->HasSpell(CB_SPELL_WILL_OF_THE_FORSAKEN) &&
+        HasCrowdControlOfMechanic({ MECHANIC_CHARM, MECHANIC_FEAR, MECHANIC_SLEEP }))
+    {
+        if (SpellEntry const* pWotf = sSpellMgr.GetSpellEntry(CB_SPELL_WILL_OF_THE_FORSAKEN))
+        {
+            if (CanTryToCastSpell(me, pWotf) && DoCastSpell(me, pWotf) == SPELL_CAST_OK)
+            {
+                if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] racial bot='%s' broke charm, fear or sleep with Will of "
+                             "the Forsaken", me->GetName());
+                }
+
+                return;
+            }
+        }
+    }
 
     switch (me->GetClass())
     {
@@ -5055,6 +5110,38 @@ void CombatBotBaseAI::BreakCrowdControlEffects()
             break;
         }
     }
+}
+
+// The racials that are simply free throughput, used when there is something to use them on.
+//
+// Both are on a two or three minute cooldown against fights that last a fraction of that, so there
+// is no husbandry to do: the only wrong answer is the one the bots gave until now, which was never
+// to press them at all.
+bool CombatBotBaseAI::UseOffensiveRacial()
+{
+    if (!me->IsInCombat() || !me->GetVictim())
+        return false;
+
+    // Blood Fury trades healing received for attack power, so it belongs to the bots being healed
+    // least. On a tank it is a straight downgrade during the seconds that matter most.
+    if (m_role != ROLE_TANK && m_role != ROLE_HEALER &&
+        me->HasSpell(CB_SPELL_BLOOD_FURY))
+    {
+        if (SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(CB_SPELL_BLOOD_FURY))
+            if (CanTryToCastSpell(me, pSpellEntry) && DoCastSpell(me, pSpellEntry) == SPELL_CAST_OK)
+                return true;
+    }
+
+    // Berserking is haste and helps every role, including a healer trying to land a cast before
+    // somebody dies.
+    if (me->HasSpell(CB_SPELL_BERSERKING))
+    {
+        if (SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(CB_SPELL_BERSERKING))
+            if (CanTryToCastSpell(me, pSpellEntry) && DoCastSpell(me, pSpellEntry) == SPELL_CAST_OK)
+                return true;
+    }
+
+    return false;
 }
 
 bool CombatBotBaseAI::IsWearingShield(Player* pPlayer) const
