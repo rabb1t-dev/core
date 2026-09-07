@@ -2067,10 +2067,66 @@ SpellCastResult PartyBotAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellE
     return CombatBotBaseAI::DoCastSpell(pTarget, pRank);
 }
 
+// How much of a resource must be left untouched so the interrupt is affordable when it is needed.
+//
+// Holding an ability for the right cast is worth nothing if the rotation has spent the rage it
+// costs. The tank that missed Serpentis' sleep had Shield Bash ready and off cooldown, in Defensive
+// Stance with a shield equipped, and two rage: it had put fifteen into a Sunder Armor one second
+// earlier. The ranking said interrupt, the ability said yes, and the rage bar said no.
+//
+// Only against something actually known to cast crowd control, so this is not a permanent tax on
+// every warrior in the game - and only while the interrupt is off cooldown, since there is nothing
+// to save for while it is not.
+uint32 PartyBotAI::GetPowerReservedForInterrupt(Powers powerType, SpellEntry const* pSpellEntry) const
+{
+    if (powerType != POWER_RAGE && powerType != POWER_ENERGY)
+        return 0;
+
+    Unit const* pVictim = me->GetVictim();
+    if (!pVictim || IsInDuel())
+        return 0;
+
+    if (GetWorstKnownCastPriority(pVictim) < PB_INTERRUPT_CONTROL)
+        return 0;
+
+    std::vector<SpellEntry const*> interrupts;
+    GetInterruptSpells(interrupts);
+
+    // The interrupt is never held back by its own reserve.
+    for (SpellEntry const* pInterrupt : interrupts)
+        if (pInterrupt == pSpellEntry)
+            return 0;
+
+    uint32 reserve = 0;
+
+    for (SpellEntry const* pInterrupt : interrupts)
+    {
+        if (Powers(pInterrupt->powerType) != powerType)
+            continue;
+
+        if (!me->IsSpellReady(pInterrupt))
+            continue;
+
+        uint32 const cost = Spell::CalculatePowerCost(pInterrupt, me);
+        if (!reserve || cost < reserve)
+            reserve = cost;
+    }
+
+    return reserve;
+}
+
 bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
 {
     if (!CombatBotBaseAI::CanTryToCastSpell(pTarget, pSpellEntry))
         return false;
+
+    Powers const powerType = Powers(pSpellEntry->powerType);
+    if (uint32 const reserved = GetPowerReservedForInterrupt(powerType, pSpellEntry))
+    {
+        uint32 const cost = Spell::CalculatePowerCost(pSpellEntry, me);
+        if (cost && me->GetPower(powerType) < (cost + reserved))
+            return false;
+    }
 
     // Hold below the threshold at which this target would turn round. Nothing in the bot code
     // has ever done this, so a damage dealer simply cast until it took the boss off the tank,
@@ -7955,21 +8011,15 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
                 return;
         }
 
-        // Kick is the interrupt. Gouge used to sit above it here and fired sixty six times in one
-        // run, which is sixty six times the rogue incapacitated the mob the whole group was
-        // killing: Gouge turns the target away, breaks the rogue out of melee contact and ends its
-        // own effect on the next hit anybody lands, so on a focus target it buys an interrupt and
-        // pays for it in everyone's uptime. It costs forty five energy to do that, the same as a
-        // Sinister Strike.
-        if (pVictim->IsNonMeleeSpellCasted())
-        {
-            if (m_spells.rogue.pKick &&
-                CanTryToCastSpell(pVictim, m_spells.rogue.pKick))
-            {
-                if (DoCastSpell(pVictim, m_spells.rogue.pKick) == SPELL_CAST_OK)
-                    return;
-            }
-        }
+        // Kick is not cast from here. It used to be, on the plain rule "the target is casting, so
+        // kick it", and that rule quietly overrode the whole interrupt ranking: the driver would
+        // decide a cast was not worth spending Kick on and hold it, this would fire two lines later
+        // and spend it anyway. Lord Serpentis is the clean example. At 19:44:36 the rogue held Kick
+        // on a priority one cast and then kicked it regardless; one second later Serpentis began
+        // the sleep, the driver ranked it top priority, and the only ability the rogue owns for it
+        // was on cooldown. The log says so in as many words - "none were castable".
+        //
+        // One owner for the ability, and it is the thing that knows what the mob can do.
 
         // Gouge keeps one use: getting something off the rogue when it is the one in trouble. On
         // an extra attacker, never on the group's target, and then straight back to the focus so
