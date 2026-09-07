@@ -103,6 +103,7 @@ public:
     Creature* FindGuardedEscort() const;
     Unit* SelectEscortAttackTarget() const;
     bool RecoverLineOfSight();
+    bool StepAwayFromHeldAttacker();
     Player* SelectResurrectionTarget(SpellEntry const* pSpellEntry) const;
     bool UseSelfResurrection();
     void AddSelfResurrectionReagent();
@@ -253,6 +254,9 @@ public:
     ObjectGuid m_blindTargetGuid;
     uint32 m_blindTicks = 0;
     time_t m_lastBlindStep = 0;
+    // When this bot last walked out of a held mob's reach, so it steps once rather than every
+    // tick for as long as the root lasts.
+    time_t m_lastHeldStep = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

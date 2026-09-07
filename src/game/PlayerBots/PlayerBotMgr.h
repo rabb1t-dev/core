@@ -130,5 +130,11 @@ class PlayerBotMgr
         bool m_confBattleBotAutoJoin;
 };
 
+// Race, then gender from the race and class together. Gender is not independent of race: a troll
+// is always a female priest, an orc or tauren is always male, and only the three caster classes
+// are free either way, so the two choices have to be made in that order.
+uint8 SelectRandomRaceForClass(uint8 playerClass, Team playerTeam);
+uint8 SelectGenderForBot(uint8 playerClass, uint8 race);
+
 #define sPlayerBotMgr MaNGOS::Singleton<PlayerBotMgr>::Instance()
 #endif

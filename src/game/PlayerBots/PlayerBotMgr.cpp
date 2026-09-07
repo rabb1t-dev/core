@@ -551,8 +551,48 @@ bool PlayerBotMgr::DeleteRandomBot()
     return false;
 }
 
+// Which races a class is allowed to roll, over and above what the game itself permits.
+//
+// Preference rather than mechanics: the classes below always look the same way, so a group
+// assembled out of bots reads like one somebody actually rolled. Returning an empty list means no
+// restriction and every race the game allows stays in play, which is what happens for Alliance.
+static void GetPreferredRacesForClass(uint8 playerClass, Team playerTeam, std::vector<uint32>& races)
+{
+    races.clear();
+
+    if (playerTeam != HORDE)
+        return;
+
+    switch (playerClass)
+    {
+        case CLASS_DRUID:
+            races = { RACE_TAUREN };
+            break;
+        case CLASS_ROGUE:
+        case CLASS_WARLOCK:
+            races = { RACE_UNDEAD };
+            break;
+        case CLASS_WARRIOR:
+            races = { RACE_UNDEAD, RACE_ORC };
+            break;
+        case CLASS_MAGE:
+            // Undead and troll are the only Horde mages, and trolls are reserved for priests.
+            races = { RACE_UNDEAD };
+            break;
+        case CLASS_PRIEST:
+            races = { RACE_UNDEAD, RACE_TROLL };
+            break;
+        default:
+            // Hunter and shaman keep their full spread minus trolls, which is handled below.
+            break;
+    }
+}
+
 uint8 SelectRandomRaceForClass(uint8 playerClass, Team playerTeam)
 {
+    std::vector<uint32> preferred;
+    GetPreferredRacesForClass(playerClass, playerTeam, preferred);
+
     std::vector<uint32> validRaces;
     for (uint32 raceId = 1; raceId < MAX_RACES; ++raceId)
     {
@@ -565,16 +605,63 @@ uint8 SelectRandomRaceForClass(uint8 playerClass, Team playerTeam)
         {
             if (!((1 << (raceId - 1)) & RACEMASK_HORDE))
                 continue;
+
+            // Trolls exist only as priests.
+            if (raceId == RACE_TROLL && playerClass != CLASS_PRIEST)
+                continue;
         }
+
+        if (!preferred.empty() &&
+            std::find(preferred.begin(), preferred.end(), raceId) == preferred.end())
+            continue;
 
         if (sObjectMgr.GetPlayerInfo(raceId, playerClass))
             validRaces.push_back(raceId);
+    }
+
+    // A preference that turns out to name nothing the game will accept is worse than no
+    // preference, so fall back rather than refusing to make the bot at all.
+    if (validRaces.empty() && (!preferred.empty() || playerTeam == HORDE))
+    {
+        for (uint32 raceId = 1; raceId < MAX_RACES; ++raceId)
+        {
+            if (playerTeam == ALLIANCE && !((1 << (raceId - 1)) & RACEMASK_ALLIANCE))
+                continue;
+            if (playerTeam == HORDE && !((1 << (raceId - 1)) & RACEMASK_HORDE))
+                continue;
+
+            if (sObjectMgr.GetPlayerInfo(raceId, playerClass))
+                validRaces.push_back(raceId);
+        }
     }
 
     if (validRaces.empty())
         return 0;
 
     return SelectRandomContainerElement(validRaces);
+}
+
+// Gender follows from the race and class together, so it cannot be rolled independently of them.
+uint8 SelectGenderForBot(uint8 playerClass, uint8 race)
+{
+    // A troll is only ever a priest, and always female.
+    if (race == RACE_TROLL)
+        return GENDER_FEMALE;
+
+    // Orcs and tauren are always male, whatever they rolled as.
+    if (race == RACE_ORC || race == RACE_TAUREN)
+        return GENDER_MALE;
+
+    // Everything else is male except the three caster classes, which are free to be either.
+    switch (playerClass)
+    {
+        case CLASS_PRIEST:
+        case CLASS_MAGE:
+        case CLASS_WARLOCK:
+            return urand(0, 1) ? GENDER_FEMALE : GENDER_MALE;
+    }
+
+    return GENDER_MALE;
 }
 
 void PlayerBotMgr::AddBattleBot(BattleGroundQueueTypeId queueType, Team botTeam, uint32 botLevel, bool temporary)

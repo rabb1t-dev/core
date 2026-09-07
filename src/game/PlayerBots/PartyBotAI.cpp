@@ -230,6 +230,17 @@ static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
 // ahead of it, so the position tested is always the position taken.
 static constexpr float PB_DISTANCING_RANGE = 15.0f;
 
+// Walking out of the reach of something rooted or stunned on top of us.
+//
+// A minimum of what has to be left on the hold, so the walk buys more than the swing it costs: a
+// caster that steps out of a root with half a second to run has given up its position for nothing
+// and will be chased down immediately. Two seconds is about one swing plus the walk.
+static constexpr uint32 PB_HELD_STEP_MIN_REMAINING_MS = 2000;
+
+// And a floor on how often, so one root produces one step rather than a step every tick for as
+// long as it lasts.
+static constexpr time_t PB_HELD_STEP_INTERVAL = 3;
+
 // How many consecutive ticks a bot spends unable to see its own target before it stops arguing
 // with the wall and walks. Four ticks is one second. Not one tick: a mob crossing behind a pillar
 // is out of sight for a moment and clears on its own, and moving for that would have a bot
@@ -2833,6 +2844,107 @@ Unit* PartyBotAI::SelectEscortAttackTarget() const
 // how this started and could not work: CanTryToCastSpell now declines a cast at something it
 // cannot see, so the refusals that would have been counted never happen. One line of sight test a
 // tick is also cheaper than the several the rotation used to buy inside CheckCast for nothing.
+// How long a mob is going to be unable to come after us, in milliseconds. Zero when it can.
+//
+// Root, stun and the incapacitating effects all end the same way as far as this decision goes: the
+// mob is standing still and cannot follow. Fear is deliberately absent - a feared mob is running
+// away on its own and there is nothing to walk out of.
+static uint32 GetHeldInPlaceDurationMs(Unit const* pEnemy)
+{
+    static AuraType const holdingAuraTypes[] =
+    {
+        SPELL_AURA_MOD_ROOT,
+        SPELL_AURA_MOD_STUN,
+        SPELL_AURA_MOD_CONFUSE,
+    };
+
+    uint32 longest = 0;
+
+    for (AuraType type : holdingAuraTypes)
+    {
+        for (Aura* pAura : pEnemy->GetAurasByType(type))
+        {
+            if (!pAura)
+                continue;
+
+            int32 const duration = pAura->GetAuraDuration();
+
+            // A permanent hold is the strongest case there is, not the weakest.
+            if (duration < 0)
+                return PB_HELD_STEP_MIN_REMAINING_MS * 10;
+
+            longest = std::max(longest, uint32(duration));
+        }
+    }
+
+    return longest;
+}
+
+// Walk out of the reach of something that has been rooted or stunned while beating on us.
+//
+// The gap this fills is the one that looks stupidest from outside. A player sees the priest being
+// chewed on, freezes the mob in place to save them, and the priest carries on standing inside its
+// swing radius taking every hit - because nothing in the rotation ever asked whether the thing
+// hitting it could still follow. A rooted mob adjacent to a caster is free damage to walk away
+// from, and the only reason not to is that the walk itself might wake something else, which
+// RunAwayFromTarget already refuses to do.
+//
+// Melee roles are excluded: being inside that radius is their job, and a rooted target is the best
+// thing that can happen to them.
+bool PartyBotAI::StepAwayFromHeldAttacker()
+{
+    if (m_role == ROLE_TANK || m_role == ROLE_MELEE_DPS)
+        return false;
+
+    if (!me->IsInCombat() || IsInDuel() || m_holdPosition)
+        return false;
+
+    // Not mid-cast. Interrupting a heal to dodge damage the healer can out-heal is the wrong trade,
+    // and the cast will be over within a tick or two anyway.
+    if (me->IsNonMeleeSpellCasted())
+        return false;
+
+    // Nothing to walk with, or already walking.
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    // One step per root, not one per tick for as long as it lasts.
+    time_t const now = time(nullptr);
+    if (now - m_lastHeldStep < PB_HELD_STEP_INTERVAL)
+        return false;
+
+    for (Unit* pAttacker : me->GetAttackers())
+    {
+        if (!pAttacker || !pAttacker->IsAlive())
+            continue;
+
+        // Only what is actually in a position to hit us. Something rooted across the room is
+        // already harmless and is not a reason to give up a casting position.
+        if (!pAttacker->CanReachWithMeleeAutoAttack(me))
+            continue;
+
+        // Long enough left on it to be worth the walk. Stepping out of a root with half a second
+        // to run costs the position and saves one swing at most.
+        if (GetHeldInPlaceDurationMs(pAttacker) < PB_HELD_STEP_MIN_REMAINING_MS)
+            continue;
+
+        if (!RunAwayFromTarget(pAttacker))
+            continue;
+
+        m_lastHeldStep = now;
+
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] heldstep bot='%s' role=%s walked out of '%s' at %.1fy, held for %ums",
+                     me->GetName(), GetRoleName(m_role), pAttacker->GetName(),
+                     me->GetDistance(pAttacker), GetHeldInPlaceDurationMs(pAttacker));
+
+        return true;
+    }
+
+    return false;
+}
+
 bool PartyBotAI::RecoverLineOfSight()
 {
     // Ranged damage only, which is the one role this was ever about. The first live run had it
@@ -4334,6 +4446,12 @@ void PartyBotAI::UpdateInCombatAI()
     // only when it actually cancelled, so a cast being held reads as no decision and falls through
     // to everything below.
     if (ReconsiderHealInFlight())
+        return;
+
+    // Before the rotation, because standing in the swing radius of something that has been frozen
+    // in place specifically to get it off this bot is free damage taken, and every tick spent
+    // casting instead of stepping is another swing of it.
+    if (StepAwayFromHeldAttacker())
         return;
 
     // Ahead of every role, because an interrupt is worth more than whatever that role was going to
