@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: ItemFinder
+## Notes: Search item names and read back their item IDs in a window you can copy from.
+## Author: rabb1t
+## Version: 1.0
+
+ItemFinder.lua
