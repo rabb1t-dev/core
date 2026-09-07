@@ -94,9 +94,9 @@ public:
     bool IsTargetInCurrentFight(Unit const* pTarget) const;
     Unit* SelectGroupFocusTarget() const;
     bool CrowdControlOffFocus();
-    SpellEntry const* GetInterruptSpell() const;
-    bool IsWorthInterrupting(Unit const* pCaster) const;
-    Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell) const;
+    void GetInterruptSpells(std::vector<SpellEntry const*>& out) const;
+    uint32 GetInterruptPriority(Unit const* pCaster) const;
+    Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority) const;
     bool InterruptHostileCasters();
     Unit* SelectPeelTarget() const;
     bool PeelForTheHealer();

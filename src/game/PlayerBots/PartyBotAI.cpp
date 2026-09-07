@@ -230,6 +230,20 @@ static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
 // ahead of it, so the position tested is always the position taken.
 static constexpr float PB_DISTANCING_RANGE = 15.0f;
 
+// How badly a hostile cast wants taking away. Ordered, and compared against, so the gaps between
+// them carry no meaning beyond the ordering.
+enum PbInterruptPriority : uint32
+{
+    PB_INTERRUPT_NONE = 0,
+    PB_INTERRUPT_DAMAGE = 1,
+    PB_INTERRUPT_HEAL = 2,
+    PB_INTERRUPT_CONTROL = 3,
+};
+
+// The tauren racial. Granted at character creation rather than trained, so it is not in any class
+// spell list and has to be named.
+static constexpr uint32 PB_SPELL_WAR_STOMP = 20549;
+
 // Walking out of the reach of something rooted or stunned on top of us.
 //
 // A minimum of what has to be left on the hold, so the walk buys more than the swing it costs: a
@@ -2531,8 +2545,22 @@ bool PartyBotAI::IsTargetInCurrentFight(Unit const* pTarget) const
     return IsEngagedWithGroup(pTarget);
 }
 
-SpellEntry const* PartyBotAI::GetInterruptSpell() const
+// Every interrupt this bot owns, best first.
+//
+// A list rather than a single choice, because returning one meant a warrior whose Shield Bash was
+// on cooldown had no interrupt at all: the caller asked once, got a spell it could not cast, and
+// gave up without ever trying Pummel. Real interrupts lead, stuns follow, since a stun is refused
+// outright by anything immune to it and generally costs a much longer cooldown.
+void PartyBotAI::GetInterruptSpells(std::vector<SpellEntry const*>& out) const
 {
+    out.clear();
+
+    auto add = [&out](SpellEntry const* pSpellEntry)
+    {
+        if (pSpellEntry)
+            out.push_back(pSpellEntry);
+    };
+
     switch (me->GetClass())
     {
         case CLASS_WARRIOR:
@@ -2541,18 +2569,36 @@ SpellEntry const* PartyBotAI::GetInterruptSpell() const
             // not check the weapon class, which the first live run made obvious: twenty Shield
             // Bashes refused with SPELL_FAILED_EQUIPPED_ITEM_CLASS, every one of them an interrupt
             // the group did not get.
-            if (m_spells.warrior.pShieldBash && IsWearingShield(me))
-                return m_spells.warrior.pShieldBash;
-            return m_spells.warrior.pPummel;
+            if (IsWearingShield(me))
+                add(m_spells.warrior.pShieldBash);
+            add(m_spells.warrior.pPummel);
+            add(m_spells.warrior.pConcussionBlow);
+            break;
         case CLASS_ROGUE:
-            return m_spells.rogue.pKick;
+            add(m_spells.rogue.pKick);
+            add(m_spells.rogue.pKidneyShot);
+            break;
         case CLASS_SHAMAN:
-            return m_spells.shaman.pEarthShock;
+            add(m_spells.shaman.pEarthShock);
+            break;
         case CLASS_DRUID:
-            return m_spells.druid.pBash;
+            add(m_spells.druid.pBash);
+            break;
+        case CLASS_MAGE:
+            add(m_spells.mage.pCounterspell);
+            break;
+        case CLASS_PALADIN:
+            add(m_spells.paladin.pHammerOfJustice);
+            break;
     }
 
-    return nullptr;
+    // War Stomp, which every tauren is given at character creation and no bot has ever used. It is
+    // a two second stun on everything nearby, off a racial cooldown that competes with nothing
+    // else the bot wants, and it is the only interrupt a tauren hunter has at any level and the
+    // only one a warrior has below thirty eight without a shield, Pummel being trained that late.
+    // Last in the list because it is a stun and because it hits more than the intended target.
+    if (me->HasSpell(PB_SPELL_WAR_STOMP))
+        add(sSpellMgr.GetSpellEntry(PB_SPELL_WAR_STOMP));
 }
 
 // Whether what this creature is casting is worth an interrupt.
@@ -2570,44 +2616,107 @@ SpellEntry const* PartyBotAI::GetInterruptSpell() const
 // level does not out-damage the healing, and a slept healer is a wipe - but nothing about the
 // reasoning is particular to that dungeon, and gating it there would leave the same hole
 // everywhere else.
-bool PartyBotAI::IsWorthInterrupting(Unit const* pCaster) const
+// What a hostile cast is worth taking away, rather than merely whether it is worth anything.
+//
+// This was a yes or no question and the answer was no for every spell that was only damage, which
+// left an interrupt sitting on cooldown while a nuke landed. Every named druid in Wailing Caverns
+// casts Lightning Bolt, it has a real cast time, and nothing ever stopped one: the group would
+// hold Kick for a heal that might not come while taking the bolt that certainly did.
+//
+// Ranked rather than listed, so a bot with one interrupt spends it on the worst thing in range and
+// a bot with a spare one still uses it on something.
+uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
 {
+    // A cast in progress, or a channel already running. Only the first was ever checked, so
+    // anything channelled was invisible to this: no Wailing Caverns mob channels, but plenty
+    // elsewhere do, and a channel is exactly the case where interrupting pays most.
     Spell const* pSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
     if (!pSpell || pSpell->getState() != SPELL_STATE_PREPARING)
-        return false;
+    {
+        pSpell = pCaster->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (!pSpell || pSpell->getState() != SPELL_STATE_CASTING)
+            return PB_INTERRUPT_NONE;
+    }
 
     SpellEntry const* pSpellEntry = pSpell->m_spellInfo;
     if (!pSpellEntry)
+        return PB_INTERRUPT_NONE;
+
+    // Crowd control first, ahead of healing. A landed sleep on the healer loses the fight; a
+    // landed heal only makes it longer. Asked of the mechanic rather than of a list of spell ids,
+    // so it covers Sleep, Druid's Slumber and Naralex's Nightmare without naming any of them, and
+    // covers whatever the next instance uses without being told. Effect mechanics are checked too,
+    // because plenty of spells carry theirs on the effect and leave the spell's own field at zero.
+    auto isControlMechanic = [](uint32 mechanic)
+    {
+        switch (mechanic)
+        {
+            case MECHANIC_CHARM:
+            case MECHANIC_FEAR:
+            case MECHANIC_SLEEP:
+            case MECHANIC_STUN:
+            case MECHANIC_POLYMORPH:
+            case MECHANIC_BANISH:
+            case MECHANIC_SHACKLE:
+            case MECHANIC_HORROR:
+            case MECHANIC_KNOCKOUT:
+            case MECHANIC_SILENCE:
+            case MECHANIC_ROOT:
+                return true;
+        }
         return false;
+    };
+
+    if (isControlMechanic(pSpellEntry->Mechanic))
+        return PB_INTERRUPT_CONTROL;
+
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (isControlMechanic(pSpellEntry->EffectMechanic[i]))
+            return PB_INTERRUPT_CONTROL;
 
     if (pSpellEntry->IsHealSpell())
-        return true;
+        return PB_INTERRUPT_HEAL;
 
-    // Asked of the spell's mechanic rather than of a list of spell ids, so it covers Sleep,
-    // Druid's Slumber and Naralex's Nightmare without naming any of them, and covers whatever the
-    // next instance uses without being told.
-    switch (pSpellEntry->Mechanic)
+    // Anything else with a cast time long enough to take away. Summons rank with damage: both are
+    // work the group has to undo afterwards.
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
     {
-        case MECHANIC_CHARM:
-        case MECHANIC_FEAR:
-        case MECHANIC_SLEEP:
-        case MECHANIC_STUN:
-        case MECHANIC_POLYMORPH:
-        case MECHANIC_BANISH:
-        case MECHANIC_SHACKLE:
-        case MECHANIC_HORROR:
-        case MECHANIC_KNOCKOUT:
-        case MECHANIC_SILENCE:
-            return true;
+        switch (pSpellEntry->Effect[i])
+        {
+            case SPELL_EFFECT_SCHOOL_DAMAGE:
+            case SPELL_EFFECT_SUMMON:
+            case SPELL_EFFECT_WEAPON_DAMAGE:
+                return PB_INTERRUPT_DAMAGE;
+        }
     }
+
+    return PB_INTERRUPT_NONE;
+}
+
+// Whether this spell takes a cast away outright, rather than by happening to stun.
+//
+// The distinction matters because a stun is refused by anything stun immune, which is most of what
+// matters in a raid, while an interrupt effect lands regardless. Silence immunity does not enter
+// into it: Creature::LockOutSpells is what silence immunity blocks, and that is the school lockout
+// afterwards, not the interruption itself.
+static bool IsHardInterrupt(SpellEntry const* pSpellEntry)
+{
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (pSpellEntry->Effect[i] == SPELL_EFFECT_INTERRUPT_CAST)
+            return true;
 
     return false;
 }
 
-Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell) const
+Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority) const
 {
     if (!pInterruptSpell)
         return nullptr;
+
+    // A stun cannot interrupt something immune to being stunned, so a stun-only ability has to
+    // check before it is spent. Nothing did, and a Bash into a stun immune boss read in the log
+    // exactly like a successful interrupt.
+    bool const stunOnly = !IsHardInterrupt(pInterruptSpell);
 
     // Look no further than the ability reaches. Earth Shock is twenty yards and Kick is melee, so
     // the same search serves both and neither wastes a scan on ground it cannot act on.
@@ -2618,33 +2727,58 @@ Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell) const
     std::list<Unit*> enemies;
     me->GetEnemyListInRadiusAround(me, range, enemies);
 
-    // The bot's own target first, when it qualifies. Interrupting the mob already being hit costs
-    // nothing beyond the ability, where interrupting anything else adds the bot to a second
-    // creature's threat list.
-    if (Unit* pVictim = me->GetVictim())
-        if (IsValidHostileTarget(pVictim) && IsWorthInterrupting(pVictim) &&
-            me->IsWithinDist(pVictim, range) && me->IsWithinLOSInMap(pVictim) &&
-            !WasRecentlyInterrupted(pVictim->GetObjectGuid()))
-            return pVictim;
+    // A stun-immune target is not worth considering for a stun.
+    auto canBeStopped = [&](Unit const* pEnemy)
+    {
+        if (!stunOnly)
+            return true;
+
+        return !pEnemy->IsImmuneToMechanic(MECHANIC_STUN);
+    };
+
+    // Worst cast in range wins, so a single interrupt is spent on the sleep rather than on
+    // whichever nuke happened to be found first. The bot's own target breaks ties, because
+    // interrupting the mob already being hit costs nothing beyond the ability, where interrupting
+    // anything else adds the bot to a second creature's threat list.
+    Unit* pBest = nullptr;
+    uint32 bestPriority = PB_INTERRUPT_NONE;
+
+    auto consider = [&](Unit* pEnemy, bool isOwnVictim)
+    {
+        if (!pEnemy || !IsValidHostileTarget(pEnemy) || !me->IsWithinLOSInMap(pEnemy))
+            return;
+
+        if (!me->IsWithinDist(pEnemy, range) || !canBeStopped(pEnemy))
+            return;
+
+        if (WasRecentlyInterrupted(pEnemy->GetObjectGuid()))
+            return;
+
+        uint32 const priority = GetInterruptPriority(pEnemy);
+        if (priority < minPriority)
+            return;
+
+        if (priority > bestPriority || (priority == bestPriority && isOwnVictim))
+        {
+            bestPriority = priority;
+            pBest = pEnemy;
+        }
+    };
+
+    consider(me->GetVictim(), true);
 
     for (Unit* pEnemy : enemies)
     {
         if (pEnemy == me->GetVictim())
             continue;
 
-        if (!IsValidHostileTarget(pEnemy) || !IsEngagedWithGroup(pEnemy))
+        if (!IsEngagedWithGroup(pEnemy))
             continue;
 
-        if (!IsWorthInterrupting(pEnemy) || !me->IsWithinLOSInMap(pEnemy))
-            continue;
-
-        if (WasRecentlyInterrupted(pEnemy->GetObjectGuid()))
-            continue;
-
-        return pEnemy;
+        consider(pEnemy, false);
     }
 
-    return nullptr;
+    return pBest;
 }
 
 bool PartyBotAI::InterruptHostileCasters()
@@ -2652,39 +2786,73 @@ bool PartyBotAI::InterruptHostileCasters()
     if (IsInDuel())
         return false;
 
-    SpellEntry const* pInterruptSpell = GetInterruptSpell();
-    if (!pInterruptSpell)
+    std::vector<SpellEntry const*> candidates;
+    GetInterruptSpells(candidates);
+    if (candidates.empty())
         return false;
 
-    Unit* pCaster = SelectInterruptTarget(pInterruptSpell);
-    if (!pCaster)
-        return false;
-
-    // Read before the cast, because interrupting it is what makes it unreadable afterwards.
-    SpellEntry const* pInterrupted = nullptr;
-    if (Spell const* pTheirSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL))
-        pInterrupted = pTheirSpell->m_spellInfo;
-
-    if (!CanTryToCastSpell(pCaster, pInterruptSpell))
-        return false;
-
-    if (DoCastSpell(pCaster, pInterruptSpell) != SPELL_CAST_OK)
-        return false;
-
-    NoteGroupInterrupt(pCaster->GetObjectGuid());
-
-    if (IsCombatLogged())
+    // Two passes over the abilities. The first will only spend one on control or a heal, so a bot
+    // holding a single interrupt does not burn it on a nuke while a sleep is being cast half a
+    // second later by something else in range. The second pass allows anything, so an ability that
+    // would otherwise sit unused goes into whatever is being cast.
+    for (uint32 minPriority : { PB_INTERRUPT_HEAL, PB_INTERRUPT_DAMAGE })
     {
-        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[BotCombat] interrupt bot='%s' role=%s lvl=%u stopped '%s' (lvl %u) casting "
-                 "'%s' with '%s'",
-                 me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
-                 pCaster->GetName(), pCaster->GetLevel(),
-                 pInterrupted ? pInterrupted->SpellName[0].c_str() : "something",
-                 pInterruptSpell->SpellName[0].c_str());
+        for (SpellEntry const* pInterruptSpell : candidates)
+        {
+            Unit* pCaster = SelectInterruptTarget(pInterruptSpell, minPriority);
+            if (!pCaster)
+                continue;
+
+            if (!CanTryToCastSpell(pCaster, pInterruptSpell))
+                continue;
+
+            // Read before the cast, because interrupting it is what makes it unreadable
+            // afterwards. The channel is checked as well as the cast, since either can be the one
+            // being taken away.
+            SpellEntry const* pInterrupted = nullptr;
+            if (Spell const* pTheirSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                pInterrupted = pTheirSpell->m_spellInfo;
+            else if (Spell const* pTheirChannel = pCaster->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                pInterrupted = pTheirChannel->m_spellInfo;
+
+            uint32 const priority = GetInterruptPriority(pCaster);
+
+            if (DoCastSpell(pCaster, pInterruptSpell) != SPELL_CAST_OK)
+                continue;
+
+            NoteGroupInterrupt(pCaster->GetObjectGuid());
+
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] interrupt bot='%s' role=%s lvl=%u stopped '%s' (lvl %u) "
+                         "casting '%s' with '%s' priority=%u",
+                         me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                         pCaster->GetName(), pCaster->GetLevel(),
+                         pInterrupted ? pInterrupted->SpellName[0].c_str() : "something",
+                         pInterruptSpell->SpellName[0].c_str(), priority);
+            }
+
+            return true;
+        }
     }
 
-    return true;
+    // Nothing was stopped. Worth a line when something was being cast at the group and this bot
+    // owned an interrupt for it, because supply was the only half of this that could be measured
+    // before: the log recorded interrupts taken and nothing at all about the ones wanted.
+    if (IsCombatLogged())
+    {
+        if (Unit* pWanted = SelectInterruptTarget(candidates.front(), PB_INTERRUPT_DAMAGE))
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] nointerrupt bot='%s' role=%s could not stop '%s' priority=%u "
+                     "with any of %u abilities",
+                     me->GetName(), GetRoleName(GetRole()), pWanted->GetName(),
+                     GetInterruptPriority(pWanted), uint32(candidates.size()));
+        }
+    }
+
+    return false;
 }
 
 // A creature beating on somebody who is not the tank.
