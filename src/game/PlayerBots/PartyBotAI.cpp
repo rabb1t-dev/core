@@ -25,6 +25,9 @@
 #include "Map.h"
 #include "Database/SQLStorages.h"
 #include "PlayerBotMgr.h"
+#include "AI/CreatureEventAIMgr.h"
+#include "ScriptMgr.h"
+#include "Database/DBCStores.h"
 #include "Opcodes.h"
 #include "World.h"
 #include "WorldPacket.h"
@@ -2642,20 +2645,12 @@ void PartyBotAI::GetInterruptSpells(std::vector<SpellEntry const*>& out) const
 //
 // Ranked rather than listed, so a bot with one interrupt spends it on the worst thing in range and
 // a bot with a spare one still uses it on something.
-uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
+// What one spell is worth taking away, judged from the spell alone.
+//
+// Separated from the live-cast version so the same ranking can be applied to a spell a creature
+// merely knows, which is what lets a bot decide in advance what to save its interrupt for.
+static uint32 ScoreSpellForInterrupt(SpellEntry const* pSpellEntry)
 {
-    // A cast in progress, or a channel already running. Only the first was ever checked, so
-    // anything channelled was invisible to this: no Wailing Caverns mob channels, but plenty
-    // elsewhere do, and a channel is exactly the case where interrupting pays most.
-    Spell const* pSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-    if (!pSpell || pSpell->getState() != SPELL_STATE_PREPARING)
-    {
-        pSpell = pCaster->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
-        if (!pSpell || pSpell->getState() != SPELL_STATE_CASTING)
-            return PB_INTERRUPT_NONE;
-    }
-
-    SpellEntry const* pSpellEntry = pSpell->m_spellInfo;
     if (!pSpellEntry)
         return PB_INTERRUPT_NONE;
 
@@ -2710,6 +2705,109 @@ uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
     return PB_INTERRUPT_NONE;
 }
 
+// Whether a spell takes long enough to cast that there is anything to interrupt.
+//
+// An instant spell can never be caught, so it is not something to hold an ability for: Pythas's
+// Thunderclap is an AoE stun and would otherwise be the worst thing in his book, which would have
+// a rogue saving Kick all fight for a cast that never exists.
+static bool IsInterruptibleCast(SpellEntry const* pSpellEntry)
+{
+    if (!pSpellEntry)
+        return false;
+
+    if (SpellCastTimesEntry const* pCastTime = sSpellCastTimesStore.LookupEntry(pSpellEntry->CastingTimeIndex))
+        if (pCastTime->CastTime > 0)
+            return true;
+
+    // A channel is interruptible even where the initial cast is instant.
+    return pSpellEntry->IsChanneledSpell();
+}
+
+// The worst thing this creature is known to be able to cast, whether or not it is casting now.
+//
+// Read out of the creature's own spell list and its EventAI scripts, which is where the answer has
+// always been: the bot was reacting to whatever cast happened to be in progress with no idea
+// whether something worse was coming from the same mob. A Druid of the Fang casts Lightning Bolt
+// constantly and Druid's Slumber occasionally, so a rogue that spends Kick on the first bolt it
+// sees has nothing left for the sleep, and the sleep is the entire reason to bring an interrupt.
+//
+// Cached by creature entry, since the answer is a property of the creature template and does not
+// change while the server is up.
+uint32 PartyBotAI::GetWorstKnownCastPriority(Unit const* pEnemy) const
+{
+    Creature const* pCreature = pEnemy->ToCreature();
+    if (!pCreature)
+        return PB_INTERRUPT_NONE;
+
+    uint32 const entry = pCreature->GetEntry();
+
+    static std::unordered_map<uint32, uint32> s_worstKnownCast;
+
+    auto cached = s_worstKnownCast.find(entry);
+    if (cached != s_worstKnownCast.end())
+        return cached->second;
+
+    uint32 worst = PB_INTERRUPT_NONE;
+
+    auto consider = [&worst](uint32 spellId)
+    {
+        SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(spellId);
+        if (!IsInterruptibleCast(pSpellEntry))
+            return;
+
+        worst = std::max(worst, ScoreSpellForInterrupt(pSpellEntry));
+    };
+
+    // The assigned spell list, which is how most casters are given their abilities.
+    if (uint32 const spellListId = pCreature->GetCreatureInfo()->spell_list_id)
+        if (CreatureSpellsList const* pList = sObjectMgr.GetCreatureSpellsList(spellListId))
+            for (CreatureSpellsEntry const& spell : *pList)
+                consider(spell.spellId);
+
+    // And the EventAI scripts, which is how the rest are. The spell is buried in a generic script
+    // action rather than named on the event, so the actions have to be walked.
+    CreatureEventAI_Event_Map const& eventMap = sEventAIMgr.GetCreatureEventAIMap();
+    auto events = eventMap.find(entry);
+    if (events != eventMap.end())
+    {
+        for (CreatureEventAI_Event const& event : events->second)
+        {
+            for (uint32 i = 0; i < MAX_ACTIONS; ++i)
+            {
+                if (!event.action[i])
+                    continue;
+
+                for (auto const& script : *event.action[i])
+                    if (script.second.command == SCRIPT_COMMAND_CAST_SPELL)
+                        consider(script.second.castSpell.spellId);
+            }
+        }
+    }
+
+    s_worstKnownCast[entry] = worst;
+    return worst;
+}
+
+uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
+{
+    // A cast in progress, or a channel already running. Only the first was ever checked, so
+    // anything channelled was invisible to this: no Wailing Caverns mob channels, but plenty
+    // elsewhere do, and a channel is exactly the case where interrupting pays most.
+    Spell const* pSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell || pSpell->getState() != SPELL_STATE_PREPARING)
+    {
+        pSpell = pCaster->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+        if (!pSpell || pSpell->getState() != SPELL_STATE_CASTING)
+            return PB_INTERRUPT_NONE;
+    }
+
+    SpellEntry const* pSpellEntry = pSpell->m_spellInfo;
+    if (!pSpellEntry)
+        return PB_INTERRUPT_NONE;
+
+    return ScoreSpellForInterrupt(pSpellEntry);
+}
+
 // Whether this spell takes a cast away outright, rather than by happening to stun.
 //
 // The distinction matters because a stun is refused by anything stun immune, which is most of what
@@ -2725,7 +2823,8 @@ static bool IsHardInterrupt(SpellEntry const* pSpellEntry)
     return false;
 }
 
-Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority) const
+Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority,
+                                        bool mayPreempt) const
 {
     if (!pInterruptSpell)
         return nullptr;
@@ -2775,6 +2874,20 @@ Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint3
         if (priority < minPriority)
             return;
 
+        // Hold, when this mob is known to have something worse in its book than the damage it is
+        // casting now. This is the whole of the pre-decision: a Druid of the Fang casts Lightning
+        // Bolt constantly and Druid's Slumber occasionally, so spending Kick on the first bolt
+        // leaves nothing for the sleep, and the sleep is the entire reason to carry an interrupt.
+        //
+        // Only damage is ever held. A heal is worth taking on sight even from a mob that also
+        // sleeps: Healing Touch returns most of a Druid of the Fang's health bar, an interrupt is
+        // back inside ten seconds, and holding one indefinitely against a sleep that may never be
+        // cast while a full heal lands in front of you is worse play than not holding at all.
+        if (!mayPreempt &&
+            priority <= PB_INTERRUPT_DAMAGE &&
+            priority < GetWorstKnownCastPriority(pEnemy))
+            return;
+
         if (priority > bestPriority || (priority == bestPriority && isOwnVictim))
         {
             bestPriority = priority;
@@ -2808,15 +2921,36 @@ bool PartyBotAI::InterruptHostileCasters()
     if (candidates.empty())
         return false;
 
-    // Two passes over the abilities. The first will only spend one on control or a heal, so a bot
-    // holding a single interrupt does not burn it on a nuke while a sleep is being cast half a
-    // second later by something else in range. The second pass allows anything, so an ability that
-    // would otherwise sit unused goes into whatever is being cast.
-    for (uint32 minPriority : { PB_INTERRUPT_HEAL, PB_INTERRUPT_DAMAGE })
+    // Three passes, in decreasing order of how sure the spend is.
+    //
+    //   Control is taken immediately and always: nothing a mob owns is worse than a sleep on the
+    //   healer, so there is never a reason to hold for something better.
+    //
+    //   Then anything that is the worst thing its caster is known to be able to do. A mob whose
+    //   whole book is Lightning Bolt gets its Lightning Bolt interrupted, because waiting for
+    //   something worse from that mob means waiting forever.
+    //
+    //   Then, using only a second or later ability, anything at all. This is what keeps the
+    //   holding from becoming hoarding: a warrior owning both Shield Bash and War Stomp saves the
+    //   first for what it is worth saving for and spends the second on whatever is being cast,
+    //   where a rogue owning only Kick keeps it. Ownership rather than readiness, since a bot with
+    //   two abilities has one to spare often enough for the distinction not to earn its keep.
+    struct InterruptPass { uint32 minPriority; bool mayPreempt; uint32 firstAbility; };
+
+    static constexpr InterruptPass passes[] =
     {
-        for (SpellEntry const* pInterruptSpell : candidates)
+        { PB_INTERRUPT_CONTROL, true,  0 },
+        { PB_INTERRUPT_DAMAGE,  false, 0 },
+        { PB_INTERRUPT_DAMAGE,  true,  1 },
+    };
+
+    for (InterruptPass const& pass : passes)
+    {
+        for (uint32 i = pass.firstAbility; i < candidates.size(); ++i)
         {
-            Unit* pCaster = SelectInterruptTarget(pInterruptSpell, minPriority);
+            SpellEntry const* pInterruptSpell = candidates[i];
+
+            Unit* pCaster = SelectInterruptTarget(pInterruptSpell, pass.minPriority, pass.mayPreempt);
             if (!pCaster)
                 continue;
 
@@ -2857,15 +2991,22 @@ bool PartyBotAI::InterruptHostileCasters()
     // Nothing was stopped. Worth a line when something was being cast at the group and this bot
     // owned an interrupt for it, because supply was the only half of this that could be measured
     // before: the log recorded interrupts taken and nothing at all about the ones wanted.
+    // Two reasons it can end up here and they need telling apart: the ability was unavailable, or
+    // it was available and deliberately kept back. The second is a decision and reads as a bug
+    // without a line saying so.
     if (IsCombatLogged())
     {
-        if (Unit* pWanted = SelectInterruptTarget(candidates.front(), PB_INTERRUPT_DAMAGE))
+        if (Unit* pWanted = SelectInterruptTarget(candidates.front(), PB_INTERRUPT_DAMAGE, true))
         {
+            uint32 const priority = GetInterruptPriority(pWanted);
+            uint32 const worstKnown = GetWorstKnownCastPriority(pWanted);
+
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                     "[BotCombat] nointerrupt bot='%s' role=%s could not stop '%s' priority=%u "
-                     "with any of %u abilities",
+                     "[BotCombat] nointerrupt bot='%s' role=%s left '%s' casting priority=%u "
+                     "(worst it knows is %u) with %u abilities: %s",
                      me->GetName(), GetRoleName(GetRole()), pWanted->GetName(),
-                     GetInterruptPriority(pWanted), uint32(candidates.size()));
+                     priority, worstKnown, uint32(candidates.size()),
+                     (priority <= PB_INTERRUPT_DAMAGE && priority < worstKnown) ? "held for something worse" : "none were castable");
         }
     }
 

@@ -96,7 +96,9 @@ public:
     bool CrowdControlOffFocus();
     void GetInterruptSpells(std::vector<SpellEntry const*>& out) const;
     uint32 GetInterruptPriority(Unit const* pCaster) const;
-    Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority) const;
+    uint32 GetWorstKnownCastPriority(Unit const* pEnemy) const;
+    Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority,
+                                bool mayPreempt) const;
     bool InterruptHostileCasters();
     Unit* SelectPeelTarget() const;
     bool PeelForTheHealer();
