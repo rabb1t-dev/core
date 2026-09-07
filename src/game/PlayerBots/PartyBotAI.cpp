@@ -266,6 +266,10 @@ static constexpr float PB_GATHER_ANCHOR_MAX_RANGE = 60.0f;
 // into a warrior that changes its mind every tick and finishes nothing.
 static constexpr float PB_GATHER_FINISH_PERCENT = 25.0f;
 static constexpr time_t PB_GATHER_SWITCH_INTERVAL = 5;
+// The longest a warrior will stay on an add it left its target to peel. Aggro normally lands in a
+// swing or two, so this is not the usual way back - it is the backstop for the add that dies to
+// somebody else, walks out of reach, or otherwise never gets around to attacking the warrior.
+static constexpr time_t PB_GATHER_PEEL_MAX_SECONDS = 8;
 static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
 
 // Backing a fight away from a neighbouring camp.
@@ -3520,7 +3524,62 @@ bool PartyBotAI::GatherLooseEnemies()
         return false;
 
     if (!me->IsInCombat())
+    {
+        m_gatherPeelTarget.Clear();
+        m_gatherReturnTarget.Clear();
         return false;
+    }
+
+    // Part-way through a peel, so finish it before considering anything else.
+    //
+    // Peeling is a detour, not a change of plan. Without this the switch was permanent: the warrior
+    // took the add and simply never went back, which for a damage warrior means it stops focusing
+    // whatever the group is killing, and for a tank in a boss fight means the boss is now loose
+    // with the tank across the room holding an add.
+    //
+    // Aggro secured is the thing being waited for, not a fixed number of seconds, because that is
+    // the actual job: one swing is usually enough and there is no reason to stand there for longer,
+    // while an add that needs three should get three. The timeout below only covers the cases where
+    // it never happens at all.
+    if (!m_gatherPeelTarget.IsEmpty())
+    {
+        Unit* pAdd = me->GetMap()->GetUnit(m_gatherPeelTarget);
+        bool const secured = !pAdd || !pAdd->IsAlive() || !IsValidHostileTarget(pAdd) ||
+                             pAdd->GetVictim() == me;
+        bool const expired = (time(nullptr) - m_gatherSwitchTime) >= PB_GATHER_PEEL_MAX_SECONDS;
+
+        if (!secured && !expired)
+            return false;
+
+        Unit* pReturn = me->GetMap()->GetUnit(m_gatherReturnTarget);
+
+        m_gatherPeelTarget.Clear();
+        m_gatherReturnTarget.Clear();
+
+        if (pReturn && pReturn->IsAlive() && IsValidHostileTarget(pReturn) &&
+            me->GetVictim() != pReturn)
+        {
+            AttackStart(pReturn);
+
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] herd bot='%s' role=%s went back to '%s' after the peel (%s)",
+                         me->GetName(), GetRoleName(m_role), pReturn->GetName(),
+                         secured ? "aggro landed" : "gave up waiting");
+            }
+
+            return false;
+        }
+
+        // Nothing to go back to, so the ordinary target selection takes it from here.
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] herd bot='%s' role=%s finished the peel with nothing to go back to",
+                     me->GetName(), GetRoleName(m_role));
+        }
+    }
 
     if (m_holdPosition || IsInDuel() || IsPulling() || me->IsNonMeleeSpellCasted())
         return false;
@@ -3701,10 +3760,15 @@ bool PartyBotAI::GatherLooseEnemies()
             return false;
     }
 
+    Unit* const pLeaving = me->GetVictim();
+
     if (!AttackStart(pNearest))
         return false;
 
     m_lastGatherSwitch = time(nullptr);
+    m_gatherSwitchTime = m_lastGatherSwitch;
+    m_gatherPeelTarget = pNearest->GetObjectGuid();
+    m_gatherReturnTarget = pLeaving ? pLeaving->GetObjectGuid() : ObjectGuid();
 
     if (IsCombatLogged())
     {
@@ -4929,6 +4993,15 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
         if (focusFires)
             pDesired = SelectGroupFocusTarget();
+
+        // Except while peeling. The focus runs every tick and would pull the warrior straight back
+        // off the add it just switched to, so the peel would be undone before it landed a swing and
+        // then started again the moment the collecting logic looked - a warrior alternating between
+        // two mobs and taking neither. The way back from a peel is GatherLooseEnemies' own, and it
+        // goes to the target that was left rather than to whatever the focus happens to be now.
+        if (!m_gatherPeelTarget.IsEmpty() && pVictim &&
+            pVictim->GetObjectGuid() == m_gatherPeelTarget)
+            pDesired = nullptr;
 
         // Unlike the rule this replaced, a live target is not a reason to stop looking: the whole
         // point of a focus is that it can move the group onto something else mid-fight, which is

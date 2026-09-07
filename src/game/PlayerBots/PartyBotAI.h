@@ -272,6 +272,11 @@ public:
     // When a warrior last changed target to collect an add, so that collecting cannot become a
     // warrior that changes its mind every tick and finishes nothing.
     time_t m_lastGatherSwitch = 0;
+    // The add a warrior is currently peeling and the target it left to do it, so that a peel is a
+    // detour rather than a change of plan.
+    ObjectGuid m_gatherPeelTarget;
+    ObjectGuid m_gatherReturnTarget;
+    time_t m_gatherSwitchTime = 0;
     time_t m_lastCombatMove = 0;
     time_t m_lastFacingCheck = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
