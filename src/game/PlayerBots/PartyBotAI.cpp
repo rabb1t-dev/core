@@ -261,6 +261,11 @@ static constexpr float PB_GATHER_SHOUT_SAFETY_RADIUS = 14.0f;
 static constexpr uint32 PB_GATHER_SHOUT_MIN_TARGETS = 2;
 static constexpr float PB_GATHER_MAX_STRAY = 25.0f;
 static constexpr float PB_GATHER_ANCHOR_MAX_RANGE = 60.0f;
+// How nearly dead the current target has to be before a warrior refuses to leave it, and how long
+// it must then stay on whatever it switched to. Both exist to stop the collecting behaviour turning
+// into a warrior that changes its mind every tick and finishes nothing.
+static constexpr float PB_GATHER_FINISH_PERCENT = 25.0f;
+static constexpr time_t PB_GATHER_SWITCH_INTERVAL = 5;
 static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
 
 // Backing a fight away from a neighbouring camp.
@@ -3657,53 +3662,59 @@ bool PartyBotAI::GatherLooseEnemies()
     if (!pNearest)
         return false;
 
-    // Already on it, so the rotation's own threat is doing the work and there is nothing to add.
-    if (me->CanReachWithMeleeAutoAttack(pNearest))
-    {
-        // Except for a damage warrior, which has no taunt and so takes an add by hitting it. Only
-        // worth switching for something on a healer: a caster can survive a Deviate for the few
-        // seconds the focus target has left, and a healer being hit is how groups die.
-        if (m_role != ROLE_TANK && me->GetVictim() != pNearest)
-        {
-            if (Player* pHealer = FindGroupHealer())
-            {
-                if (pNearest->GetVictim() == pHealer)
-                {
-                    AttackStart(pNearest);
-
-                    if (IsCombatLogged())
-                    {
-                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                                 "[BotCombat] herd bot='%s' role=%s switched onto '%s' to take it "
-                                 "off the healer", me->GetName(), GetRoleName(m_role),
-                                 pNearest->GetName());
-                    }
-
-                    return true;
-                }
-            }
-        }
-
+    if (me->GetVictim() == pNearest)
         return false;
+
+    // Only fetch what this warrior is actually going to hit.
+    //
+    // Walking and attacking used to be separate decisions here, and the pairing was wrong in both
+    // directions. The walk was unconditional while the switch only ever happened for something on
+    // the healer, so an add on a caster had the warrior walk the whole way over and then stand
+    // there swinging at nothing, because its victim was still the mob it had left behind. Worse,
+    // leaving the victim set meant the chase generator was still pulling it back towards that mob
+    // while this was pushing it towards the add, and the two took turns: one capture has a warrior
+    // at 1.0y from its target, then 4.0y, then 11.6y, then 2.5y, then 10.6y, dealing no damage
+    // through any of it. That oscillation is what reads on screen as a warrior turning and running
+    // away mid-fight.
+    //
+    // So the walk is gone. Deciding to fetch something now means attacking it, and the chase that
+    // already exists does the walking - one movement system with one opinion about where to stand.
+    Player* pHealer = FindGroupHealer();
+    bool const onHealer = pHealer && pNearest->GetVictim() == pHealer;
+
+    if (Unit* pVictim = me->GetVictim())
+    {
+        // A tank taking an add by switching to it drops the Sunder stack it has been building and
+        // gains nothing a taunt would not have given it. Taunt is what a tank peels with, and the
+        // peel logic spends it; the only thing worth breaking that rule for is the healer.
+        if (m_role == ROLE_TANK && !onHealer)
+            return false;
+
+        // Nearly dead. Finishing it is a few more swings and one less mob in the fight, and the
+        // add will still be there.
+        if (pVictim->GetHealthPercent() < PB_GATHER_FINISH_PERCENT && !onHealer)
+            return false;
+
+        // Something on the healer is worth interrupting anything for. Everything else waits its
+        // turn, so that collecting cannot become a warrior that changes target every tick.
+        if (!onHealer && (time(nullptr) - m_lastGatherSwitch) < PB_GATHER_SWITCH_INTERVAL)
+            return false;
     }
 
-    if (!CanIssueCombatMovement())
+    if (!AttackStart(pNearest))
         return false;
 
-    if (!SafeMoveTo(pNearest->GetPositionX(), pNearest->GetPositionY(), pNearest->GetPositionZ()))
-        return false;
-
-    NoteCombatMovement();
+    m_lastGatherSwitch = time(nullptr);
 
     if (IsCombatLogged())
     {
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[BotCombat] herd bot='%s' role=%s went %.1fy to fetch '%s' off a caster",
-                 me->GetName(), GetRoleName(m_role), bestDistance, pNearest->GetName());
+                 "[BotCombat] herd bot='%s' role=%s took '%s' off %s from %.1fy away",
+                 me->GetName(), GetRoleName(m_role), pNearest->GetName(),
+                 onHealer ? "the healer" : "a caster", bestDistance);
     }
 
-    // Walking towards it, and swinging at whatever is already in reach while doing so.
-    return false;
+    return true;
 }
 
 bool PartyBotAI::DragFightAwayFromNeighbours()
@@ -5310,7 +5321,8 @@ void PartyBotAI::LogCombatTick() const
              pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason, ration,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
-             uint32(me->GetAttackers().size()), gcd);
+             uint32(me->GetAttackers().size()), gcd,
+             me->TakeHealingTally(), me->TakeDamageTally());
 }
 
 void PartyBotAI::UpdateInCombatAI()

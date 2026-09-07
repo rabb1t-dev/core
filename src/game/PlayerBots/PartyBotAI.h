@@ -269,6 +269,9 @@ public:
     time_t m_lastHeldStep = 0;
     // One clock for every system that repositions a bot mid-fight, so they take turns rather than
     // fight each other.
+    // When a warrior last changed target to collect an add, so that collecting cannot become a
+    // warrior that changes its mind every tick and finishes nothing.
+    time_t m_lastGatherSwitch = 0;
     time_t m_lastCombatMove = 0;
     time_t m_lastFacingCheck = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
