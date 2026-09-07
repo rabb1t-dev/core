@@ -2047,6 +2047,24 @@ bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget
     if (IsInDuel())
         return true;
 
+    // Most crowd control only takes on some kinds of creature, and nothing checked. Shackle
+    // Undead was attempted 176 times in one Wailing Caverns run and failed 176 times, because
+    // there is not a single undead in the instance: the priest spent the run trying to shackle
+    // snakes. Hibernate and Polymorph have the same restriction and would do the same thing.
+    if (uint32 const allowedTypes = pSpellEntry->TargetCreatureType)
+    {
+        if (!(pTarget->GetCreatureTypeMask() & allowedTypes))
+            return false;
+    }
+
+    // And where the creature is the right kind but immune anyway. The Nightmare Ectoplasms in
+    // that same instance are immune to root, so a mage would sink Frost Nova into them all day.
+    if (pTarget->IsImmuneToSpell(pSpellEntry, false))
+        return false;
+
+    if (pSpellEntry->Mechanic && pTarget->IsImmuneToMechanic(Mechanics(pSpellEntry->Mechanic)))
+        return false;
+
     if (pSpellEntry->HasAuraInterruptFlag(AURA_INTERRUPT_DAMAGE_CANCELS) &&
         AreOthersOnSameTarget(pTarget->GetObjectGuid()))
         return false;
@@ -3610,6 +3628,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
                 AutoEquipGear(sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_AUTO_EQUIP));
 
+                // Gear alone is only half of what a group turns up with. Enchant what was just
+                // equipped and put the hour-long consumables in the bags; drinking them happens
+                // out of combat, in UseProvisionConsumables.
+                ApplyProvisionEnchants();
+                StockProvisionConsumables();
+
                 // fix client bug causing some item slots to not be visible
                 if (Player* pLeader = GetPartyLeader())
                 {
@@ -4075,6 +4099,12 @@ void PartyBotAI::UpdateOutOfCombatAI()
     if (CheckForDispelTargets())
         return;
 
+    // Elixirs, scrolls and weapon stones, below the class rotations because those hold the buffs
+    // the rest of the group depends on and above nothing that matters: a bot with a full set of
+    // consumables already up falls straight through this.
+    if (UseProvisionConsumables())
+        return;
+
     switch (me->GetClass())
     {
         case CLASS_PALADIN:
@@ -4130,7 +4160,11 @@ void PartyBotAI::LogCombatTick() const
     // against the rotation's own thresholds.
     Powers const powerType = me->GetPowerType();
     uint32 power = me->GetPower(powerType);
-    if (powerType == POWER_RAGE || powerType == POWER_ENERGY)
+
+    // Rage alone is stored at ten times its displayed value, per GetCreatePowers: rage caps at
+    // 1000 internally and energy at 100. Scaling energy the same way divided it by ten twice
+    // over, so a rogue sitting on sixty energy logged as pw=6 and read as energy starvation.
+    if (powerType == POWER_RAGE)
         power /= 10;
 
     // Whether the global cooldown was running when this tick ran, which is the difference between
@@ -4294,6 +4328,14 @@ void PartyBotAI::UpdateInCombatAI()
     if (Unit* pVictim = me->GetVictim())
         HoldOpeningSwings(pVictim);
 
+    // Before the interrupt, because both want to take the cast away from this bot and this one has
+    // a deadline: a speculative heal has to be kept or dropped in the last half second before it
+    // lands, and a tick spent elsewhere is a tick where that decision was not made. Reports true
+    // only when it actually cancelled, so a cast being held reads as no decision and falls through
+    // to everything below.
+    if (ReconsiderHealInFlight())
+        return;
+
     // Ahead of every role, because an interrupt is worth more than whatever that role was going to
     // do with the tick and because the classes that own one are spread across all of them. Most
     // bots have no interrupt at all and leave on the first line of it.
@@ -4402,6 +4444,12 @@ void PartyBotAI::UpdateInCombatAI()
 
     if (me->GetVictim())
         UseTrinketEffects();
+
+    // Nothing needed healing this tick, which for a healer is the moment to start a cast anyway.
+    // Below the rotation so a real heal always wins, and above KeepBusy because a heal already
+    // two thirds cast when the tank takes a hit is worth considerably more than a wand shot.
+    if (BeginSpeculativeHeal())
+        return;
 
     // Last, and only reached when nothing above committed the tick. Every rotation is an if-chain
     // that falls out of the bottom when nothing matched, and until now falling out of the bottom
@@ -5647,8 +5695,13 @@ void PartyBotAI::UpdateInCombatAI_Priest()
 
         if (me->GetShapeshiftForm() == FORM_NONE)
         {
+            // Holy Nova is the worst mana per point of healing the priest owns, and 83 casts of it
+            // went out in one run. On a healer that bar is the group's survival, so it is allowed
+            // only while there is enough of it to spare and the priest really is surrounded.
             if (m_spells.priest.pHolyNova &&
                 GetAttackersInRangeCount(10.0f) > 2 &&
+               (GetRole() != ROLE_HEALER ||
+                me->GetPowerPercent(POWER_MANA) > CB_HEAL_MANA_CONSERVE_PERCENT) &&
                 CanTryToCastSpell(me, m_spells.priest.pHolyNova))
             {
                 if (DoCastSpell(me, m_spells.priest.pHolyNova) == SPELL_CAST_OK)
@@ -6605,7 +6658,29 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         // is worth nothing against this one. Reading the count alone said otherwise and the
         // finisher was refused with SPELL_FAILED_NO_COMBO_POINTS - twenty times in one run, each
         // one a wasted tick immediately after a target switch.
-        if (me->GetComboPoints() > 4 && me->GetComboTargetGuid() == pVictim->GetObjectGuid())
+        // Combo points belong to a target, so a bar earned on the last mob is worth nothing here.
+        uint32 const comboPoints = (me->GetComboTargetGuid() == pVictim->GetObjectGuid())
+                                 ? me->GetComboPoints() : 0;
+
+        // Waiting for the fifth point is what a rogue does in a fight long enough to earn it. On
+        // dungeon trash the mob dies first and the points die with it, and holding out for five
+        // was costing nearly every finisher in the run: seven hundred and twelve builders produced
+        // sixteen finishers, and not one Eviscerate in the entire log. Sinister Strike costs forty
+        // five energy, so five points is two hundred and twenty five energy of building, over
+        // twenty seconds of regeneration, against trash that is dead in ten.
+        //
+        // So spend at five as before, but also spend what is in hand on anything about to die, and
+        // put Slice and Dice up early rather than saving for it. Slice and Dice is worth more at
+        // two points now than at five points later, because what it multiplies is every auto
+        // attack for the rest of the fight.
+        bool const targetDyingSoon = pVictim->GetHealthPercent() < 25.0f;
+        bool const wantsSliceAndDice = m_spells.rogue.pSliceAndDice &&
+                                      !me->HasAura(m_spells.rogue.pSliceAndDice->Id) &&
+                                       pVictim->GetHealthPercent() > 30.0f;
+
+        if (comboPoints >= 5 ||
+           (comboPoints >= 2 && targetDyingSoon) ||
+           (comboPoints >= 2 && wantsSliceAndDice))
         {
             // A finisher chosen at random was the single worst decision any rotation made. Two of
             // the four are not damage at all: bosses are immune to Kidney Shot outright, and Expose
@@ -6616,10 +6691,9 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
 
             // Slice and Dice first and by a wide margin: it is a multiplier on every auto attack
             // for the rest of the fight, which is worth more than any single use of the energy.
-            // Not on a target about to die, where there is no rest of the fight to have.
-            if (m_spells.rogue.pSliceAndDice &&
-               !me->HasAura(m_spells.rogue.pSliceAndDice->Id) &&
-                pVictim->GetHealthPercent() > 10.0f)
+            // Not on something already dying, where there is no rest of the fight to buy and the
+            // points are better spent as damage before the mob takes them to the grave.
+            if (wantsSliceAndDice && !targetDyingSoon)
             {
                 pComboSpell = m_spells.rogue.pSliceAndDice;
             }
@@ -6627,7 +6701,11 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
             // loses badly on anything that dies inside its duration. IsWorthDotting is the same
             // judgement the warlock makes about its own dots, so the two agree about what counts
             // as a fight worth investing in.
+            // Only at a full bar, though: Rupture's damage is spread over its duration and scales
+            // with the points spent, so a two point Rupture on a mob that dies in six seconds is
+            // the worst of both.
             else if (m_spells.rogue.pRupture &&
+                     comboPoints >= 5 &&
                      IsWorthDotting(pVictim) &&
                     !pVictim->HasAura(m_spells.rogue.pRupture->Id))
             {
@@ -6671,20 +6749,39 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
                 return;
         }
 
+        // Kick is the interrupt. Gouge used to sit above it here and fired sixty six times in one
+        // run, which is sixty six times the rogue incapacitated the mob the whole group was
+        // killing: Gouge turns the target away, breaks the rogue out of melee contact and ends its
+        // own effect on the next hit anybody lands, so on a focus target it buys an interrupt and
+        // pays for it in everyone's uptime. It costs forty five energy to do that, the same as a
+        // Sinister Strike.
         if (pVictim->IsNonMeleeSpellCasted())
         {
-            if (m_spells.rogue.pGouge &&
-                CanTryToCastSpell(pVictim, m_spells.rogue.pGouge))
-            {
-                if (DoCastSpell(pVictim, m_spells.rogue.pGouge) == SPELL_CAST_OK)
-                    return;
-            }
-
             if (m_spells.rogue.pKick &&
                 CanTryToCastSpell(pVictim, m_spells.rogue.pKick))
             {
                 if (DoCastSpell(pVictim, m_spells.rogue.pKick) == SPELL_CAST_OK)
                     return;
+            }
+        }
+
+        // Gouge keeps one use: getting something off the rogue when it is the one in trouble. On
+        // an extra attacker, never on the group's target, and then straight back to the focus so
+        // the incapacitate is not immediately undone by this rogue's own next swing.
+        if (m_spells.rogue.pGouge &&
+            me->GetHealthPercent() < 30.0f)
+        {
+            if (Unit* pExtra = SelectAttackerDifferentFrom(pVictim))
+            {
+                if (CanTryToCastSpell(pExtra, m_spells.rogue.pGouge))
+                {
+                    if (DoCastSpell(pExtra, m_spells.rogue.pGouge) == SPELL_CAST_OK)
+                    {
+                        me->AttackStop();
+                        AttackStart(pVictim);
+                        return;
+                    }
+                }
             }
         }
 

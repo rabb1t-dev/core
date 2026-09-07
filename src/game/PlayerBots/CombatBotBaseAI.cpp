@@ -15,6 +15,7 @@
 #include "Utilities/Random.h"
 #include "ItemEvaluator.h"
 #include "DungeonTactics.h"
+#include "BotProvisions.h"
 
 #include <iterator>
 #include <random>
@@ -2075,6 +2076,34 @@ static Item* FindCarriedItemApplyingSpell(Player const* pPlayer, SpellEntry cons
     return nullptr;
 }
 
+// A carried item by id. Player has GetItemCount, which answers how many, and GetItemByPos, which
+// answers what is in a slot, but nothing that hands back the item itself given its entry.
+static Item* FindCarriedItemById(Player const* pPlayer, uint32 itemId)
+{
+    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+    {
+        Item* pItem = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (pItem && pItem->GetEntry() == itemId)
+            return pItem;
+    }
+
+    for (int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+    {
+        Bag* pBag = (Bag*)pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
+        if (!pBag)
+            continue;
+
+        for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
+        {
+            Item* pItem = pBag->GetItemByPos(j);
+            if (pItem && pItem->GetEntry() == itemId)
+                return pItem;
+        }
+    }
+
+    return nullptr;
+}
+
 void CombatBotBaseAI::AddAllSpellReagents()
 {
     // m_spells.raw is a view over the class union and nothing else, so walking it alone misses
@@ -2305,13 +2334,16 @@ float CombatBotBaseAI::GetManaAdjustedHealPercent(float requestedPercent) const
 
     float const manaPercent = me->GetPowerPercent(POWER_MANA);
 
-    if (manaPercent >= CB_HEAL_MANA_CONSERVE_PERCENT)
-        return requestedPercent;
+    // The ceiling applies at any mana level: a full bar is not a reason to heal somebody who is
+    // not hurt. The bands then tighten it further as the bar goes down.
+    float cap = CB_HEAL_COMBAT_CEILING_PERCENT;
 
-    if (manaPercent >= CB_HEAL_MANA_CRITICAL_PERCENT)
-        return std::min(requestedPercent, CB_HEAL_CONSERVE_CAP_PERCENT);
+    if (manaPercent < CB_HEAL_MANA_CRITICAL_PERCENT)
+        cap = std::min(cap, CB_HEAL_CRITICAL_CAP_PERCENT);
+    else if (manaPercent < CB_HEAL_MANA_CONSERVE_PERCENT)
+        cap = std::min(cap, CB_HEAL_CONSERVE_CAP_PERCENT);
 
-    return std::min(requestedPercent, CB_HEAL_CRITICAL_CAP_PERCENT);
+    return std::min(requestedPercent, cap);
 }
 
 // Whether the last of the mana is being kept for the tank alone.
@@ -2420,7 +2452,13 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
             if (IsAlreadyHealing(pMember->GetObjectGuid()))
                 continue;
 
-            if (IsValidHealTarget(pMember, healPercent))
+            // The tank is worth starting on a little sooner, but never above what the caller
+            // asked for: a rotation that only wants to heal below half means it.
+            float const targetPercent = isTank
+                                      ? std::min(groupHealPercent, healPercent + CB_HEAL_TANK_CEILING_BONUS)
+                                      : healPercent;
+
+            if (IsValidHealTarget(pMember, targetPercent))
             {
                 float const score = pMember->GetHealthPercent() - (isTank ? CB_HEAL_TANK_PRIORITY_BONUS : 0.0f);
                 if (score < bestScore)
@@ -2493,6 +2531,125 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
     }
 
     return nullptr;
+}
+
+// Begin a heal on somebody who does not need one yet, betting that they will by the time it lands.
+//
+// Aimed at whoever is being hit, which at these levels is nearly always the tank. The spell picked
+// is the one that fits the damage expected rather than the damage already taken, so the heal is
+// sized for where the target is heading.
+bool CombatBotBaseAI::BeginSpeculativeHeal()
+{
+    if (m_role != ROLE_HEALER || !me->IsInCombat() || IsInDuel())
+        return false;
+
+    if (me->IsNonMeleeSpellCasted() || me->GetPowerType() != POWER_MANA)
+        return false;
+
+    if (me->GetPowerPercent(POWER_MANA) < CB_HEAL_PRECAST_MIN_MANA_PERCENT)
+        return false;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    // The best guess at who the next hit lands on: whoever is being hit now, tank first, and
+    // among equals whoever is furthest from full.
+    Unit* pTarget = nullptr;
+    int32 bestIncoming = 0;
+    float bestHealth = 100.0f;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive())
+            continue;
+
+        if (pMember->GetHealthPercent() > CB_HEAL_PRECAST_TRIGGER_PERCENT)
+            continue;
+
+        if (!IsValidHealTarget(pMember, 100.0f))
+            continue;
+
+        int32 const incoming = GetIncomingdamage(pMember);
+        if (incoming <= 0)
+            continue;
+
+        bool const isTank = GetEffectiveRole(pMember) == ROLE_TANK;
+        int32 const weighted = isTank ? incoming * 2 : incoming;
+
+        if (weighted > bestIncoming ||
+           (weighted == bestIncoming && pMember->GetHealthPercent() < bestHealth))
+        {
+            bestIncoming = weighted;
+            bestHealth = pMember->GetHealthPercent();
+            pTarget = pMember;
+        }
+    }
+
+    if (!pTarget)
+        return false;
+
+    // Size the heal for the health that will be missing when it lands, not for what is missing
+    // now, which is the difference between this and simply healing early.
+    int32 const expectedMissing = int32(pTarget->GetMaxHealth() - pTarget->GetHealth()) +
+                                  GetIncomingdamage(pTarget);
+
+    SpellEntry const* pHealSpell = SelectMostEfficientHealingSpell(pTarget, expectedMissing, m_spellListDirectHeal);
+    if (!pHealSpell)
+        return false;
+
+    // An instant heal has nothing to gain here: there is no cast for the damage to arrive during,
+    // and casting one now simply wastes it on a target that is nearly full.
+    if (pHealSpell->GetCastTime(me) <= CB_HEAL_PRECAST_COMMIT_WINDOW_MS)
+        return false;
+
+    if (!CanTryToCastSpell(pTarget, pHealSpell))
+        return false;
+
+    if (DoCastSpell(pTarget, pHealSpell) != SPELL_CAST_OK)
+        return false;
+
+    m_speculativeHealTarget = pTarget->GetObjectGuid();
+    return true;
+}
+
+// Keep or throw away a speculative heal, decided as late as possible.
+//
+// Returns true only when the cast was cancelled, which frees the tick to do something else. While
+// the cast is still running with time left on it this reports false and leaves it alone: the point
+// of the technique is that the cast is already most of the way through when the damage arrives.
+bool CombatBotBaseAI::ReconsiderHealInFlight()
+{
+    if (m_speculativeHealTarget.IsEmpty())
+        return false;
+
+    Spell* pSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell || !pSpell->m_spellInfo || !pSpell->m_spellInfo->IsHealSpell())
+    {
+        // The cast ended on its own, one way or another.
+        m_speculativeHealTarget.Clear();
+        return false;
+    }
+
+    // Not yet. Deciding early would defeat the purpose and would decide on stale health.
+    if (pSpell->GetCastedTime() > CB_HEAL_PRECAST_COMMIT_WINDOW_MS)
+        return false;
+
+    Unit* pTarget = me->GetMap()->GetUnit(m_speculativeHealTarget);
+
+    bool const stillWanted = pTarget && pTarget->IsAlive() &&
+                             pTarget->GetHealthPercent() < GetManaAdjustedHealPercent(100.0f);
+
+    m_speculativeHealTarget.Clear();
+
+    if (stillWanted)
+        return false;
+
+    // The damage never came. Cancelling costs nothing: the mana is not taken until the cast
+    // completes, so this heal was free to hold and is free to drop.
+    me->InterruptSpell(CURRENT_GENERIC_SPELL, false);
+    return true;
 }
 
 bool CombatBotBaseAI::FindAndPreHealTarget()
@@ -3746,6 +3903,184 @@ bool CombatBotBaseAI::AddItemToInventory(uint32 itemId, uint32 count)
 
     pItem->SetCount(count);
     return true;
+}
+
+// Permanent enchants on everything worn that takes one.
+//
+// Written straight into the item's permanent enchantment slot rather than applied by casting an
+// enchanting spell, so there is no enchanter, no skill requirement, no reagent and no item level
+// check. Idempotent: a slot that already carries a permanent enchant is left alone, so this can be
+// called again after any gear change without stripping or stacking anything.
+void CombatBotBaseAI::ApplyProvisionEnchants()
+{
+    uint32 const level = me->GetLevel();
+
+    auto enchantSlot = [&](uint8 slot, uint32 enchantId)
+    {
+        if (!enchantId)
+            return;
+
+        Item* pItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!pItem || pItem->GetEnchantmentId(PERM_ENCHANTMENT_SLOT))
+            return;
+
+        me->ApplyEnchantment(pItem, PERM_ENCHANTMENT_SLOT, false);
+        pItem->SetEnchantment(PERM_ENCHANTMENT_SLOT, enchantId, 0, 0);
+        me->ApplyEnchantment(pItem, PERM_ENCHANTMENT_SLOT, true);
+    };
+
+    // Weapons. Which enchant a weapon wants depends on whether it is being swung or cast with,
+    // and that is a question about the bot rather than about the item: a shaman's mace and a
+    // priest's mace are the same item put to opposite uses.
+    bool const casterWeapon = (m_role == ROLE_HEALER) ||
+                              (m_role == ROLE_RANGE_DPS && !IsMeleeWeaponClass(me->GetClass()));
+
+    for (uint8 slot : { EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND })
+    {
+        Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!pWeapon || !pWeapon->GetProto())
+            continue;
+
+        ItemPrototype const* pProto = pWeapon->GetProto();
+
+        // A shield in the off hand is armour and wants the shield enchant, not a weapon one.
+        if (pProto->Class == ITEM_CLASS_ARMOR)
+        {
+            if (pProto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD)
+                enchantSlot(slot, GetBotArmorEnchant(EQUIPMENT_SLOT_OFFHAND, me->GetClass(), m_role, level));
+            continue;
+        }
+
+        if (pProto->Class != ITEM_CLASS_WEAPON)
+            continue;
+
+        // A caster weapon enchant is the two-hand intellect one, so only put it on a two-hander.
+        bool const twoHand = pProto->InventoryType == INVTYPE_2HWEAPON;
+        if (casterWeapon && !twoHand)
+            continue;
+
+        // Nothing goes on a bow or a wand: the enchant applies to the weapon that swings.
+        if (!casterWeapon && !GetBotWeaponStone(pProto->SubClass, level))
+            continue;
+
+        enchantSlot(slot, GetBotWeaponEnchant(level, casterWeapon));
+    }
+
+    // Armour is where a real character is inconsistent. The weapon is the thing anybody bothers
+    // with, because it is the thing that scales everything else; bracers and boots get done when
+    // somebody happens to have the mats. So roll for each of these rather than guaranteeing them,
+    // which also stops five bots looking like they came off the same production line.
+    for (uint8 slot : { EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_WRISTS,
+                        EQUIPMENT_SLOT_FEET, EQUIPMENT_SLOT_BACK })
+    {
+        if (!roll_chance_i(CB_ARMOR_ENCHANT_CHANCE))
+            continue;
+
+        enchantSlot(slot, GetBotArmorEnchant(slot, me->GetClass(), m_role, level));
+    }
+}
+
+// Put the consumables in the bags. Drinking them is UseProvisionConsumables' job, and happens out
+// of combat so the cast time is paid where it costs nothing.
+void CombatBotBaseAI::StockProvisionConsumables()
+{
+    uint32 const level = me->GetLevel();
+
+    for (auto const& choice : GetBotConsumables(me->GetClass(), m_role, level))
+    {
+        if (level < choice.minLevel)
+            continue;
+
+        if (!me->HasItemCount(choice.itemId, 1))
+            AddItemToInventory(choice.itemId, 1);
+    }
+
+    // The weapon stone competes for the temporary enchantment slot, which is where a rogue's
+    // poison goes. A poison is worth more than six damage, so a rogue carries no stone.
+    if (me->GetClass() == CLASS_ROGUE)
+        return;
+
+    if (Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+    {
+        if (ItemPrototype const* pProto = pWeapon->GetProto())
+        {
+            if (pProto->Class == ITEM_CLASS_WEAPON)
+            {
+                if (uint32 const stoneId = GetBotWeaponStone(pProto->SubClass, level))
+                    if (!me->HasItemCount(stoneId, 1))
+                        AddItemToInventory(stoneId, 1);
+            }
+        }
+    }
+}
+
+// Drink or apply one carried consumable whose effect is not already running, and report having
+// done so, so the caller spends the tick on it rather than continuing down its rotation.
+//
+// One per call on purpose. These have cast times and the whole point of doing this out of combat
+// is that there is no hurry, so a bot works through its list over successive ticks rather than
+// trying to fire five item spells into the same moment.
+bool CombatBotBaseAI::UseProvisionConsumables()
+{
+    if (me->IsInCombat() || me->IsMounted() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    uint32 const level = me->GetLevel();
+
+    auto useItem = [&](uint32 itemId, bool onWeapon) -> bool
+    {
+        Item* pItem = FindCarriedItemById(me, itemId);
+        if (!pItem)
+            return false;
+
+        ItemPrototype const* pProto = pItem->GetProto();
+        if (!pProto)
+            return false;
+
+        SpellCastTargets targets;
+
+        if (onWeapon)
+        {
+            Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+            if (!pWeapon || pWeapon->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
+                return false;
+
+            targets.setItemTarget(pWeapon);
+        }
+        else
+        {
+            // Already buffed by this item, so there is nothing to gain and a charge to lose.
+            for (uint32 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+                if (pProto->Spells[i].SpellId && me->HasAura(pProto->Spells[i].SpellId))
+                    return false;
+
+            targets.setUnitTarget(me);
+        }
+
+        me->CastItemUseSpell(pItem, targets);
+        return true;
+    };
+
+    for (auto const& choice : GetBotConsumables(me->GetClass(), m_role, level))
+    {
+        if (level < choice.minLevel)
+            continue;
+
+        if (useItem(choice.itemId, choice.appliesToWeapon))
+            return true;
+    }
+
+    if (me->GetClass() == CLASS_ROGUE)
+        return false;
+
+    if (Item* pWeapon = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+        if (ItemPrototype const* pProto = pWeapon->GetProto())
+            if (pProto->Class == ITEM_CLASS_WEAPON)
+                if (uint32 const stoneId = GetBotWeaponStone(pProto->SubClass, level))
+                    if (useItem(stoneId, true))
+                        return true;
+
+    return false;
 }
 
 void CombatBotBaseAI::AddHunterAmmo()

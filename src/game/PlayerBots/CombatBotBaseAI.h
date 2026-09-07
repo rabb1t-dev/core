@@ -94,6 +94,57 @@ static constexpr float CB_HEAL_MANA_CRITICAL_PERCENT = 30.0f;
 static constexpr float CB_HEAL_CONSERVE_CAP_PERCENT = 70.0f;
 static constexpr float CB_HEAL_CRITICAL_CAP_PERCENT = 50.0f;
 
+// The ceiling on any in-combat heal, whatever the caller asked for.
+//
+// This is the one that mattered most. Of 947 heals cast across a run, 555 landed on somebody
+// between 80 and 89 percent health and another 175 on somebody between 90 and 100 - three
+// quarters of every heal, and every one of them mostly overheal. Only 50 went to anybody below
+// half. The callers were asking for 90, and one of them for 100, so a healer would open a fight
+// by topping off a rogue that had taken a single hit and arrive at the part that mattered with
+// nothing left. The mana bands above only start rationing once the bar is already half gone,
+// which is far too late if the first half went on targets that were never in danger.
+//
+// A mob at these levels takes roughly a tenth of a tank's health per swing and a direct heal
+// restores rather more than that, so a cast begun at three quarters health lands before the
+// target is in any trouble. Above that there is nothing to heal.
+static constexpr float CB_HEAL_COMBAT_CEILING_PERCENT = 78.0f;
+
+// The tank is the exception, by a little: it is the one target taking damage continuously rather
+// than in bursts, so the cast has to be started earlier to keep ahead of it at all.
+static constexpr float CB_HEAL_TANK_CEILING_BONUS = 7.0f;
+
+// How often an armour slot gets a permanent enchant. Weapons and shields always do: those are the
+// pieces anybody bothers with, because a weapon enchant scales everything the character does.
+// Bracers and boots are what a real player enchants when the mats happen to be lying around.
+static constexpr int32 CB_ARMOR_ENCHANT_CHANCE = 50;
+
+// Speculative healing: starting a cast before anybody needs it, so that the heal lands at the
+// moment somebody does.
+//
+// This is what separates a healer that keeps a group alive from one that is merely never idle. A
+// direct heal at these levels takes two and a half seconds, and a mob swings every two, so a
+// healer that waits for the health bar to move is always one swing behind: it starts casting when
+// the tank is at half and the heal lands after the hit that would have killed it. A raid healer
+// solves this by keeping a cast running at all times against nothing in particular, and throwing
+// it away if the damage never arrives.
+//
+// It is free to throw away. Spell::TakePower runs from Spell::cast, at the end of the cast, so a
+// cancelled cast has cost no mana at all - only the global cooldown, which has already elapsed by
+// the time the decision is made.
+//
+// Only begun with mana to spare: speculating is a bet, and a healer down to its last third should
+// not be betting.
+static constexpr float CB_HEAL_PRECAST_MIN_MANA_PERCENT = 55.0f;
+
+// How much health a target has to be missing before a cast is begun on spec. Not zero: a group at
+// full health after a fight has ended does not need a healer winding up at it.
+static constexpr float CB_HEAL_PRECAST_TRIGGER_PERCENT = 96.0f;
+
+// How close to landing the cast gets before the keep-or-cancel decision is made. The whole value
+// is in the cast already being most of the way through when the damage arrives, so this wants to
+// be short - long enough to act on, short enough that the decision uses near-current health.
+static constexpr uint32 CB_HEAL_PRECAST_COMMIT_WINDOW_MS = 500;
+
 // How much health a tank is treated as being down by when ranking heal targets, so an equally hurt
 // damage dealer does not outrank it. Picked to be worth roughly one hit at the levels these bots
 // run dungeons at: enough to break the tie, not enough to ignore somebody genuinely dying.
@@ -137,6 +188,16 @@ public:
     void AutoEquipGear(uint32 option);
     void LearnClassSpellsForLevel();
     void LearnRandomTalents();
+
+    // Permanent enchants on everything worn that has a slot for one, and the hour-long
+    // consumables a real group turns up carrying. See BotProvisions.h for what and why.
+    void ApplyProvisionEnchants();
+    void StockProvisionConsumables();
+    bool UseProvisionConsumables();
+
+    // Starting a heal before anybody needs it, and throwing it away if nobody comes to need it.
+    bool BeginSpeculativeHeal();
+    bool ReconsiderHealInFlight();
     
     uint8 GetAttackersInRangeCount(float range) const;
     Unit* SelectAttackerDifferentFrom(Unit const* pExcept) const;
@@ -694,6 +755,10 @@ public:
     bool m_equipCheckPending = false;
     uint8 m_visualHonorRank = 0;
     CombatBotRoles m_role = ROLE_INVALID;
+
+    // Who the heal currently in flight was begun for on spec, rather than because they were
+    // already hurt. Empty whenever this bot is not holding such a cast.
+    ObjectGuid m_speculativeHealTarget;
 
     // Name or entry of a `player_premade_spell_template` to build this bot from. Set before the
     // bot initialises. Empty means fall back to picking by role, which cannot distinguish two
