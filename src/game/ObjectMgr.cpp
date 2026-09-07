@@ -8582,19 +8582,134 @@ uint32 ObjectMgr::GeneratePetNumber()
 
 static std::string GeneratePlayerName()
 {
-    static char const vowels[] = { 'a', 'e', 'i', 'o', 'u' };
-    static char const consonants[] = { 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'v', 'w', 'x', 'y', 'z' };
-
-    uint32 const length = urand(sWorld.getConfig(CONFIG_UINT32_MIN_PLAYER_NAME), MAX_PLAYER_NAME);
-    std::string name;
-    name.resize(length);
-
-    bool useVowel = urand(0, 1) != 0;
-    for (uint32 i = 0; i < length; ++i)
+    // Simple onset + single vowel + single coda per syllable, in the spirit of
+    // "Torax", "Voltar", "Malnuk", "Grav" -- no double vowels (read ambiguously as
+    // one sound or two) and no consonant clusters piling up next to each other.
+    static char const* const onsetSingles[] =
     {
-        name[i] = useVowel ? vowels[urand(0, sizeof(vowels) - 1)] : consonants[urand(0, sizeof(consonants) - 1)];
-        useVowel = !useVowel;
+        "b", "c", "d", "f", "g", "h", "k", "l", "m", "n", "p", "r", "s", "t", "v", "w", "y", "z"
+    };
+    static char const* const onsetClusters[] =
+    {
+        "br", "cr", "dr", "fr", "gr", "pr", "tr", "bl", "cl", "fl", "gl", "pl", "st", "sh", "ch", "th"
+    };
+    static char const vowels[] = { 'a', 'e', 'i', 'o', 'u' };
+    static char const* const codas[] =
+    {
+        "", "", "", "", "", // open and closed syllables about equally likely
+        "n", "r", "l", "s", "m", "d", "k", "g", "t", "x"
+    };
+
+    // Ordinary words mixed in occasionally so the synthetic names don't stand out as
+    // an obvious tell for "this is a bot" -- real players use plain-word names too.
+    static char const* const realWords[] =
+    {
+        "Klondike", "Crown", "Beetle", "Raven", "Onyx", "Ember", "Boulder", "Sable",
+        "Griffin", "Hunter", "Cobalt", "Amber", "Maple", "Birch", "Talon", "Storm",
+        "Shadow", "Flint", "Rust", "Moss", "Fern", "Thorn", "Wisp", "Anchor",
+        "Beacon", "Forge", "Rivet", "Bolt", "Glyph", "Charm", "Fable", "Myth",
+        "Otter", "Ferret", "Sparrow", "Hawk", "Finch", "Newt", "Adder", "Cobra",
+        "Gecko", "Lynx", "Cougar", "Yukon", "Aspen", "Dakota", "Sedona", "Prairie",
+        "Ridge", "Summit", "Meadow", "Alder", "Hazel", "Wolf", "Bear", "Boar",
+        "Elk", "Bison", "Goat", "Mare", "Foal", "Pony", "Mastiff", "Beagle",
+        "Collie", "Skunk", "Possum", "Gopher", "Chipmunk", "Muskrat", "Vole", "Mole",
+        "Rabbit", "Deer", "Gazelle", "Camel", "Walrus", "Whale", "Porpoise", "Narwhal",
+        "Sloth", "Koala", "Wombat", "Jackal", "Meerkat", "Mongoose", "Platypus", "Ocelot",
+        "Cheetah", "Panther", "Tiger", "Rhino", "Pigeon", "Pheasant", "Grouse", "Turkey",
+        "Swan", "Goose", "Magpie", "Jay", "Swallow", "Egret", "Stork", "Ibis",
+        "Gull", "Tern", "Osprey", "Kestrel", "Kite", "Owl", "Dove", "Woodpecker",
+        "Chickadee", "Warbler", "Oriole", "Grackle", "Bittern", "Loon", "Cormorant", "Petrel",
+        "Skua", "Curlew", "Avocet", "Frog", "Iguana", "Skink", "Lizard", "Tortoise",
+        "Salamander", "Anole", "Caiman", "Crocodile", "Tuatara", "Cricket", "Locust", "Cicada",
+        "Hornet", "Moth", "Weevil", "Gadfly", "Gnat", "Aphid", "Ladybug", "Termite",
+        "Ant", "Centipede", "Spider", "Scorpion", "Salmon", "Perch", "Bass", "Carp",
+        "Herring", "Mackerel", "Halibut", "Minnow", "Eel", "Grouper", "Catfish", "Sturgeon",
+        "Piranha", "Cod", "Flounder", "Fir", "Spruce", "Sycamore", "Walnut", "Hickory",
+        "Dogwood", "Sequoia", "Cypress", "Oak", "Beech", "Larch", "Holly", "Laurel",
+        "Sumac", "Cottonwood", "Hemlock", "Tamarack", "Daisy", "Lily", "Iris", "Ivy",
+        "Lavender", "Bramble", "Buttercup", "Dandelion", "Primrose", "Snowdrop", "Orchid", "Jasmine",
+        "Zinnia", "Peony", "Crocus", "Daffodil", "Mallow", "Quartz", "Opal", "Ruby",
+        "Pearl", "Jade", "Granite", "Marble", "Obsidian", "Sapphire", "Emerald", "Citrine",
+        "Peridot", "Malachite", "Mica", "Limestone", "Sandstone", "Gneiss", "Iron", "Steel",
+        "Copper", "Gold", "Brass", "Zinc", "Lead", "Platinum", "Tungsten", "Cadmium",
+        "Mercury", "Smoke", "Mist", "Cloud", "Lightning", "Breeze", "Squall", "Hail",
+        "Sleet", "Rain", "Ice", "Sun", "Star", "Meteor", "Aurora", "Monsoon",
+        "Tempest", "Blizzard", "Glacier", "Delta", "Marsh", "Bog", "Butte", "Mesa",
+        "Valley", "Tundra", "Steppe", "Oasis", "Cliff", "Cavern", "Gorge", "Crag",
+        "Peak", "Moor", "Fen", "Wetland", "Brook", "Stream", "Lagoon", "Pond",
+        "Bay", "Reef", "Strait", "Inlet", "Shoal", "Waterfall", "Wellspring", "Chisel",
+        "Wrench", "Kettle", "Lantern", "Basket", "Blade", "Hatchet", "Spade", "Sickle",
+        "Scythe", "Trowel", "Vice", "Bellows", "Cauldron", "Whetstone", "Scepter", "Banner",
+        "Sword", "Dagger", "Quiver", "Cloak", "Talisman", "Wraith", "Specter", "Goblin",
+        "Pixie", "Nymph", "Golem", "Drake", "Basilisk", "Chimera", "Kraken", "Phoenix",
+        "Centaur", "Banshee", "Gargoyle", "Ogre", "Sylph", "Gnome", "Elf", "Sorcerer",
+        "Warlock", "Templar", "Herald", "Vagabond", "Rover", "Outlaw", "Bandit", "Scout",
+        "Warden", "Marshal", "Baron", "Earl", "Viscount", "Scarlet", "Indigo", "Umber",
+        "Ivory", "Cerulean", "Maroon", "Charcoal", "Auburn", "Valor", "Mercy", "Wisdom",
+        "Courage", "Triumph", "Destiny", "Legend", "Vigil", "Grit", "Virtue", "Hope",
+        "Solace", "Reverie", "Harmony", "Resolve", "Prudence", "Diligence", "Winter", "Summer",
+        "Dusk", "Midnight", "Solstice", "Sunrise", "Sunset", "Nightfall", "Midday", "Season",
+        "Cabin", "Manor", "Chapel", "Tower", "Bastion", "Rampart", "Stockade", "Lighthouse",
+        "Windmill", "Stable", "Aviary", "Apiary", "Vineyard", "Homestead", "Outpost", "Citadel",
+        "Trapper", "Trader", "Cobbler", "Weaver", "Potter", "Carpenter", "Fletcher", "Farrier",
+        "Baker", "Vintner", "Chandler", "Smithy", "Shepherd", "Falconer", "Herbalist", "Scribe",
+        "Cartographer", "Basil", "Ginger", "Cinnamon", "Mustard", "Cumin", "Clove", "Vanilla",
+        "Thyme", "Rosemary", "Fennel", "Chicory", "Hazelnut", "Pecan", "Acorn", "Ripple",
+        "Torrent", "Undertow", "Whirlpool", "Maelstrom", "Surge", "Tide", "Swell", "Spray",
+        "Splash", "Spark", "Flame", "Scorch", "Char", "Soot", "Bonfire", "Wick",
+        "Torch", "Falconry", "Fencing", "Jousting", "Sparring", "Tracking", "Foraging", "Poaching",
+        "Duel", "Melee", "Meridian", "Horizon", "Latitude", "Bearing", "Landmark", "Milestone",
+        "Frontier", "Boundary", "Territory", "Domain", "Kingdom", "Empire", "County", "Township",
+        "Hamlet", "Borough"
+    };
+
+    uint32 const minLen = sWorld.getConfig(CONFIG_UINT32_MIN_PLAYER_NAME);
+    uint32 const maxLen = MAX_PLAYER_NAME;
+
+    // Roughly one name in five is a plain word instead of a synthetic one.
+    if (urand(0, 4) == 0)
+    {
+        for (uint32 attempt = 0; attempt < 20; ++attempt)
+        {
+            std::string word = realWords[urand(0, sizeof(realWords) / sizeof(realWords[0]) - 1)];
+            if (word.size() >= minLen && word.size() <= maxLen)
+                return word;
+        }
     }
+
+    std::string name;
+    for (uint32 attempt = 0; attempt < 20 && (name.size() < minLen || name.size() > maxLen); ++attempt)
+    {
+        name.clear();
+        // Mostly 2 syllables, occasionally 1 or 3.
+        uint32 const syllableRoll = urand(0, 9);
+        uint32 const syllableCount = syllableRoll < 2 ? 1 : (syllableRoll < 8 ? 2 : 3);
+        bool prevHadCoda = false;
+        for (uint32 i = 0; i < syllableCount; ++i)
+        {
+            // A cluster onset right after a closed syllable stacks 3 consonants in a
+            // row (e.g. coda "m" + onset "cr"), so only allow clusters after an open
+            // syllable, and even then keep them rare (1 in 4).
+            std::string syllable = (!prevHadCoda && urand(0, 3) == 0)
+                ? onsetClusters[urand(0, sizeof(onsetClusters) / sizeof(onsetClusters[0]) - 1)]
+                : onsetSingles[urand(0, sizeof(onsetSingles) / sizeof(onsetSingles[0]) - 1)];
+            syllable += vowels[urand(0, sizeof(vowels) - 1)];
+
+            char const* coda = codas[urand(0, sizeof(codas) / sizeof(codas[0]) - 1)];
+            syllable += coda;
+
+            if (name.size() + syllable.size() > maxLen && !name.empty())
+                break;
+
+            name += syllable;
+            prevHadCoda = (coda[0] != '\0');
+        }
+    }
+
+    // Should never trigger given the syllable pools and default min/max, but guarantees
+    // the min length contract instead of ever handing back a too-short name.
+    if (name.size() < minLen)
+        name.resize(minLen, 'a');
 
     return name;
 };
