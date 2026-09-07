@@ -110,6 +110,7 @@ public:
     bool DragFightAwayFromNeighbours();
     bool GatherLooseEnemies();
     bool GetGatherAnchor(float& x, float& y, float& z) const;
+    bool ShouldThisWarriorPeel(Unit* pAdd, bool onHealer) const;
     void ReconsiderMeleeChaseAngle();
     bool CanIssueCombatMovement() const;
     void NoteCombatMovement();

@@ -3518,6 +3518,58 @@ bool PartyBotAI::GetGatherAnchor(float& x, float& y, float& z) const
 // off a priest. Demoralizing Shout is the piece that makes it a group behaviour rather than a
 // single peel: it is on no cooldown, works in any stance, reaches ten yards, and lands threat on
 // everything in that radius at once.
+// One warrior goes, not all of them.
+//
+// Nothing stopped two from picking the same add, and in a group with a tank and a damage warrior
+// both routinely did: one capture has both walking to the same Deviate Creeper in the same second,
+// then both to the same Deviate Coiler three seconds later. Two warriors on one add is one
+// warrior's worth of peel and two warriors' worth of damage given up for it.
+//
+// Nearest wins, which needs no agreement between them - each asks the same question about the same
+// positions and only one can be the answer. A warrior already peeling something else is not a
+// candidate for this one, and neither is a tank unless the add is on the healer, because a tank
+// declines everything else on its own: counting it as the nearest would leave the add on the caster
+// with nobody coming for it.
+bool PartyBotAI::ShouldThisWarriorPeel(Unit* pAdd, bool onHealer) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return true;
+
+    ObjectGuid const addGuid = pAdd->GetObjectGuid();
+    float const myDistance = me->GetDistance(pAdd);
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || !pMember->IsAlive())
+            continue;
+
+        if (pMember->GetMap() != me->GetMap() || pMember->GetClass() != CLASS_WARRIOR)
+            continue;
+
+        PlayerBotEntry const* pEntry = pMember->GetSession() ? pMember->GetSession()->GetBot() : nullptr;
+        PartyBotAI const* pAI = pEntry ? dynamic_cast<PartyBotAI const*>(pEntry->ai.get()) : nullptr;
+        if (!pAI)
+            continue;
+
+        // Already gone for it.
+        if (pAI->m_gatherPeelTarget == addGuid)
+            return false;
+
+        if (!pAI->m_gatherPeelTarget.IsEmpty())
+            continue;
+
+        if (pAI->m_role == ROLE_TANK && !onHealer)
+            continue;
+
+        if (pMember->GetDistance(pAdd) < myDistance)
+            return false;
+    }
+
+    return true;
+}
+
 bool PartyBotAI::GatherLooseEnemies()
 {
     if (me->GetClass() != CLASS_WARRIOR)
@@ -3740,6 +3792,9 @@ bool PartyBotAI::GatherLooseEnemies()
     // already exists does the walking - one movement system with one opinion about where to stand.
     Player* pHealer = FindGroupHealer();
     bool const onHealer = pHealer && pNearest->GetVictim() == pHealer;
+
+    if (!ShouldThisWarriorPeel(pNearest, onHealer))
+        return false;
 
     if (Unit* pVictim = me->GetVictim())
     {
