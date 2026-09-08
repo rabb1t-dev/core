@@ -51,19 +51,23 @@ local ROLE_LABELS = {
     ranged = "Ranged DPS",
 }
 
--- Class icons come out of the target frame's own sheet, which is a fixed four-by-four grid and has
--- been at this path since this client shipped. The per-class icon files are less certain to exist.
-local CLASS_ICON_TEXTURE = "Interface\\TargetingFrame\\UI-Classes-Circles"
-local CLASS_ICON_COORDS = {
-    [1]  = { 0,           0.25,       0,    0.25 },
-    [8]  = { 0.25,        0.49609375, 0,    0.25 },
-    [4]  = { 0.49609375,  0.7421875,  0,    0.25 },
-    [11] = { 0.7421875,   0.98828125, 0,    0.25 },
-    [3]  = { 0,           0.25,       0.25, 0.5  },
-    [7]  = { 0.25,        0.49609375, 0.25, 0.5  },
-    [5]  = { 0.49609375,  0.7421875,  0.25, 0.5  },
-    [9]  = { 0.7421875,   0.98828125, 0.25, 0.5  },
-    [2]  = { 0,           0.25,       0.5,  0.75 },
+-- One signature ability per class, rather than a class crest.
+--
+-- The first attempt cut squares out of the target frame's UI-Classes-Circles sheet, on the
+-- reasoning that a four-by-four grid at a known path is safer than nine separate files. It rendered
+-- as coloured corners: the sheet's layout on this client is not the one those coordinates assume,
+-- and a texture coordinate that is merely wrong produces a picture rather than an error, so nothing
+-- said so. These are ordinary spell icons, addressed by name, each unmistakably its class.
+local CLASS_ICONS = {
+    [1]  = "Interface\\Icons\\Ability_Warrior_OffensiveStance",
+    [2]  = "Interface\\Icons\\Spell_Holy_AuraOfLight",
+    [3]  = "Interface\\Icons\\Ability_Marksmanship",
+    [4]  = "Interface\\Icons\\Ability_BackStab",
+    [5]  = "Interface\\Icons\\Spell_Holy_PowerWordShield",
+    [7]  = "Interface\\Icons\\Spell_Nature_Lightning",
+    [8]  = "Interface\\Icons\\Spell_Frost_FrostBolt02",
+    [9]  = "Interface\\Icons\\Spell_Shadow_ShadowBolt",
+    [11] = "Interface\\Icons\\Spell_Nature_HealingTouch",
 }
 
 -- Generated from player_premade_spell_template: the talent builds the server actually has.
@@ -150,12 +154,17 @@ local SPECS = {
     },
 }
 
--- A ready-made party for when the point is to go somewhere rather than to fiddle with a roster.
+-- A ready-made party for when the point is to go somewhere rather than to fiddle with a roster:
+-- one tank, one healer, one of each kind of damage.
+--
+-- Each role lists its classes in preference order and the first one that fits is taken, skipping
+-- the player's own class. A mage handed a party containing a mage has been given three companions
+-- and a duplicate, and the class it wants instead is already the next name on the list.
 local PRESET = {
-    { class = "warrior", role = "tank" },
-    { class = "priest",  role = "healer" },
-    { class = "rogue",   role = "melee" },
-    { class = "mage",    role = "ranged" },
+    { role = "tank",   classes = { "warrior", "druid", "paladin" } },
+    { role = "healer", classes = { "priest", "shaman", "druid", "paladin" } },
+    { role = "melee",  classes = { "rogue", "warrior", "druid", "shaman" } },
+    { role = "ranged", classes = { "mage", "hunter", "warlock", "priest", "druid" } },
 }
 
 ----------------------------------------------------------------------------------------------------
@@ -253,25 +262,6 @@ local function SpecsFor(slot)
     return out
 end
 
-local function Composition()
-    local tanks, healers, dps = 0, 0, 0
-
-    for n = 1, SLOTS do
-        local slot = PartyBuilder.slots[n]
-        if slot.classId and slot.role then
-            if slot.role == "tank" then
-                tanks = tanks + 1
-            elseif slot.role == "healer" then
-                healers = healers + 1
-            else
-                dps = dps + 1
-            end
-        end
-    end
-
-    return tanks, healers, dps
-end
-
 ----------------------------------------------------------------------------------------------------
 -- The shared picker popup
 ----------------------------------------------------------------------------------------------------
@@ -315,10 +305,21 @@ local function BuildPicker()
         label:SetJustifyH("LEFT")
         button.label = label
 
+        -- Read the choice before closing the popup, not after.
+        --
+        -- Hiding it runs its OnHide, which clears every button's action so a stale one cannot fire
+        -- against a later menu. Calling HidePicker first therefore threw away the action on the
+        -- very button that had just been clicked, and the click did nothing at all - visibly so
+        -- when switching a slot from one class to another, which is a change with no other effect
+        -- to see.
         button:SetScript("OnClick", function()
+            local action = this.action
+            local value = this.value
+
             HidePicker()
-            if this.action then
-                this.action(this.value)
+
+            if action then
+                action(value)
             end
         end)
 
@@ -397,9 +398,8 @@ function PartyBuilder:Refresh()
         local class = slot.classId and FindClass(slot.classId) or nil
 
         if class then
-            local coords = CLASS_ICON_COORDS[class.id]
-            row.icon:SetNormalTexture(CLASS_ICON_TEXTURE)
-            row.icon:GetNormalTexture():SetTexCoord(coords[1], coords[2], coords[3], coords[4])
+            row.icon:SetNormalTexture(CLASS_ICONS[class.id])
+            row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
             row.border:SetBackdropBorderColor(ColourToRGB(class.colour))
             row.classButton:SetText("|cff" .. class.colour .. class.name .. "|r")
         else
@@ -424,12 +424,6 @@ function PartyBuilder:Refresh()
         row.levelBox:SetText(slot.level or "")
     end
 
-    local tanks, healers, dps = Composition()
-    local filled = tanks + healers + dps
-
-    self.summary:SetText("Party of " .. (filled + 1) .. ": you plus " .. filled ..
-                         "  |cff888888(" .. tanks .. " tank, " .. healers .. " healer, " ..
-                         dps .. " dps)|r")
 end
 
 function PartyBuilder:PickClass(index)
@@ -518,25 +512,38 @@ end
 
 function PartyBuilder:UsePreset()
     local team = MyTeam()
+    local _, myClassKey = UnitClass("player")
+    if myClassKey then
+        myClassKey = string.lower(myClassKey)
+    end
+
+    local taken = {}
 
     for n = 1, SLOTS do
         local slot = self.slots[n]
         local wanted = PRESET[n]
-        local class = wanted and FindClassByKey(wanted.class) or nil
 
-        if class and (not class.team or class.team == team) then
-            slot.classId = class.id
-            slot.role = wanted.role
-            slot.spec = nil
-        else
-            slot.classId = nil
-            slot.role = nil
-            slot.spec = nil
+        slot.classId = nil
+        slot.role = nil
+        slot.spec = nil
+
+        if wanted then
+            for i = 1, table.getn(wanted.classes) do
+                local class = FindClassByKey(wanted.classes[i])
+
+                if class and (not class.team or class.team == team) and
+                   class.key ~= myClassKey and not taken[class.key] then
+                    slot.classId = class.id
+                    slot.role = wanted.role
+                    taken[class.key] = true
+                    break
+                end
+            end
         end
     end
 
     self:Refresh()
-    self:SetStatus("Loaded a standard party. Adjust anything, then Create.")
+    self:SetStatus("Standard party: a tank, a healer, and one of each kind of damage.")
 end
 
 function PartyBuilder:Clear()
@@ -590,7 +597,7 @@ end
 
 local function BuildRow(parent, index)
     local row = CreateFrame("Frame", "PartyBuilderRow" .. index, parent)
-    row:SetWidth(478)
+    row:SetWidth(410)
     row:SetHeight(ROW_HEIGHT)
     row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
 
@@ -635,14 +642,14 @@ local function BuildRow(parent, index)
 
     local specButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
     specButton:SetPoint("LEFT", roleButton, "RIGHT", 6, 0)
-    specButton:SetWidth(150)
+    specButton:SetWidth(118)
     specButton:SetHeight(21)
     specButton:SetScript("OnClick", function()
         PartyBuilder:PickSpec(index)
     end)
 
     local levelBox = CreateFrame("EditBox", "PartyBuilderLevel" .. index, row, "InputBoxTemplate")
-    levelBox:SetPoint("LEFT", specButton, "RIGHT", 14, 0)
+    levelBox:SetPoint("LEFT", specButton, "RIGHT", 12, 0)
     levelBox:SetWidth(32)
     levelBox:SetHeight(18)
     levelBox:SetAutoFocus(false)
@@ -694,7 +701,7 @@ end
 
 local function BuildWindow()
     local frame = CreateFrame("Frame", "PartyBuilderFrame", UIParent)
-    frame:SetWidth(520)
+    frame:SetWidth(456)
     frame:SetHeight(360)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
@@ -721,19 +728,9 @@ local function BuildWindow()
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
 
-    local summary = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    summary:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -40)
-    summary:SetWidth(478)
-    summary:SetJustifyH("LEFT")
-
-    local header = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    header:SetPoint("TOPLEFT", frame, "TOPLEFT", 66, -58)
-    header:SetJustifyH("LEFT")
-    header:SetText("Class            Role              Talent build                        Lvl")
-
     local list = CreateFrame("Frame", "PartyBuilderList", frame)
-    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -74)
-    list:SetWidth(478)
+    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -78)
+    list:SetWidth(410)
     list:SetHeight(SLOTS * ROW_HEIGHT)
 
     local border = CreateFrame("Frame", nil, frame)
@@ -749,14 +746,35 @@ local function BuildWindow()
         PartyBuilder.rows[n] = BuildRow(list, n)
     end
 
+    -- Column labels anchored to the controls they name rather than laid out as one padded string.
+    -- The padded version drifted as soon as a button width changed, which is how "Default" ended up
+    -- reading as though it sat under "Lvl".
+    -- Lifted clear of the list's border, which sits six pixels above the first row: a label three
+    -- pixels up was landing on the border line rather than above it.
+    local function Header(text, anchor, dx)
+        local label = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        label:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", dx or 2, 11)
+        label:SetJustifyH("LEFT")
+        label:SetText(text)
+        return label
+    end
+
+    Header("Class", PartyBuilder.rows[1].classButton)
+    Header("Role", PartyBuilder.rows[1].roleButton)
+    Header("Talent build", PartyBuilder.rows[1].specButton)
+
+    -- An InputBoxTemplate draws its visible edge a few pixels inside its own frame, so the label
+    -- needs that offset back to sit over the box rather than over the gap beside it.
+    Header("Lvl", PartyBuilder.rows[1].levelBox, 7)
+
     local status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     status:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -16)
-    status:SetWidth(478)
+    status:SetWidth(410)
     status:SetJustifyH("LEFT")
 
     local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -6)
-    hint:SetWidth(478)
+    hint:SetWidth(410)
     hint:SetJustifyH("LEFT")
     hint:SetText("Leave Lvl blank to match your own level. Builds are listed for the bracket the " ..
                  "level falls in.")
@@ -799,7 +817,6 @@ local function BuildWindow()
 
     PartyBuilder.frame = frame
     PartyBuilder.status = status
-    PartyBuilder.summary = summary
 end
 
 ----------------------------------------------------------------------------------------------------
