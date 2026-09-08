@@ -1,21 +1,40 @@
 -- ItemFinder
 --
--- A window to type an item name into, and the matching item IDs back in a box you can select and
--- copy out of. The lookup itself is the server's own ".lookup item" command: this sends it, catches
--- the reply out of the system chat stream before the default chat frame prints it, and shows the
--- results here instead of leaving fifty item links scrolling through chat.
+-- Search an item by name, see it as an icon with a real tooltip, choose how many, put them in your
+-- bag. Self-contained: the lookup is the server's own ".lookup item" and the delivery is its
+-- ".additem", both sent as chat and both requiring the account to hold GM rights.
 --
--- Written for the 1.12 client, so: Lua 5.0 (string.find with captures, no string.match), event
--- handlers read the globals "this" and "arg1", and there is no ChatFrame_AddMessageEventFilter,
--- which is why the suppression below is a hook on ChatFrame_OnEvent instead.
+-- Written for the 1.12 client, so: Lua 5.0 (string.find with captures, no string.match, table.getn
+-- rather than #), event handlers read the globals "this" and "arg1", and there is no
+-- ChatFrame_AddMessageEventFilter, which is why the reply is intercepted by hooking
+-- ChatFrame_OnEvent instead.
+--
+-- Two things here are deliberately defensive rather than direct, because guessing a client API and
+-- being wrong shows up as a blank window rather than an error:
+--
+--   Quality colour is read out of the server's own reply. The reply is already a coloured
+--   hyperlink built from the item, so the colour is in the text; taking it from there needs no
+--   client-side quality table to exist under any particular name.
+--
+--   The icon path is found by looking through everything GetItemInfo returns for the one that
+--   looks like a texture path, rather than by counting arguments. The 1.12 return list differs
+--   from later ones, and a hardcoded position silently yields a stack count where a path belongs.
 
-local MAX_RESULTS_KEPT = 200
+local ROWS = 8
+local ROW_HEIGHT = 38
+local MAX_RESULTS_KEPT = 300
+local PLACEHOLDER_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 
--- How long to keep listening after the last line arrives. The server sends one chat message per
--- match and they do not all land in the same frame, so a search is finished by going quiet rather
--- than by any single message - except for the two lines that really are the end, which cut it short.
+-- A search ends by going quiet: the server sends one chat message per match and they do not all
+-- land in the same frame. The two lines that really are the end cut the wait short.
 local QUIET_TIMEOUT = 2.5
 local TERMINAL_GRACE = 0.3
+
+-- Items the client has never seen have no local cache entry, so GetItemInfo answers nothing until
+-- the server has been asked. Building the tooltip is what asks. Until the answer arrives the row
+-- wears a question mark, and this is how long it keeps re-checking for the real icon.
+local ICON_RETRY_WINDOW = 12.0
+local ICON_RETRY_INTERVAL = 0.5
 
 local ItemFinder = {}
 ItemFinder.capturing = false
@@ -23,8 +42,11 @@ ItemFinder.results = {}
 ItemFinder.resultCount = 0
 ItemFinder.shownCount = 0
 ItemFinder.deadline = 0
-ItemFinder.note = nil
 ItemFinder.query = ""
+ItemFinder.offset = 0
+ItemFinder.iconRetryUntil = 0
+ItemFinder.nextIconCheck = 0
+ItemFinder.rows = {}
 
 local function Trim(text)
     if not text then
@@ -35,15 +57,19 @@ local function Trim(text)
     return trimmed or ""
 end
 
+local function ItemLink(id)
+    return "item:" .. id .. ":0:0:0:0:0:0:0"
+end
+
 ----------------------------------------------------------------------------------------------------
 -- Reading the server's reply
 ----------------------------------------------------------------------------------------------------
 
--- Pull an id and a name out of one line of ".lookup item" output.
+-- Pull an id, a name and the quality colour out of one line of ".lookup item" output.
 --
--- The id is taken from the hyperlink rather than from the number the line starts with. Both are
--- there and they are the same number, but the link is the part the server builds from the item
--- itself, so it survives any change to how the line is worded.
+-- The id comes from the hyperlink rather than from the number the line starts with. Both are there
+-- and they are the same number, but the link is the part the server builds from the item itself, so
+-- it survives any rewording of the line around it.
 local function ParseResultLine(message)
     if not message then
         return nil
@@ -54,12 +80,10 @@ local function ParseResultLine(message)
         return nil
     end
 
+    local _, _, colour = string.find(message, "|c(%x%x%x%x%x%x%x%x)|Hitem:")
     local _, _, name = string.find(message, "%[(.-)%]")
-    if not name then
-        name = "?"
-    end
 
-    return id, name
+    return id, name or ("Item " .. id), colour
 end
 
 local function IsTerminalLine(message)
@@ -89,12 +113,11 @@ function ItemFinder:Consume(message)
     end
 
     if IsTerminalLine(message) then
-        self.note = message
         self.deadline = GetTime() + TERMINAL_GRACE
         return true
     end
 
-    local id, name = ParseResultLine(message)
+    local id, name, colour = ParseResultLine(message)
     if not id then
         return false
     end
@@ -103,7 +126,12 @@ function ItemFinder:Consume(message)
 
     if self.shownCount < MAX_RESULTS_KEPT then
         self.shownCount = self.shownCount + 1
-        self.results[self.shownCount] = { id = id, name = name }
+        self.results[self.shownCount] = {
+            id = id,
+            name = name,
+            colour = colour,
+            count = 1,
+        }
     end
 
     self.deadline = GetTime() + QUIET_TIMEOUT
@@ -116,7 +144,47 @@ function ItemFinder:Finish()
     end
 
     self.capturing = false
-    self:Render()
+    self.offset = 0
+    self.iconRetryUntil = GetTime() + ICON_RETRY_WINDOW
+    self.nextIconCheck = 0
+    self:Refresh()
+end
+
+----------------------------------------------------------------------------------------------------
+-- Item data from the client cache
+----------------------------------------------------------------------------------------------------
+
+-- Look through everything GetItemInfo gives back for the value that is a texture path.
+--
+-- The 1.12 return list is shorter than later ones and in a different order, so reading the icon by
+-- argument position is a guess that fails quietly - it hands back a stack count and the row shows
+-- no icon at all. Recognising the path by its shape works whatever the order.
+local function ItemIconAndStack(id)
+    local a, b, c, d, e, f, g, h, i, j = GetItemInfo(id)
+    local returns = { a, b, c, d, e, f, g, h, i, j }
+
+    local icon = nil
+    local stack = nil
+
+    for n = 1, 10 do
+        local value = returns[n]
+
+        if type(value) == "string" then
+            -- A texture path, and specifically not the item link, which also contains a backslash
+            -- free colon-separated payload but never a path separator.
+            if string.find(value, "\\") then
+                icon = value
+            end
+        elseif type(value) == "number" then
+            -- Stack size is the only return that is plausibly a stack size: quality is 0-6 and
+            -- required level is small, so take the largest sensible one and treat 1 as unknown.
+            if value > 1 and value <= 200 and (not stack or value > stack) then
+                stack = value
+            end
+        end
+    end
+
+    return icon, stack
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -129,26 +197,85 @@ function ItemFinder:SetStatus(text)
     end
 end
 
-function ItemFinder:Render()
-    local lines = {}
-    local count = table.getn(self.results)
-
-    for i = 1, count do
-        local entry = self.results[i]
-        lines[i] = entry.id .. "    " .. entry.name
+function ItemFinder:AddItem(entry, count)
+    count = tonumber(count) or 1
+    if count < 1 then
+        count = 1
+    end
+    if count > 1000 then
+        count = 1000
     end
 
-    local body = table.concat(lines, "\n")
-    self.output:SetText(body)
-    self.scroll:SetVerticalScroll(0)
+    -- The server reads a leading dot off an ordinary say as a command, so this never reaches
+    -- anybody's chat. Whether it succeeds is the server's to report: a full bag or a missing GM
+    -- rank comes back as a system message in the chat frame, which is left alone on purpose so
+    -- that failures are visible rather than swallowed by this window.
+    SendChatMessage(".additem " .. entry.id .. " " .. count, "SAY")
 
-    if self.resultCount == 0 then
-        self:SetStatus("No items match \"" .. self.query .. "\".")
-    elseif self.resultCount > count then
-        self:SetStatus(count .. " of " .. self.resultCount .. " matches for \"" .. self.query ..
-                       "\". Narrow the search to see the rest.")
+    local coloured = entry.name
+    if entry.colour then
+        coloured = "|c" .. entry.colour .. entry.name .. "|r"
+    end
+
+    self:SetStatus("Sent: " .. count .. " x " .. coloured .. "  (id " .. entry.id .. ")")
+end
+
+function ItemFinder:Refresh()
+    local total = table.getn(self.results)
+    local maxOffset = total - ROWS
+    if maxOffset < 0 then
+        maxOffset = 0
+    end
+    if self.offset > maxOffset then
+        self.offset = maxOffset
+    end
+
+    self.slider:SetMinMaxValues(0, maxOffset)
+    self.slider:SetValue(self.offset)
+    if maxOffset > 0 then
+        self.slider:Show()
     else
-        self:SetStatus(count .. " match(es) for \"" .. self.query .. "\".")
+        self.slider:Hide()
+    end
+
+    for n = 1, ROWS do
+        local row = self.rows[n]
+        local entry = self.results[self.offset + n]
+
+        if not entry then
+            row:Hide()
+        else
+            row.itemId = entry.id
+            row.entry = entry
+
+            local icon, stack = ItemIconAndStack(entry.id)
+            row.icon:SetNormalTexture(icon or PLACEHOLDER_ICON)
+            row.hasIcon = (icon ~= nil)
+            row.maxStack = stack
+
+            if entry.colour then
+                row.name:SetText("|c" .. entry.colour .. entry.name .. "|r")
+            else
+                row.name:SetText(entry.name)
+            end
+
+            row.id:SetText(entry.id)
+            row.count:SetText(entry.count)
+            row:Show()
+        end
+    end
+
+    if total == 0 then
+        if self.query == "" then
+            self:SetStatus("Type part of an item name and press Enter.")
+        else
+            self:SetStatus("Nothing matches \"" .. self.query .. "\".")
+        end
+    elseif self.resultCount > total then
+        self:SetStatus(total .. " of " .. self.resultCount .. " matches for \"" .. self.query ..
+                       "\" - narrow the search to see the rest.")
+    else
+        self:SetStatus(total .. " match(es) for \"" .. self.query .. "\".")
     end
 end
 
@@ -162,32 +289,126 @@ function ItemFinder:Search(text)
     self.results = {}
     self.resultCount = 0
     self.shownCount = 0
-    self.note = nil
+    self.offset = 0
     self.capturing = true
     self.deadline = GetTime() + QUIET_TIMEOUT
 
-    self.output:SetText("")
-    self:SetStatus("Searching for \"" .. text .. "\" ...")
+    for n = 1, ROWS do
+        self.rows[n]:Hide()
+    end
 
-    -- The server reads a leading dot off an ordinary say as a command, so this never reaches
-    -- anybody's chat. It does need the account to hold moderator rights or better; without them the
-    -- server answers with a permissions error and the window simply finds nothing.
+    self:SetStatus("Searching for \"" .. text .. "\" ...")
     SendChatMessage(".lookup item " .. text, "SAY")
 end
 
-function ItemFinder:Toggle()
-    if self.frame:IsVisible() then
-        self.frame:Hide()
-    else
-        self.frame:Show()
-        self.input:SetFocus()
+local function Row_ShowTooltip()
+    if not this.itemId then
+        return
     end
+
+    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+
+    -- Also the request that fills the client's item cache, which is why an icon that was a question
+    -- mark a moment ago becomes the real one shortly after the tooltip is first opened.
+    GameTooltip:SetHyperlink(ItemLink(this.itemId))
+    GameTooltip:Show()
+end
+
+local function Row_HideTooltip()
+    GameTooltip:Hide()
+end
+
+local function BuildRow(parent, index)
+    local row = CreateFrame("Button", "ItemFinderRow" .. index, parent)
+    row:SetWidth(452)
+    row:SetHeight(ROW_HEIGHT)
+    row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
+
+    local stripe = row:CreateTexture(nil, "BACKGROUND")
+    stripe:SetAllPoints(row)
+    stripe:SetTexture(1, 1, 1, (math.mod(index, 2) == 0) and 0.03 or 0.06)
+
+    local icon = CreateFrame("Button", "ItemFinderRow" .. index .. "Icon", row)
+    icon:SetWidth(30)
+    icon:SetHeight(30)
+    icon:SetPoint("LEFT", row, "LEFT", 4, 0)
+    icon:SetNormalTexture(PLACEHOLDER_ICON)
+    icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    icon:SetScript("OnEnter", Row_ShowTooltip)
+    icon:SetScript("OnLeave", Row_HideTooltip)
+    icon:SetScript("OnClick", function()
+        ItemFinder:AddItem(this:GetParent().entry, this:GetParent().count:GetText())
+    end)
+
+    -- The tooltip belongs to the icon, but hovering anywhere on the row is what a person actually
+    -- does, so the row carries the same handlers and the same item id.
+    row:SetScript("OnEnter", Row_ShowTooltip)
+    row:SetScript("OnLeave", Row_HideTooltip)
+
+    local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    name:SetPoint("LEFT", icon, "RIGHT", 8, 0)
+    name:SetWidth(228)
+    name:SetJustifyH("LEFT")
+
+    local id = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    id:SetPoint("LEFT", name, "RIGHT", 4, 0)
+    id:SetWidth(52)
+    id:SetJustifyH("RIGHT")
+
+    local count = CreateFrame("EditBox", "ItemFinderRow" .. index .. "Count", row, "InputBoxTemplate")
+    count:SetPoint("LEFT", id, "RIGHT", 12, 0)
+    count:SetWidth(34)
+    count:SetHeight(18)
+    count:SetAutoFocus(false)
+    count:SetNumeric(true)
+    count:SetMaxLetters(4)
+    count:SetText("1")
+    count:SetScript("OnTextChanged", function()
+        local parent = this:GetParent()
+        if parent.entry then
+            parent.entry.count = tonumber(this:GetText()) or 1
+        end
+    end)
+    count:SetScript("OnEnterPressed", function()
+        local parent = this:GetParent()
+        ItemFinder:AddItem(parent.entry, this:GetText())
+        this:ClearFocus()
+    end)
+    count:SetScript("OnEscapePressed", function()
+        this:ClearFocus()
+    end)
+
+    local add = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    add:SetPoint("LEFT", count, "RIGHT", 8, 0)
+    add:SetWidth(60)
+    add:SetHeight(21)
+    add:SetText("Add")
+    add:SetScript("OnClick", function()
+        local parent = this:GetParent()
+
+        -- Shift-click means a full stack, which is the count almost every bulk request actually
+        -- wants and is otherwise a number the person has to go and look up.
+        if IsShiftKeyDown() and parent.maxStack then
+            parent.count:SetText(parent.maxStack)
+        end
+
+        ItemFinder:AddItem(parent.entry, parent.count:GetText())
+    end)
+
+    row.icon = icon
+    row.name = name
+    row.id = id
+    row.count = count
+    row.add = add
+    row:Hide()
+
+    return row
 end
 
 local function BuildWindow()
     local frame = CreateFrame("Frame", "ItemFinderFrame", UIParent)
-    frame:SetWidth(460)
-    frame:SetHeight(380)
+    frame:SetWidth(500)
+    frame:SetHeight(460)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -212,13 +433,9 @@ local function BuildWindow()
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
 
-    local label = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    label:SetPoint("TOPLEFT", frame, "TOPLEFT", 18, -40)
-    label:SetText("Item name")
-
     local input = CreateFrame("EditBox", "ItemFinderInput", frame, "InputBoxTemplate")
-    input:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -56)
-    input:SetWidth(300)
+    input:SetPoint("TOPLEFT", frame, "TOPLEFT", 26, -44)
+    input:SetWidth(320)
     input:SetHeight(20)
     input:SetAutoFocus(false)
     input:SetScript("OnEnterPressed", function()
@@ -229,7 +446,7 @@ local function BuildWindow()
     end)
 
     local search = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    search:SetPoint("LEFT", input, "RIGHT", 10, 0)
+    search:SetPoint("LEFT", input, "RIGHT", 12, 0)
     search:SetWidth(90)
     search:SetHeight(22)
     search:SetText("Search")
@@ -237,38 +454,74 @@ local function BuildWindow()
         ItemFinder:Search(ItemFinderInput:GetText())
     end)
 
+    -- The list, and a slider of its own rather than a scroll frame.
+    --
+    -- Eight rows are built once and re-pointed at different results as the list scrolls, which is
+    -- both cheaper than a frame per match and the only way three hundred results stay responsive on
+    -- this client. The slider is hand-rolled because the FauxScrollFrame helpers changed signature
+    -- between this client and later ones, and getting that wrong is an empty list with no error.
+    local list = CreateFrame("Frame", "ItemFinderList", frame)
+    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -76)
+    list:SetWidth(452)
+    list:SetHeight(ROWS * ROW_HEIGHT)
+    list:EnableMouseWheel(true)
+    list:SetScript("OnMouseWheel", function()
+        ItemFinder.offset = ItemFinder.offset - arg1
+        if ItemFinder.offset < 0 then
+            ItemFinder.offset = 0
+        end
+        ItemFinder:Refresh()
+    end)
+
+    local border = CreateFrame("Frame", nil, frame)
+    border:SetPoint("TOPLEFT", list, "TOPLEFT", -6, 6)
+    border:SetPoint("BOTTOMRIGHT", list, "BOTTOMRIGHT", 6, -6)
+    border:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 14,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+
+    local slider = CreateFrame("Slider", "ItemFinderSlider", frame)
+    slider:SetPoint("TOPRIGHT", list, "TOPRIGHT", 20, 0)
+    slider:SetWidth(16)
+    slider:SetHeight(ROWS * ROW_HEIGHT)
+    slider:SetOrientation("VERTICAL")
+    slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Vertical")
+    slider:SetBackdrop({
+        bgFile = "Interface\\Buttons\\UI-SliderBar-Background",
+        edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+        tile = true, tileSize = 8, edgeSize = 8,
+        insets = { left = 3, right = 3, top = 6, bottom = 6 },
+    })
+    slider:SetValueStep(1)
+    slider:SetMinMaxValues(0, 0)
+    slider:SetValue(0)
+    slider:SetScript("OnValueChanged", function()
+        local value = this:GetValue()
+        if value ~= ItemFinder.offset then
+            ItemFinder.offset = value
+            ItemFinder:Refresh()
+        end
+    end)
+    slider:Hide()
+
+    for n = 1, ROWS do
+        ItemFinder.rows[n] = BuildRow(list, n)
+    end
+
     local status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    status:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -84)
-    status:SetWidth(410)
+    status:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -16)
+    status:SetWidth(452)
     status:SetJustifyH("LEFT")
-    status:SetText("Type a name and press Enter.")
+    status:SetText("Type part of an item name and press Enter.")
 
-    -- The results live in an edit box rather than a message frame so the ids can be selected and
-    -- copied out, which is the whole reason for wanting them on screen.
-    local scroll = CreateFrame("ScrollFrame", "ItemFinderScroll", frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -104)
-    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -40, 46)
-
-    local output = CreateFrame("EditBox", "ItemFinderOutput", scroll)
-    output:SetMultiLine(true)
-    output:SetAutoFocus(false)
-    output:SetFontObject(GameFontHighlightSmall)
-    output:SetWidth(370)
-    output:SetHeight(600)
-    output:SetScript("OnEscapePressed", function()
-        this:ClearFocus()
-    end)
-    scroll:SetScrollChild(output)
-
-    local selectAll = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    selectAll:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 22, 16)
-    selectAll:SetWidth(100)
-    selectAll:SetHeight(22)
-    selectAll:SetText("Select all")
-    selectAll:SetScript("OnClick", function()
-        ItemFinderOutput:SetFocus()
-        ItemFinderOutput:HighlightText()
-    end)
+    local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hint:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -8)
+    hint:SetWidth(452)
+    hint:SetJustifyH("LEFT")
+    hint:SetText("Hover for the tooltip. Click the icon or Add to deliver. Shift-click Add for a " ..
+                 "full stack. The server reports failures in chat.")
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     closeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -22, 16)
@@ -282,8 +535,8 @@ local function BuildWindow()
     ItemFinder.frame = frame
     ItemFinder.input = input
     ItemFinder.status = status
-    ItemFinder.scroll = scroll
-    ItemFinder.output = output
+    ItemFinder.list = list
+    ItemFinder.slider = slider
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -292,20 +545,44 @@ end
 
 BuildWindow()
 
--- A search ends by going quiet, so something has to notice the quiet.
 local ticker = CreateFrame("Frame")
 ticker:SetScript("OnUpdate", function()
-    if ItemFinder.capturing and GetTime() > ItemFinder.deadline then
+    local now = GetTime()
+
+    if ItemFinder.capturing and now > ItemFinder.deadline then
         ItemFinder:Finish()
+        return
+    end
+
+    -- Icons for items the client had never seen arrive a moment after the server is asked for them,
+    -- and nothing tells the addon when. Re-checking briefly is cheaper than a per-item query and
+    -- stops the list sitting on question marks for items that do have art.
+    if now < ItemFinder.iconRetryUntil and now > ItemFinder.nextIconCheck then
+        ItemFinder.nextIconCheck = now + ICON_RETRY_INTERVAL
+
+        local missing = false
+        for n = 1, ROWS do
+            local row = ItemFinder.rows[n]
+            if row:IsVisible() and not row.hasIcon then
+                missing = true
+            end
+        end
+
+        if missing then
+            ItemFinder:Refresh()
+        else
+            ItemFinder.iconRetryUntil = 0
+        end
     end
 end)
 
--- Swallow the reply before chat prints it.
+-- Swallow the search reply before chat prints it.
 --
 -- The 1.12 client has no message filter API, so the only place to stand between the event and the
 -- chat frame is ChatFrame_OnEvent itself. Only lines that parse as results of a search this addon
--- started are held back: anything else, including every system message while no search is running,
--- goes through untouched.
+-- started are held back: anything else, including every system message while no search is running
+-- and every reply to an .additem, goes through untouched, which is what makes a failed delivery
+-- visible in chat rather than lost in here.
 local ChatFrame_OnEvent_Original = ChatFrame_OnEvent
 ChatFrame_OnEvent = function(event)
     if event == "CHAT_MSG_SYSTEM" and ItemFinder:Consume(arg1) then
