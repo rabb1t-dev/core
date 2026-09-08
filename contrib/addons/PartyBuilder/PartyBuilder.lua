@@ -16,6 +16,27 @@
 local SLOTS = 4
 local ROW_HEIGHT = 40
 
+-- Column geometry, written once and used by both the controls and the labels above them.
+--
+-- The labels used to be anchored to the buttons and nudged upwards by a hand-picked number of
+-- pixels, which put them in the window's top border where they were clipped. Anchoring both to the
+-- same numbers instead means a column and its title cannot disagree, and the header sits in a row
+-- of its own with room for it rather than in whatever space happened to be left.
+local COL_CHECK  = 6
+local COL_ICON   = 34
+local COL_CLASS  = 68
+local COL_ROLE   = 166
+local COL_SPEC   = 258
+local COL_LEVEL  = 384
+
+local W_CLASS = 92
+local W_ROLE  = 86
+local W_SPEC  = 118
+local W_LEVEL = 32
+
+local ROW_WIDTH = COL_LEVEL + W_LEVEL + 10
+local HEADER_HEIGHT = 16
+
 ----------------------------------------------------------------------------------------------------
 -- Static data
 ----------------------------------------------------------------------------------------------------
@@ -411,10 +432,15 @@ function PartyBuilder:Refresh()
 
         row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
-        -- Off reads as off at a glance: the art dims, the border loses its class colour, and the
-        -- class name drops its colour code so the button's own disabled grey is what shows. Leaving
-        -- the name coloured was the mistake here to avoid - a coloured font string wins over a
-        -- disabled button's greying, and the row would have looked live while refusing clicks.
+        -- Off reads as off at a glance: the art dims, the border loses its class colour, and every
+        -- control including the class button greys out. The class button used to stay live on the
+        -- reasoning that an off row is still worth configuring, but a row where three controls are
+        -- grey and one is not does not look switched off - and nothing is lost, because ticking a
+        -- row back on opens the class picker anyway.
+        --
+        -- The class name also drops its colour code. A coloured font string wins over a disabled
+        -- button's own greying, so leaving it in place is a row that looks live while refusing
+        -- clicks.
         if on then
             row.icon:GetNormalTexture():SetVertexColor(1, 1, 1)
             row.border:SetBackdropBorderColor(ColourToRGB(class.colour))
@@ -428,7 +454,7 @@ function PartyBuilder:Refresh()
             row.icon:GetNormalTexture():SetVertexColor(0.35, 0.35, 0.35)
             row.border:SetBackdropBorderColor(0.28, 0.28, 0.28, 1)
             row.classButton:SetText(class and class.name or "Pick a class")
-            row.classButton:Enable()
+            row.classButton:Disable()
             row.roleButton:Disable()
             row.specButton:Disable()
             row.levelBox:EnableMouse(false)
@@ -637,7 +663,7 @@ end
 
 local function BuildRow(parent, index)
     local row = CreateFrame("Frame", "PartyBuilderRow" .. index, parent)
-    row:SetWidth(438)
+    row:SetWidth(ROW_WIDTH)
     row:SetHeight(ROW_HEIGHT)
     row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
 
@@ -649,7 +675,7 @@ local function BuildRow(parent, index)
                               "UICheckButtonTemplate")
     check:SetWidth(22)
     check:SetHeight(22)
-    check:SetPoint("LEFT", row, "LEFT", 6, 0)
+    check:SetPoint("TOPLEFT", row, "TOPLEFT", COL_CHECK, -6)
     check:SetScript("OnClick", function()
         local slot = PartyBuilder.slots[index]
         slot.enabled = not slot.enabled
@@ -668,7 +694,7 @@ local function BuildRow(parent, index)
     local icon = CreateFrame("Button", nil, row)
     icon:SetWidth(28)
     icon:SetHeight(28)
-    icon:SetPoint("LEFT", check, "RIGHT", 6, 0)
+    icon:SetPoint("TOPLEFT", row, "TOPLEFT", COL_ICON, -4)
     icon:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
     icon:EnableMouse(false)
 
@@ -685,32 +711,32 @@ local function BuildRow(parent, index)
     border:SetBackdropBorderColor(0.35, 0.35, 0.35, 1)
 
     local classButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    classButton:SetPoint("LEFT", icon, "RIGHT", 10, 0)
-    classButton:SetWidth(92)
+    classButton:SetPoint("TOPLEFT", row, "TOPLEFT", COL_CLASS, -9)
+    classButton:SetWidth(W_CLASS)
     classButton:SetHeight(21)
     classButton:SetScript("OnClick", function()
         PartyBuilder:PickClass(index)
     end)
 
     local roleButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    roleButton:SetPoint("LEFT", classButton, "RIGHT", 6, 0)
-    roleButton:SetWidth(86)
+    roleButton:SetPoint("TOPLEFT", row, "TOPLEFT", COL_ROLE, -9)
+    roleButton:SetWidth(W_ROLE)
     roleButton:SetHeight(21)
     roleButton:SetScript("OnClick", function()
         PartyBuilder:PickRole(index)
     end)
 
     local specButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-    specButton:SetPoint("LEFT", roleButton, "RIGHT", 6, 0)
-    specButton:SetWidth(118)
+    specButton:SetPoint("TOPLEFT", row, "TOPLEFT", COL_SPEC, -9)
+    specButton:SetWidth(W_SPEC)
     specButton:SetHeight(21)
     specButton:SetScript("OnClick", function()
         PartyBuilder:PickSpec(index)
     end)
 
     local levelBox = CreateFrame("EditBox", "PartyBuilderLevel" .. index, row, "InputBoxTemplate")
-    levelBox:SetPoint("LEFT", specButton, "RIGHT", 12, 0)
-    levelBox:SetWidth(32)
+    levelBox:SetPoint("TOPLEFT", row, "TOPLEFT", COL_LEVEL, -11)
+    levelBox:SetWidth(W_LEVEL)
     levelBox:SetHeight(18)
     levelBox:SetAutoFocus(false)
     levelBox:SetNumeric(true)
@@ -762,8 +788,8 @@ end
 
 local function BuildWindow()
     local frame = CreateFrame("Frame", "PartyBuilderFrame", UIParent)
-    frame:SetWidth(484)
-    frame:SetHeight(360)
+    frame:SetWidth(ROW_WIDTH + 44)
+    frame:SetHeight(356)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -795,9 +821,14 @@ local function BuildWindow()
     sizeText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -30, -18)
     sizeText:SetJustifyH("RIGHT")
 
+    local header = CreateFrame("Frame", "PartyBuilderHeader", frame)
+    header:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -44)
+    header:SetWidth(ROW_WIDTH)
+    header:SetHeight(HEADER_HEIGHT)
+
     local list = CreateFrame("Frame", "PartyBuilderList", frame)
-    list:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -78)
-    list:SetWidth(438)
+    list:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -8)
+    list:SetWidth(ROW_WIDTH)
     list:SetHeight(SLOTS * ROW_HEIGHT)
 
     local border = CreateFrame("Frame", nil, frame)
@@ -816,32 +847,30 @@ local function BuildWindow()
     -- Column labels anchored to the controls they name rather than laid out as one padded string.
     -- The padded version drifted as soon as a button width changed, which is how "Default" ended up
     -- reading as though it sat under "Lvl".
-    -- Lifted clear of the list's border, which sits six pixels above the first row: a label three
-    -- pixels up was landing on the border line rather than above it.
-    local function Header(text, anchor, dx)
-        local label = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        label:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", dx or 2, 11)
+    local function Header(text, x)
+        local label = header:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        label:SetPoint("LEFT", header, "LEFT", x + 2, 0)
         label:SetJustifyH("LEFT")
         label:SetText(text)
         return label
     end
 
-    Header("Class", PartyBuilder.rows[1].classButton)
-    Header("Role", PartyBuilder.rows[1].roleButton)
-    Header("Talent build", PartyBuilder.rows[1].specButton)
+    Header("Class", COL_CLASS)
+    Header("Role", COL_ROLE)
+    Header("Talent build", COL_SPEC)
 
-    -- An InputBoxTemplate draws its visible edge a few pixels inside its own frame, so the label
+    -- An InputBoxTemplate draws its visible edge a few pixels inside its own frame, so this one
     -- needs that offset back to sit over the box rather than over the gap beside it.
-    Header("Lvl", PartyBuilder.rows[1].levelBox, 7)
+    Header("Lvl", COL_LEVEL + 5)
 
     local status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     status:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -16)
-    status:SetWidth(438)
+    status:SetWidth(ROW_WIDTH)
     status:SetJustifyH("LEFT")
 
     local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -6)
-    hint:SetWidth(438)
+    hint:SetWidth(ROW_WIDTH)
     hint:SetJustifyH("LEFT")
     hint:SetText("Untick a companion to leave them behind. Blank Lvl matches your own level; " ..
                  "builds are listed for the bracket that level falls in.")
