@@ -3085,6 +3085,47 @@ bool PartyBotAI::InterruptHostileCasters()
         }
     }
 
+    // Last resort, and only against crowd control.
+    //
+    // Gouge was removed from the interrupt list on the evidence: sixty six of them in one run, every
+    // one incapacitating the mob the whole group was killing, because it was being spent on ordinary
+    // damage casts. That reasoning does not reach the case it is kept for here. A sleep landing on
+    // the healer costs more than a few seconds of one mob's uptime, and by the time this is reached
+    // the real interrupt is on cooldown or unaffordable - the choice is not Gouge against Kick, it
+    // is Gouge against the sleep going off. Ninety four of those were missed in one clear.
+    if (me->GetClass() == CLASS_ROGUE && m_spells.rogue.pGouge)
+    {
+        if (Unit* pCaster = SelectInterruptTarget(m_spells.rogue.pGouge, PB_INTERRUPT_CONTROL, true))
+        {
+            if (CanTryToCastSpell(pCaster, m_spells.rogue.pGouge))
+            {
+                SpellEntry const* pInterrupted = nullptr;
+                if (Spell const* pTheirSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                    pInterrupted = pTheirSpell->m_spellInfo;
+                else if (Spell const* pTheirChannel = pCaster->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
+                    pInterrupted = pTheirChannel->m_spellInfo;
+
+                if (DoCastSpell(pCaster, m_spells.rogue.pGouge) == SPELL_CAST_OK)
+                {
+                    NoteGroupInterrupt(pCaster->GetObjectGuid());
+
+                    if (IsCombatLogged())
+                    {
+                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                 "[BotCombat] interrupt bot='%s' role=%s lvl=%u stopped '%s' (lvl %u) "
+                                 "casting '%s' with 'Gouge' priority=%u (last resort)",
+                                 me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                                 pCaster->GetName(), pCaster->GetLevel(),
+                                 pInterrupted ? pInterrupted->SpellName[0].c_str() : "something",
+                                 PB_INTERRUPT_CONTROL);
+                    }
+
+                    return true;
+                }
+            }
+        }
+    }
+
     // Nothing was stopped. Worth a line when something was being cast at the group and this bot
     // owned an interrupt for it, because supply was the only half of this that could be measured
     // before: the log recorded interrupts taken and nothing at all about the ones wanted.
@@ -3098,12 +3139,45 @@ bool PartyBotAI::InterruptHostileCasters()
             uint32 const priority = GetInterruptPriority(pWanted);
             uint32 const worstKnown = GetWorstKnownCastPriority(pWanted);
 
+            std::string detail;
+
+            if (priority <= PB_INTERRUPT_DAMAGE && priority < worstKnown)
+            {
+                detail = "held for something worse";
+            }
+            else
+            {
+                // Which ability, and what stopped it. "None were castable" was true and useless:
+                // an interrupt lost to a cooldown is a coverage problem and one lost to an empty
+                // rage bar is a rotation problem, and the two want opposite fixes.
+                for (SpellEntry const* pCandidate : candidates)
+                {
+                    if (!detail.empty())
+                        detail += ", ";
+
+                    detail += pCandidate->SpellName[0];
+                    detail += ":";
+
+                    if (!me->IsSpellReady(pCandidate))
+                        detail += "cooldown";
+                    else if (me->GetPower(Powers(pCandidate->powerType)) <
+                             Spell::CalculatePowerCost(pCandidate, me))
+                        detail += "power";
+                    else if (pCandidate->rangeIndex == SPELL_RANGE_IDX_COMBAT
+                                 ? !me->CanReachWithMeleeAutoAttack(pWanted)
+                                 : !me->IsWithinDist(pWanted, Spells::GetSpellMaxRange(
+                                       sSpellRangeStore.LookupEntry(pCandidate->rangeIndex))))
+                        detail += "range";
+                    else
+                        detail += "refused";
+                }
+            }
+
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                      "[BotCombat] nointerrupt bot='%s' role=%s left '%s' casting priority=%u "
                      "(worst it knows is %u) with %u abilities: %s",
                      me->GetName(), GetRoleName(GetRole()), pWanted->GetName(),
-                     priority, worstKnown, uint32(candidates.size()),
-                     (priority <= PB_INTERRUPT_DAMAGE && priority < worstKnown) ? "held for something worse" : "none were castable");
+                     priority, worstKnown, uint32(candidates.size()), detail.c_str());
         }
     }
 
@@ -5417,7 +5491,7 @@ void PartyBotAI::LogCombatTick() const
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
                  "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u "
-                 "cp=%u cpmine=%u front=%u gcd=%u dmg=%u",
+                 "cp=%u cpmine=%u front=%u stealth=%u gcd=%u dmg=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
@@ -5428,7 +5502,9 @@ void PartyBotAI::LogCombatTick() const
                  uint32(me->IsStopped() ? 0 : 1),
                  uint32(m_holdPosition ? 1 : 0),
                  comboPoints, uint32(comboOnVictim ? 1 : 0),
-                 uint32(m_chasingInFront ? 1 : 0), gcd, me->TakeDamageTally());
+                 uint32(m_chasingInFront ? 1 : 0),
+                 uint32(me->HasAuraType(SPELL_AURA_MOD_STEALTH) ? 1 : 0),
+                 gcd, me->TakeDamageTally());
         return;
     }
 
@@ -7537,7 +7613,18 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 return;
         }
 
+        // Overpower is not an ability the warrior picks, it is one the target hands over. It only
+        // becomes castable after that target dodges, which this core records by giving the warrior
+        // a combo point on it, and CheckPower turns a missing one into SPELL_FAILED_BAD_TARGETS.
+        //
+        // Nothing here asked, so the rotation offered it on nearly every tick of every fight and
+        // the server refused nearly every one: two thousand and five attempts in one Wailing
+        // Caverns clear, one thousand nine hundred and eighty eight of them rejected. The check is
+        // the same shape as the rogue finisher gate, and for the same reason - combo points belong
+        // to a target, so a stale point on the last mob is not a licence to Overpower this one.
         if (m_spells.warrior.pOverpower &&
+            me->GetComboPoints() > 0 &&
+            me->GetComboTargetGuid() == pVictim->GetObjectGuid() &&
             CanTryToCastSpell(pVictim, m_spells.warrior.pOverpower))
         {
             if (DoCastSpell(pVictim, m_spells.warrior.pOverpower) == SPELL_CAST_OK)
@@ -7866,34 +7953,83 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
                 DoCastSpell(pVictim, m_spells.rogue.pPremeditation);
             }
 
+            // Hold the swing until there is something to open with.
+            //
+            // Auto-attack is what ends stealth, and it was ending it before the opener could ever
+            // be reached. AttackStart turns melee on the moment a target is picked, so the rogue
+            // approached with its swing timer live and the first swing landed on arrival: stealth
+            // gone, and the block below reached on a tick where the aura had already dropped. One
+            // clear ran ninety two Stealths and produced a single Ambush attempt, which then failed
+            // for standing in the wrong place. Ambush is worth roughly two and a half Sinister
+            // Strikes and Garrote is most of a caster's opener, so this was the largest single
+            // piece of rogue damage the bots were leaving on the floor.
+            //
+            // Melee goes back on below whatever happens, and the branch underneath turns it on for
+            // any tick where the rogue is not stealthed, so there is no path that leaves it walking
+            // around unable to swing.
+            bool const hasOpener = m_spells.rogue.pAmbush || m_spells.rogue.pGarrote ||
+                                   m_spells.rogue.pCheapShot;
+
+            if (hasOpener && !me->CanReachWithMeleeAutoAttack(pVictim))
+            {
+                if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                {
+                    me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+                    me->SendMeleeAttackStop(pVictim);
+                }
+
+                return;
+            }
+
             if (pVictim->IsCaster())
             {
                 if (m_spells.rogue.pGarrote &&
                     CanTryToCastSpell(pVictim, m_spells.rogue.pGarrote))
                 {
                     if (DoCastSpell(pVictim, m_spells.rogue.pGarrote) == SPELL_CAST_OK)
+                    {
+                        me->Attack(pVictim, true);
                         return;
+                    }
                 }
             }
             else
             {
+                // Behind, or not at all. Ambush is a positional and the server refuses it with
+                // SPELL_FAILED_NOT_BEHIND, which is how the one attempt in that clear was spent.
+                // Cheap Shot underneath has no such requirement, so a rogue held in front by the
+                // pull-safety logic still opens with something.
                 if (m_spells.rogue.pAmbush &&
+                    me->IsBehindTarget(pVictim) &&
                     CanTryToCastSpell(pVictim, m_spells.rogue.pAmbush))
                 {
                     if (DoCastSpell(pVictim, m_spells.rogue.pAmbush) == SPELL_CAST_OK)
+                    {
+                        me->Attack(pVictim, true);
                         return;
+                    }
                 }
 
                 if (m_spells.rogue.pCheapShot &&
                     CanTryToCastSpell(pVictim, m_spells.rogue.pCheapShot))
                 {
                     if (DoCastSpell(pVictim, m_spells.rogue.pCheapShot) == SPELL_CAST_OK)
+                    {
+                        me->Attack(pVictim, true);
                         return;
+                    }
                 }
             }
+
+            // In range and nothing opened, so stop waiting and fight.
+            me->Attack(pVictim, true);
         }
         else
         {
+            // Stealth is gone, so whatever held the swing back no longer applies.
+            if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                me->Attack(pVictim, true);
+
             if (m_spells.rogue.pVanish &&
                 (me->GetHealthPercent() < 10.0f))
             {
