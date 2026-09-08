@@ -66,6 +66,25 @@ local function ItemLink(id)
     return "item:" .. id .. ":0:0:0:0:0:0:0"
 end
 
+-- The eight hex digits the server sends with a coloured link are alpha, red, green, blue. Only the
+-- last three matter here, and a missing or malformed colour falls back to a neutral grey rather
+-- than to nothing, so a row without one still gets a border instead of a gap.
+local function ColourToRGB(hex)
+    if not hex or string.len(hex) < 8 then
+        return 0.45, 0.45, 0.45
+    end
+
+    local r = tonumber(string.sub(hex, 3, 4), 16)
+    local g = tonumber(string.sub(hex, 5, 6), 16)
+    local b = tonumber(string.sub(hex, 7, 8), 16)
+
+    if not r or not g or not b then
+        return 0.45, 0.45, 0.45
+    end
+
+    return r / 255, g / 255, b / 255
+end
+
 ----------------------------------------------------------------------------------------------------
 -- Reading the server's reply
 ----------------------------------------------------------------------------------------------------
@@ -282,6 +301,9 @@ function ItemFinder:Refresh()
             row.hasIcon = (icon ~= nil)
             row.maxStack = stack
 
+            local br, bg, bb = ColourToRGB(entry.colour)
+            row.border:SetBackdropBorderColor(br, bg, bb, 1)
+
             if entry.colour then
                 row.name:SetText("|c" .. entry.colour .. entry.name .. "|r")
             else
@@ -381,6 +403,22 @@ local function BuildRow(parent, index)
     icon:SetPoint("LEFT", row, "LEFT", 4, 0)
     icon:SetNormalTexture(PLACEHOLDER_ICON)
     icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    -- A slot frame around the art, tinted by the item's quality.
+    --
+    -- The same border art the list itself uses, so the two read as one window rather than as an
+    -- icon that happens to have a box round it. Drawn a level above the icon so the edge sits on
+    -- top of the texture instead of behind it, and left without mouse handling so it cannot come
+    -- between the cursor and the button underneath.
+    local border = CreateFrame("Frame", nil, row)
+    border:SetPoint("TOPLEFT", icon, "TOPLEFT", -4, 4)
+    border:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 4, -4)
+    border:SetBackdrop({
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 12,
+    })
+    border:SetFrameLevel(icon:GetFrameLevel() + 1)
+    border:SetBackdropBorderColor(0.45, 0.45, 0.45, 1)
+
     icon:SetScript("OnEnter", Icon_ShowTooltip)
     icon:SetScript("OnLeave", Icon_HideTooltip)
     icon:SetScript("OnClick", function()
@@ -438,6 +476,7 @@ local function BuildRow(parent, index)
     end)
 
     row.icon = icon
+    row.border = border
     row.name = name
     row.id = id
     row.count = count
