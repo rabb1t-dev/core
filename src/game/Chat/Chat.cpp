@@ -156,6 +156,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "unpause",    SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotUnpauseCommand,     "", nullptr },
         { "unequip",    SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotUnequipCommand,     "", nullptr },
         { "remove",     SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotRemoveCommand,      "", nullptr },
+        { "removeall",  SEC_ADMINISTRATOR,      false, &ChatHandler::HandlePartyBotRemoveAllCommand,   "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 

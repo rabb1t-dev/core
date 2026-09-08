@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: PartyBuilder
+## Notes: Build a five-man party of bots by class, role, spec and level.
+## Author: rabb1t
+## Version: 1.0
+
+PartyBuilder.lua

@@ -2341,6 +2341,44 @@ bool ChatHandler::HandlePartyBotUnequipCommand(char* args)
     return false;
 }
 
+// Send every party bot in the group away at once.
+//
+// The single-target form needs a selection, which is fine typed by hand and awkward for anything
+// driving these commands from a list: dismissing a party of four means selecting four characters by
+// name first, and a name that fails to select silently leaves a bot behind.
+bool ChatHandler::HandlePartyBotRemoveAllCommand(char* /*args*/)
+{
+    Player* pPlayer = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pPlayer)
+        return false;
+
+    Group* pGroup = pPlayer->GetGroup();
+    if (!pGroup)
+    {
+        SendSysMessage("You are not in a group.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 removed = 0;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == pPlayer || !pMember->AI())
+            continue;
+
+        if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+        {
+            pAI->botEntry->requestRemoval = true;
+            ++removed;
+        }
+    }
+
+    PSendSysMessage("Removed %u party bot%s.", removed, removed == 1 ? "" : "s");
+    return true;
+}
+
 bool ChatHandler::HandlePartyBotRemoveCommand(char* args)
 {
     Player* pTarget = GetSelectedPlayer();
