@@ -335,12 +335,22 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
 
     if (!*args)
     {
-        PSendSysMessage("Permanent rested xp is %s.", wasEnabled ? "on" : "off");
+        PSendSysMessage("Permanent rested xp is %s. Use on, off, or toggle.",
+                        wasEnabled ? "on" : "off");
         return true;
     }
 
     bool value;
-    if (!ExtractOnOff(&args, value))
+
+    // "toggle" as well as on and off, so switching it is one command rather than one command and
+    // remembering which way it currently sits. Spelled out rather than folded into the no-argument
+    // form on purpose: a bare ".server set restedxp" reads as a question, and a question that
+    // silently changes the answer is the kind of command you fire twice by accident.
+    if (ExtractLiteralArg(&args, "toggle"))
+    {
+        value = !wasEnabled;
+    }
+    else if (!ExtractOnOff(&args, value))
     {
         SendSysMessage(LANG_USE_BOL);
         SetSentErrorMessage(true);
