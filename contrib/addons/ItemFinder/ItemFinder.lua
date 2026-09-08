@@ -34,7 +34,12 @@ local TERMINAL_GRACE = 0.3
 -- the server has been asked. Building the tooltip is what asks. Until the answer arrives the row
 -- wears a question mark, and this is how long it keeps re-checking for the real icon.
 local ICON_RETRY_WINDOW = 12.0
-local ICON_RETRY_INTERVAL = 0.5
+local ICON_RETRY_INTERVAL = 0.1
+
+-- How far past the visible rows to ask the server for item data. Priming a page ahead means
+-- scrolling lands on icons that are already there instead of on question marks that resolve a
+-- moment later, without asking for all three hundred results at once.
+local ICON_PRIME_AHEAD = ROWS * 2
 
 local ItemFinder = {}
 ItemFinder.capturing = false
@@ -154,6 +159,30 @@ end
 -- Item data from the client cache
 ----------------------------------------------------------------------------------------------------
 
+-- Ask the server for an item the client has never seen.
+--
+-- Nothing in the API requests item data directly, but building a tooltip for an item does it as a
+-- side effect, and a tooltip that is never shown works just as well. So the icons no longer wait
+-- for the person to hover: every row in and just past view is asked for as soon as it is drawn,
+-- which is the difference between icons appearing on their own and appearing only where the mouse
+-- has already been.
+local primer = CreateFrame("GameTooltip", "ItemFinderPrimer", UIParent, "GameTooltipTemplate")
+primer:SetOwner(UIParent, "ANCHOR_NONE")
+primer:Hide()
+
+local primed = {}
+
+local function PrimeItem(id)
+    if primed[id] then
+        return
+    end
+
+    primed[id] = true
+    primer:SetOwner(UIParent, "ANCHOR_NONE")
+    primer:SetHyperlink(ItemLink(id))
+    primer:Hide()
+end
+
 -- Look through everything GetItemInfo gives back for the value that is a texture path.
 --
 -- The 1.12 return list is shorter than later ones and in a different order, so reading the icon by
@@ -265,6 +294,19 @@ function ItemFinder:Refresh()
         end
     end
 
+    -- Everything in view and a page beyond it, so the data is on its way before it is needed.
+    local last = self.offset + ROWS + ICON_PRIME_AHEAD
+    if last > total then
+        last = total
+    end
+
+    for n = self.offset + 1, last do
+        local entry = self.results[n]
+        if entry then
+            PrimeItem(entry.id)
+        end
+    end
+
     if total == 0 then
         if self.query == "" then
             self:SetStatus("Type part of an item name and press Enter.")
@@ -292,6 +334,7 @@ function ItemFinder:Search(text)
     self.offset = 0
     self.capturing = true
     self.deadline = GetTime() + QUIET_TIMEOUT
+    primed = {}
 
     for n = 1, ROWS do
         self.rows[n]:Hide()
@@ -301,20 +344,24 @@ function ItemFinder:Search(text)
     SendChatMessage(".lookup item " .. text, "SAY")
 end
 
-local function Row_ShowTooltip()
-    if not this.itemId then
+-- Anchored the way a bag slot anchors: the tooltip's bottom-right corner sits on the icon's
+-- top-left, so it opens up and to the left and never lands under the cursor or over the row's own
+-- count box and button. ANCHOR_NONE first, because SetOwner with any other anchor would place it
+-- itself and the explicit point below would be fighting that.
+local function Icon_ShowTooltip()
+    local row = this:GetParent()
+    if not row.itemId then
         return
     end
 
-    GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-
-    -- Also the request that fills the client's item cache, which is why an icon that was a question
-    -- mark a moment ago becomes the real one shortly after the tooltip is first opened.
-    GameTooltip:SetHyperlink(ItemLink(this.itemId))
+    GameTooltip:SetOwner(this, "ANCHOR_NONE")
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint("BOTTOMRIGHT", this, "TOPLEFT", 0, 0)
+    GameTooltip:SetHyperlink(ItemLink(row.itemId))
     GameTooltip:Show()
 end
 
-local function Row_HideTooltip()
+local function Icon_HideTooltip()
     GameTooltip:Hide()
 end
 
@@ -334,16 +381,11 @@ local function BuildRow(parent, index)
     icon:SetPoint("LEFT", row, "LEFT", 4, 0)
     icon:SetNormalTexture(PLACEHOLDER_ICON)
     icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
-    icon:SetScript("OnEnter", Row_ShowTooltip)
-    icon:SetScript("OnLeave", Row_HideTooltip)
+    icon:SetScript("OnEnter", Icon_ShowTooltip)
+    icon:SetScript("OnLeave", Icon_HideTooltip)
     icon:SetScript("OnClick", function()
         ItemFinder:AddItem(this:GetParent().entry, this:GetParent().count:GetText())
     end)
-
-    -- The tooltip belongs to the icon, but hovering anywhere on the row is what a person actually
-    -- does, so the row carries the same handlers and the same item id.
-    row:SetScript("OnEnter", Row_ShowTooltip)
-    row:SetScript("OnLeave", Row_HideTooltip)
 
     local name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     name:SetPoint("LEFT", icon, "RIGHT", 8, 0)
@@ -520,8 +562,8 @@ local function BuildWindow()
     hint:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -8)
     hint:SetWidth(452)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Hover for the tooltip. Click the icon or Add to deliver. Shift-click Add for a " ..
-                 "full stack. The server reports failures in chat.")
+    hint:SetText("Hover the icon for the tooltip. Click the icon or Add to deliver. Shift-click " ..
+             "Add for a full stack. The server reports failures in chat.")
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     closeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -22, 16)
