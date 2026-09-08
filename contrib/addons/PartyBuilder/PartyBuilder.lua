@@ -921,8 +921,21 @@ end
 ----------------------------------------------------------------------------------------------------
 
 BuildWindow()
+
+-- Opens with one companion, not four.
+--
+-- The roster is still filled in from the preset, so the other three are a tick away and already
+-- hold a sensible class and role. But a window that arrives with four switched on has decided what
+-- you are doing before you have said: adding is a deliberate act and removing three is a chore, so
+-- the default is the smaller of the two. Standard is there for when a full five-man is the answer.
 PartyBuilder:UsePreset()
-PartyBuilder:SetStatus("Pick four companions, then Create Party.")
+
+for n = 2, SLOTS do
+    PartyBuilder.slots[n].enabled = false
+end
+
+PartyBuilder:Refresh()
+PartyBuilder:SetStatus("Tick a companion to bring them along, then Create Party.")
 
 SLASH_PARTYBUILDER1 = "/partybuilder"
 SLASH_PARTYBUILDER2 = "/pb"
