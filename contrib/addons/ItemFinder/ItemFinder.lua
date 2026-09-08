@@ -25,10 +25,20 @@ local ROW_HEIGHT = 38
 local MAX_RESULTS_KEPT = 300
 local PLACEHOLDER_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 
--- A search ends by going quiet: the server sends one chat message per match and they do not all
--- land in the same frame. The two lines that really are the end cut the wait short.
-local QUIET_TIMEOUT = 2.5
-local TERMINAL_GRACE = 0.3
+-- A search ends either on the line that says so or by going quiet, and the quiet timer is now only
+-- a backstop for a reply worded in some way this does not recognise. Results are drawn as they
+-- arrive rather than at the end, so neither of these numbers is a wait the person sits through.
+--
+-- It used to be the whole delay. The server only sends a closing line when it found nothing or had
+-- to withhold matches, so an ordinary search - anything from one to fifty results - ended with no
+-- marker at all, and the list waited out the full two and a half seconds of silence before drawing
+-- a single row. The query itself is one pass over twenty thousand items already in memory.
+local QUIET_TIMEOUT = 1.0
+local TERMINAL_GRACE = 0.15
+
+-- Redrawing on every message would be a repaint per result. A tenth of a second is faster than the
+-- eye and slower than the messages arrive.
+local LIVE_REDRAW_INTERVAL = 0.1
 
 -- Items the client has never seen have no local cache entry, so GetItemInfo answers nothing until
 -- the server has been asked. Building the tooltip is what asks. Until the answer arrives the row
@@ -51,6 +61,7 @@ ItemFinder.query = ""
 ItemFinder.offset = 0
 ItemFinder.iconRetryUntil = 0
 ItemFinder.nextIconCheck = 0
+ItemFinder.nextLiveRedraw = 0
 ItemFinder.rows = {}
 
 local function Trim(text)
@@ -121,6 +132,10 @@ local function IsTerminalLine(message)
         return true
     end
 
+    if string.find(lower, "^found %d+ match") then
+        return true
+    end
+
     -- Worded by the server's string table rather than here, so matched loosely on purpose.
     if string.find(lower, "no item") and string.find(lower, "found") then
         return true
@@ -158,7 +173,16 @@ function ItemFinder:Consume(message)
         }
     end
 
-    self.deadline = GetTime() + QUIET_TIMEOUT
+    local now = GetTime()
+    self.deadline = now + QUIET_TIMEOUT
+
+    -- Show it now. Waiting for the end of the reply to draw anything is what made a search that
+    -- the server answers in milliseconds feel like it took seconds.
+    if now > self.nextLiveRedraw then
+        self.nextLiveRedraw = now + LIVE_REDRAW_INTERVAL
+        self:Refresh()
+    end
+
     return true
 end
 
@@ -329,7 +353,9 @@ function ItemFinder:Refresh()
         end
     end
 
-    if total == 0 then
+    if self.capturing then
+        self:SetStatus("Searching for \"" .. self.query .. "\" ... " .. total .. " so far.")
+    elseif total == 0 then
         if self.query == "" then
             self:SetStatus("Type part of an item name and press Enter.")
         else
@@ -356,6 +382,7 @@ function ItemFinder:Search(text)
     self.offset = 0
     self.capturing = true
     self.deadline = GetTime() + QUIET_TIMEOUT
+    self.nextLiveRedraw = 0
     primed = {}
 
     for n = 1, ROWS do

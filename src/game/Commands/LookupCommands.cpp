@@ -266,10 +266,16 @@ bool ChatHandler::HandleLookupItemCommand(char* args)
         }
     }
 
+    // Always a closing line, including the ordinary case of a handful of matches, which used to
+    // end the reply with nothing at all. A person reading chat gets a count they otherwise had to
+    // make by eye; anything reading the reply programmatically gets to know it is over, rather
+    // than having to decide the server has gone quiet and guess how long that takes.
     if (counter == 0)
         SendSysMessage(LANG_COMMAND_NOITEMFOUND);
     else if (counter > shown)
         PSendSysMessage("Showing %u of %u matches. Narrow your search.", shown, counter);
+    else
+        PSendSysMessage("Found %u match%s.", counter, counter == 1 ? "" : "es");
 
     return true;
 }
