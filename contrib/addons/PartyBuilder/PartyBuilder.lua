@@ -176,7 +176,7 @@ PartyBuilder.slots = {}
 PartyBuilder.rows = {}
 
 for n = 1, SLOTS do
-    PartyBuilder.slots[n] = { classId = nil, role = nil, spec = nil, level = nil }
+    PartyBuilder.slots[n] = { enabled = true, classId = nil, role = nil, spec = nil, level = nil }
 end
 
 local function FindClass(id)
@@ -397,16 +397,43 @@ function PartyBuilder:Refresh()
         local slot = self.slots[n]
         local class = slot.classId and FindClass(slot.classId) or nil
 
+        local on = slot.enabled and class ~= nil
+
+        -- 1 or nil rather than true or false: this client's SetChecked predates booleans being
+        -- accepted everywhere, and a false here is the kind of argument it complains about.
+        row.check:SetChecked(slot.enabled and 1 or nil)
+
         if class then
             row.icon:SetNormalTexture(CLASS_ICONS[class.id])
-            row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
-            row.border:SetBackdropBorderColor(ColourToRGB(class.colour))
-            row.classButton:SetText("|cff" .. class.colour .. class.name .. "|r")
         else
             row.icon:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-            row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
-            row.border:SetBackdropBorderColor(0.35, 0.35, 0.35, 1)
-            row.classButton:SetText("Empty")
+        end
+
+        row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+        -- Off reads as off at a glance: the art dims, the border loses its class colour, and the
+        -- class name drops its colour code so the button's own disabled grey is what shows. Leaving
+        -- the name coloured was the mistake here to avoid - a coloured font string wins over a
+        -- disabled button's greying, and the row would have looked live while refusing clicks.
+        if on then
+            row.icon:GetNormalTexture():SetVertexColor(1, 1, 1)
+            row.border:SetBackdropBorderColor(ColourToRGB(class.colour))
+            row.classButton:SetText("|cff" .. class.colour .. class.name .. "|r")
+            row.classButton:Enable()
+            row.roleButton:Enable()
+            row.specButton:Enable()
+            row.levelBox:EnableMouse(true)
+            row.levelBox:SetTextColor(1, 1, 1)
+        else
+            row.icon:GetNormalTexture():SetVertexColor(0.35, 0.35, 0.35)
+            row.border:SetBackdropBorderColor(0.28, 0.28, 0.28, 1)
+            row.classButton:SetText(class and class.name or "Pick a class")
+            row.classButton:Enable()
+            row.roleButton:Disable()
+            row.specButton:Disable()
+            row.levelBox:EnableMouse(false)
+            row.levelBox:SetTextColor(0.45, 0.45, 0.45)
+            row.levelBox:ClearFocus()
         end
 
         if slot.role then
@@ -424,6 +451,16 @@ function PartyBuilder:Refresh()
         row.levelBox:SetText(slot.level or "")
     end
 
+    local wanted = 0
+    for n = 1, SLOTS do
+        local slot = self.slots[n]
+        if slot.enabled and slot.classId then
+            wanted = wanted + 1
+        end
+    end
+
+    self.sizeText:SetText("Party of " .. (wanted + 1))
+
 end
 
 function PartyBuilder:PickClass(index)
@@ -431,8 +468,9 @@ function PartyBuilder:PickClass(index)
     local entries = {}
     local available = AvailableClasses()
 
-    table.insert(entries, { text = "|cff888888Empty|r", value = 0 })
-
+    -- No "Empty" here any more. A row that is not wanted is unticked, which is one idea in one
+    -- place; having both meant two ways to say the same thing and a row that could be ticked on
+    -- while holding no class at all.
     for n = 1, table.getn(available) do
         local class = available[n]
         table.insert(entries, {
@@ -444,18 +482,16 @@ function PartyBuilder:PickClass(index)
     ShowPicker(row.classButton, entries, function(value)
         local slot = PartyBuilder.slots[index]
 
-        if value == 0 then
-            slot.classId = nil
-            slot.role = nil
-            slot.spec = nil
-        else
-            slot.classId = value
-            -- Role and spec belong to the class that was there before, so they do not survive it.
-            -- A shaman keeping "tank" from the warrior it replaced is a command the server refuses.
-            local class = FindClass(value)
-            slot.role = class.roles[1]
-            slot.spec = nil
-        end
+        slot.classId = value
+
+        -- Role and spec belong to the class that was there before, so they do not survive it. A
+        -- shaman keeping "tank" from the warrior it replaced is a command the server refuses.
+        local class = FindClass(value)
+        slot.role = class.roles[1]
+        slot.spec = nil
+
+        -- Choosing a class for a row is saying you want it.
+        slot.enabled = true
 
         PartyBuilder:Refresh()
     end)
@@ -526,6 +562,7 @@ function PartyBuilder:UsePreset()
         slot.classId = nil
         slot.role = nil
         slot.spec = nil
+        slot.enabled = false
 
         if wanted then
             for i = 1, table.getn(wanted.classes) do
@@ -535,6 +572,7 @@ function PartyBuilder:UsePreset()
                    class.key ~= myClassKey and not taken[class.key] then
                     slot.classId = class.id
                     slot.role = wanted.role
+                    slot.enabled = true
                     taken[class.key] = true
                     break
                 end
@@ -546,13 +584,15 @@ function PartyBuilder:UsePreset()
     self:SetStatus("Standard party: a tank, a healer, and one of each kind of damage.")
 end
 
+-- Switches every companion off rather than forgetting what they were, so a party of one is one
+-- click away from being a party of five again with the same roster.
 function PartyBuilder:Clear()
     for n = 1, SLOTS do
-        self.slots[n] = { classId = nil, role = nil, spec = nil, level = nil }
+        self.slots[n].enabled = false
     end
 
     self:Refresh()
-    self:SetStatus("Cleared.")
+    self:SetStatus("All companions off. You will go alone.")
 end
 
 function PartyBuilder:Create()
@@ -561,7 +601,7 @@ function PartyBuilder:Create()
     for n = 1, SLOTS do
         local slot = self.slots[n]
 
-        if slot.classId and slot.role then
+        if slot.enabled and slot.classId and slot.role then
             local class = FindClass(slot.classId)
 
             -- Level before spec, because that is the order the command parses them in and a spec
@@ -583,7 +623,7 @@ function PartyBuilder:Create()
     end
 
     if sent == 0 then
-        self:SetStatus("Nothing to create - every slot is empty.")
+        self:SetStatus("Nothing to create - no companions are switched on.")
     else
         self:SetStatus("Sent " .. sent .. " companion" .. ((sent == 1) and "" or "s") ..
                        ". The server reports each one in chat.")
@@ -597,7 +637,7 @@ end
 
 local function BuildRow(parent, index)
     local row = CreateFrame("Frame", "PartyBuilderRow" .. index, parent)
-    row:SetWidth(410)
+    row:SetWidth(438)
     row:SetHeight(ROW_HEIGHT)
     row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
 
@@ -605,10 +645,30 @@ local function BuildRow(parent, index)
     stripe:SetAllPoints(row)
     stripe:SetTexture(1, 1, 1, (math.mod(index, 2) == 0) and 0.03 or 0.06)
 
+    local check = CreateFrame("CheckButton", "PartyBuilderCheck" .. index, row,
+                              "UICheckButtonTemplate")
+    check:SetWidth(22)
+    check:SetHeight(22)
+    check:SetPoint("LEFT", row, "LEFT", 6, 0)
+    check:SetScript("OnClick", function()
+        local slot = PartyBuilder.slots[index]
+        slot.enabled = not slot.enabled
+
+        -- Ticking a row that has never been given a class opens the class picker rather than
+        -- leaving a row that is on and holds nothing.
+        if slot.enabled and not slot.classId then
+            PartyBuilder:Refresh()
+            PartyBuilder:PickClass(index)
+            return
+        end
+
+        PartyBuilder:Refresh()
+    end)
+
     local icon = CreateFrame("Button", nil, row)
     icon:SetWidth(28)
     icon:SetHeight(28)
-    icon:SetPoint("LEFT", row, "LEFT", 6, 0)
+    icon:SetPoint("LEFT", check, "RIGHT", 6, 0)
     icon:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
     icon:EnableMouse(false)
 
@@ -689,6 +749,7 @@ local function BuildRow(parent, index)
         this:ClearFocus()
     end)
 
+    row.check = check
     row.icon = icon
     row.border = border
     row.classButton = classButton
@@ -701,7 +762,7 @@ end
 
 local function BuildWindow()
     local frame = CreateFrame("Frame", "PartyBuilderFrame", UIParent)
-    frame:SetWidth(456)
+    frame:SetWidth(484)
     frame:SetHeight(360)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     frame:SetBackdrop({
@@ -728,9 +789,15 @@ local function BuildWindow()
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
 
+    -- Not the sentence that was here before, which spelled out the arithmetic. Four ticks and a
+    -- number is the whole of what the window has to say about its own size.
+    local sizeText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    sizeText:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -30, -18)
+    sizeText:SetJustifyH("RIGHT")
+
     local list = CreateFrame("Frame", "PartyBuilderList", frame)
     list:SetPoint("TOPLEFT", frame, "TOPLEFT", 22, -78)
-    list:SetWidth(410)
+    list:SetWidth(438)
     list:SetHeight(SLOTS * ROW_HEIGHT)
 
     local border = CreateFrame("Frame", nil, frame)
@@ -769,15 +836,15 @@ local function BuildWindow()
 
     local status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     status:SetPoint("TOPLEFT", list, "BOTTOMLEFT", 0, -16)
-    status:SetWidth(410)
+    status:SetWidth(438)
     status:SetJustifyH("LEFT")
 
     local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOPLEFT", status, "BOTTOMLEFT", 0, -6)
-    hint:SetWidth(410)
+    hint:SetWidth(438)
     hint:SetJustifyH("LEFT")
-    hint:SetText("Leave Lvl blank to match your own level. Builds are listed for the bracket the " ..
-                 "level falls in.")
+    hint:SetText("Untick a companion to leave them behind. Blank Lvl matches your own level; " ..
+                 "builds are listed for the bracket that level falls in.")
 
     local create = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     create:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 22, 16)
@@ -817,6 +884,7 @@ local function BuildWindow()
 
     PartyBuilder.frame = frame
     PartyBuilder.status = status
+    PartyBuilder.sizeText = sizeText
 end
 
 ----------------------------------------------------------------------------------------------------
