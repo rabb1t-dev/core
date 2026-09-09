@@ -3625,26 +3625,44 @@ void PartyBotAI::GetFormationSlot(float& distance, float& angle) const
 // to it. A slot that would put a bot inside an unengaged creature's aggro radius is pulled in
 // towards directly-behind and shortened, and if three tries do not find room it settles for the
 // old tucked-in position rather than insisting.
-void PartyBotAI::GetSafeFormationSlot(Unit const* pLeader, float& distance, float& angle) const
+//
+// The candidate position is worked out with trigonometry from the leader's coordinates rather than
+// by asking the leader for a point near itself. GetNearPoint runs a grid visit on the object it is
+// called on, and calling it on somebody else means touching their map: with thirty nine bots each
+// asking up to four times per decision, one of them did it while the leader was mid-teleport and
+// the server took a SIGSEGV. It was also four grid searches per bot per reposition to answer a
+// question about a position, which trigonometry answers for nothing. The leader is checked for
+// being somewhere askable at all before any of it.
+void PartyBotAI::GetSafeFormationSlot(Player const* pLeader, float& distance, float& angle) const
 {
     GetFormationSlot(distance, angle);
 
-    if (!pLeader)
+    if (!pLeader || !pLeader->IsInWorld() || pLeader->IsBeingTeleported() ||
+        pLeader->GetMap() != me->GetMap())
+    {
+        angle = M_PI_F;
+        distance = PB_MIN_FOLLOW_DIST;
         return;
+    }
 
     float const wanted = angle - M_PI_F;
+    float const leaderX = pLeader->GetPositionX();
+    float const leaderY = pLeader->GetPositionY();
+    float const leaderZ = pLeader->GetPositionZ();
 
     for (uint32 attempt = 0; attempt <= PB_FORMATION_TIGHTEN_TRIES; ++attempt)
     {
         float const scale = 1.0f - (PB_FORMATION_TIGHTEN_STEP * attempt);
         float const tryAngle = M_PI_F + (wanted * scale);
         float const tryDistance = distance * scale;
+        float const absAngle = pLeader->GetOrientation() + tryAngle;
 
-        float x, y, z;
-        pLeader->GetNearPoint(pLeader, x, y, z, 0, tryDistance,
-                              pLeader->GetOrientation() + tryAngle);
+        float const x = leaderX + tryDistance * cos(absAngle);
+        float const y = leaderY + tryDistance * sin(absAngle);
 
-        if (!WouldPositionPullExtraEnemies(x, y, z))
+        // The leader's own height. An aggro radius is a distance and a few feet of slope does not
+        // change the answer, so this does not need the ground fixed up under it.
+        if (!WouldPositionPullExtraEnemies(x, y, leaderZ))
         {
             angle = tryAngle;
             distance = tryDistance;

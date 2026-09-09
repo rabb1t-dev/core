@@ -114,7 +114,7 @@ public:
     bool ShouldThisWarriorPeel(Unit* pAdd, bool onHealer) const;
     void ReconsiderMeleeChaseAngle();
     void GetFormationSlot(float& distance, float& angle) const;
-    void GetSafeFormationSlot(Unit const* pLeader, float& distance, float& angle) const;
+    void GetSafeFormationSlot(Player const* pLeader, float& distance, float& angle) const;
     bool CanIssueCombatMovement() const;
     void NoteCombatMovement();
     void CollectLooseEnemies(std::vector<Unit*>& out) const;
