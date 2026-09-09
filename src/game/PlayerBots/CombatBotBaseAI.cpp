@@ -4912,6 +4912,26 @@ static constexpr float CB_DETOUR_LEG_LENGTH = 12.0f;
 // reads as walkable and the bot is sent at the wall again.
 static constexpr float CB_DETOUR_ARRIVE_TOLERANCE = 2.0f;
 
+// Where a bot looks for somewhere out of a particular creature's sight. Rings outward from where it
+// stands, so the first answer found is the shortest move; bearings taken from directly away from the
+// caster and alternating either side of it, so the search is ordered the way a player looks, which
+// is behind them first and past the boss last.
+static constexpr float CB_BREAK_SIGHT_RADII[] = { 6.0f, 10.0f, 14.0f, 18.0f, 22.0f };
+static constexpr uint32 CB_BREAK_SIGHT_BEARINGS = 16;
+
+// How far the caster is allowed for while the bot is still walking. A spot chosen against where the
+// caster stands right now is often one yard of doorframe that stops being cover the moment it
+// moves, and a creature whose cast just failed on sight does precisely that: it walks until it can
+// see again. So the spot has to be out of sight from a step ahead as well as from where it stands.
+static constexpr float CB_BREAK_SIGHT_LOOKAHEAD = 4.0f;
+
+// How much of a step up or down cover may be. Shadowfang Keep is the case that wanted this: from
+// anywhere on Archmage Arugal's platform the only thing that blocks his sight is the eleven yard
+// drop off its edge, and a bot that takes it is out of the fight. Down is cheap to walk and dear to
+// walk back, the bottom of a ledge is where the adds are, and being eleven yards below the healer
+// outlasts the cast that was being dodged by a long way.
+static constexpr float CB_BREAK_SIGHT_MAX_STEP = 5.0f;
+
 // How far a feared creature ends up from whoever feared it. A fear does not send a mob wandering a
 // few steps: FleeingMovementGenerator runs it out until it is between twenty eight and thirty eight
 // yards of the caster and then moves it at random inside that band for the rest of the duration.
@@ -5060,6 +5080,88 @@ bool CombatBotBaseAI::CanWalkTo(float x, float y, float z) const
     Vector3 const reached = path.getActualEndPosition();
     return Geometry::GetDistance3D(reached.x, reached.y, reached.z, x, y, z)
         <= CB_DETOUR_ARRIVE_TOLERANCE;
+}
+
+// Somewhere the given creature cannot see, reachable from where the bot stands, within the distance
+// it has time to cover.
+//
+// This is the movement half of breaking line of sight on a cast. It answers only "where", and knows
+// nothing about which spell or whether moving is a good idea; those are the caller's business, and
+// keeping them out of here is what lets the search stay a plain geometric one.
+//
+// The tests are ordered by what they cost and by how much they reject. Sight goes first: it is one
+// vmap ray, and it throws out nearly every candidate, because an open floor is visible from all of
+// it. The aggro sweep is arithmetic over a list already in hand. The mesh route is last and is only
+// ever paid for a handful of spots that are already known to be cover.
+bool CombatBotBaseAI::FindBreakSightSpot(Unit const* pWatcher, float maxDistance,
+                                         float& outX, float& outY, float& outZ) const
+{
+    if (!pWatcher || maxDistance <= 0.0f)
+        return false;
+
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+
+    // Straight away from the caster, which is the bearing a player tries first.
+    float const awayAngle = pWatcher->GetAngle(me);
+    float const bearingStep = 2.0f * M_PI_F / float(CB_BREAK_SIGHT_BEARINGS);
+
+    for (float radius : CB_BREAK_SIGHT_RADII)
+    {
+        if (radius > maxDistance)
+            break;
+
+        for (uint32 step = 0; step <= CB_BREAK_SIGHT_BEARINGS / 2; ++step)
+        {
+            for (float sign : { 1.0f, -1.0f })
+            {
+                // Dead away and dead towards are each reached from both sides.
+                if (sign < 0.0f && (step == 0 || step == CB_BREAK_SIGHT_BEARINGS / 2))
+                    continue;
+
+                float const angle = awayAngle + sign * float(step) * bearingStep;
+                float const x = startX + cos(angle) * radius;
+                float const y = startY + sin(angle) * radius;
+                float z = me->GetPositionZ();
+
+                me->UpdateAllowedPositionZ(x, y, z);
+
+                // Level with the bot, before anything else, because it is one subtraction and it
+                // is the test that throws out the cover that would be actively harmful rather
+                // than merely useless. See CB_BREAK_SIGHT_MAX_STEP.
+                if (fabs(z - me->GetPositionZ()) > CB_BREAK_SIGHT_MAX_STEP)
+                    continue;
+
+                if (pWatcher->IsWithinLOS(x, y, z))
+                    continue;
+
+                // And still cover once the caster has taken a step towards it. See
+                // CB_BREAK_SIGHT_LOOKAHEAD.
+                float const watcherAngle = pWatcher->GetAngle(x, y);
+                float const aheadX = pWatcher->GetPositionX() + cos(watcherAngle) * CB_BREAK_SIGHT_LOOKAHEAD;
+                float const aheadY = pWatcher->GetPositionY() + sin(watcherAngle) * CB_BREAK_SIGHT_LOOKAHEAD;
+                float aheadZ = pWatcher->GetPositionZ();
+
+                pWatcher->UpdateAllowedPositionZ(aheadX, aheadY, aheadZ);
+
+                if (pWatcher->IsWithinLOSAtPosition(aheadX, aheadY, aheadZ, x, y, z))
+                    continue;
+
+                if (WouldPathPullExtraEnemies(x, y, z))
+                    continue;
+
+                if (!CanWalkTo(x, y, z))
+                    continue;
+
+                outX = x;
+                outY = y;
+                outZ = z;
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,

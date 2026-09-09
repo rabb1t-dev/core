@@ -363,6 +363,176 @@ bool ChatHandler::HandleHarnessPathCommand(char* args)
     return true;
 }
 
+// .harness ground <character> <x0> <y0> <x1> <y1> <step> [probeZ]
+// The floor height over a rectangle, and whether each point can see a fixed watcher.
+//
+// Teleporting a character about and reading its position back cannot answer this: the position
+// correction looks for ground near the height it was handed, so a character dropped onto a raised
+// walkway stays on the walkway and the sunken floor two yards away never appears. Reading the
+// terrain directly is the only way to see a ledge, and a ledge is what makes cover.
+bool ChatHandler::HandleHarnessGroundCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float x0, y0, x1, y1, step;
+    if (!ExtractFloat(&args, x0) || !ExtractFloat(&args, y0) ||
+        !ExtractFloat(&args, x1) || !ExtractFloat(&args, y1) ||
+        !ExtractFloat(&args, step) || step <= 0.0f)
+    {
+        SendSysMessage("Syntax: .harness ground <character> <x0> <y0> <x1> <y1> <step> [probeZ]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // Where to search down from. Above the highest floor in the area of interest, since GetHeight
+    // finds the ground under the height it is given and a probe started below a walkway reports
+    // whatever is under that instead.
+    float probeZ = 0.0f;
+    if (!ExtractFloat(&args, probeZ))
+        probeZ = pTarget->GetPositionZ() + 10.0f;
+
+    Map* pMap = pTarget->GetMap();
+    uint32 points = 0;
+
+    for (float y = y0; y <= y1 + 0.01f; y += step)
+    {
+        for (float x = x0; x <= x1 + 0.01f; x += step)
+        {
+            float const height = pMap->GetHeight(x, y, probeZ, true);
+            PSendSysMessage("ground x=%.1f y=%.1f z=%.2f", x, y, height);
+
+            if (++points >= 400)
+            {
+                SendSysMessage("ground truncated");
+                return true;
+            }
+        }
+    }
+
+    PSendSysMessage("ground points=%u", points);
+    return true;
+}
+
+// .harness cover <character> <watcherX> <watcherY> <watcherZ>
+// Where, from where the character stands, it could get out of sight of a caster at the given point.
+//
+// The same question PartyBotAI::TakeCoverFromCast asks of FindBreakSightSpot, asked from outside a
+// fight so a fight position can be chosen before anybody has to survive it. A hold spot is only
+// worth naming if cover is a few yards from it rather than across the room, and that is a fact
+// about the walls, which cannot be read out of the creature table or guessed off a map image.
+//
+// Prints every candidate that is out of sight, in the order the bot would try them, so the answer
+// is not just whether cover exists but how far the bot has to walk for the nearest of it.
+bool ChatHandler::HandleHarnessCoverCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float wx, wy, wz;
+    if (!ExtractFloat(&args, wx) || !ExtractFloat(&args, wy) || !ExtractFloat(&args, wz))
+    {
+        SendSysMessage("Syntax: .harness cover <character> <watcherX> <watcherY> <watcherZ> [dynlos]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    // Whether closed doors count. Off by default, because the fight this is used to plan happens
+    // with the door already open: Arugal's Lair opens when Wolf Master Nandos dies, and measured
+    // with it shut every spot on the far side of it reads as cover that will not be there.
+    uint32 dynLos = 0;
+    ExtractUInt32(&args, dynLos);
+    bool const checkDynLos = dynLos != 0;
+
+    // Kept in step with CB_BREAK_SIGHT_RADII and CB_BREAK_SIGHT_BEARINGS by hand rather than
+    // shared, because those belong to the bot AI and this is a survey: a survey that silently
+    // changed shape with the AI would stop being a record of what was measured.
+    static float const radii[] = { 6.0f, 10.0f, 14.0f, 18.0f, 22.0f };
+    static uint32 const bearings = 16;
+    static float const lookahead = 4.0f;
+
+    float const startX = pTarget->GetPositionX();
+    float const startY = pTarget->GetPositionY();
+    float const awayAngle = atan2(startY - wy, startX - wx);
+    float const bearingStep = 2.0f * M_PI_F / float(bearings);
+
+    uint32 found = 0;
+
+    // Whether the spot being surveyed is exposed in the first place. A position with no cover
+    // near it is only a problem if the caster can see it, and a position the caster cannot see is
+    // not a fight position at all: nobody in it can attack him either.
+    bool const originExposed = pTarget->GetMap()->isInLineOfSight(
+        wx, wy, wz + 2.0f, startX, startY, pTarget->GetPositionZ() + 2.0f, checkDynLos);
+
+    PSendSysMessage("cover from=%.2f,%.2f,%.2f watcher=%.2f,%.2f,%.2f watcherdist=%.1f dynlos=%d originlos=%d",
+        startX, startY, pTarget->GetPositionZ(), wx, wy, wz,
+        pTarget->GetDistance(wx, wy, wz), checkDynLos ? 1 : 0, originExposed ? 1 : 0);
+
+    for (float radius : radii)
+    {
+        for (uint32 step = 0; step <= bearings / 2; ++step)
+        {
+            for (float sign : { 1.0f, -1.0f })
+            {
+                if (sign < 0.0f && (step == 0 || step == bearings / 2))
+                    continue;
+
+                float const angle = awayAngle + sign * float(step) * bearingStep;
+                float const x = startX + cos(angle) * radius;
+                float const y = startY + sin(angle) * radius;
+                float z = pTarget->GetPositionZ();
+
+                pTarget->UpdateAllowedPositionZ(x, y, z);
+
+                if (pTarget->GetMap()->isInLineOfSight(wx, wy, wz + 2.0f, x, y, z + 2.0f, checkDynLos))
+                    continue;
+
+                // Cover that survives the caster taking a step towards it, which is what a
+                // creature whose cast just failed on sight does next.
+                float const watcherAngle = atan2(y - wy, x - wx);
+                float const aheadX = wx + cos(watcherAngle) * lookahead;
+                float const aheadY = wy + sin(watcherAngle) * lookahead;
+                float aheadZ = wz;
+
+                pTarget->UpdateAllowedPositionZ(aheadX, aheadY, aheadZ);
+
+                bool const holdsAfterStep = !pTarget->GetMap()->isInLineOfSight(
+                    aheadX, aheadY, aheadZ + 2.0f, x, y, z + 2.0f, checkDynLos);
+
+                PathInfo path(pTarget);
+                path.calculate(x, y, z);
+
+                Vector3 const reached = path.getActualEndPosition();
+                float const shortfall = std::sqrt((reached.x - x) * (reached.x - x) +
+                                                  (reached.y - y) * (reached.y - y) +
+                                                  (reached.z - z) * (reached.z - z));
+
+                PSendSysMessage("spot r=%.0f bearing=%.0f x=%.2f y=%.2f z=%.2f walk=%.1f afterstep=%d pathtype=0x%x shortfall=%.1f",
+                    radius, sign * float(step) * bearingStep * 180.0f / M_PI_F,
+                    x, y, z, pTarget->GetDistance2d(x, y), holdsAfterStep ? 1 : 0,
+                    uint32(path.getPathType()), shortfall);
+
+                if (++found >= 24)
+                {
+                    SendSysMessage("cover truncated");
+                    return true;
+                }
+            }
+        }
+    }
+
+    PSendSysMessage("cover spots=%u", found);
+    return true;
+}
+
 // .harness rewardquest <character> <quest>
 // Grants a quest as though the character had walked up to the ender and handed it in.
 //

@@ -44,6 +44,16 @@ struct DungeonCreatureTactic
     // Only ever used to push a bot further out, never to pull one in: a standoff shorter than the
     // default would be a bot walking towards something, and nothing in this table is worth that.
     float rangedStandoff;
+
+    // One spell of this creature's that a bot aimed at is better off stepping out of sight of than
+    // eating. Zero, which is every creature without an entry here, leaves the bot standing still.
+    //
+    // Has to be named rather than inferred, because the three things that qualify a spell are not
+    // in its own data. It must be aimed at a single unit, since one bot moving cannot take a party
+    // wide spell away from the party. It must have enough cast time left to notice it, walk out of
+    // sight and be back before the next one. And the fight has to be one where walking out of the
+    // caster's sight is possible at all, which is a fact about the room and not about the spell.
+    uint32 breakSightSpellId;
 };
 
 struct DungeonTactics
@@ -80,6 +90,7 @@ struct DungeonTactics
 
     float GetRangedStandoff(uint32 creatureEntry) const;
     bool IsFocusFirst(uint32 creatureEntry) const;
+    uint32 GetBreakSightSpell(uint32 creatureEntry) const;
 };
 
 // The tactics for a map, or nullptr for the great majority of maps that have none. Callers are

@@ -293,6 +293,8 @@ class ChatHandler
         bool HandleHarnessSelectCommand(char* args);
         bool HandleHarnessEnemyCommand(char* args);
         bool HandleHarnessRespawnCommand(char* args);
+        bool HandleHarnessCoverCommand(char* args);
+        bool HandleHarnessGroundCommand(char* args);
         bool HandleHarnessItemsCommand(char* args);
         bool HandleHarnessEquipNewCommand(char* args);
         bool HandleHarnessItemStatsCommand(char* args);

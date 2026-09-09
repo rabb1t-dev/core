@@ -322,6 +322,12 @@ public:
     bool FindSafeDetour(float destX, float destY, float destZ,
                         float& outX, float& outY, float& outZ) const;
 
+    // Somewhere out of one creature's sight, reachable, and no further off than maxDistance, which
+    // is how far the caller has worked out the bot has time to walk. Purely geometric: the decision
+    // to move at all is the caller's.
+    bool FindBreakSightSpot(Unit const* pWatcher, float maxDistance,
+                            float& outX, float& outY, float& outZ) const;
+
     bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();
     bool IsBreakableCrowdControlInRange(float radius, Unit const* pAround = nullptr) const;

@@ -36,6 +36,7 @@
 #include "Chat.h"
 #include "Packets/Loot.h"
 #include "Geometry.h"
+#include "Maps/PathFinder.h"
 #include "Utilities/Random.h"
 
 #include <random>
@@ -265,6 +266,32 @@ static constexpr float PB_DISTANCING_RANGE = 15.0f;
 // the melee floor rather than at the standoff it would like, so this fires only when the bot is
 // genuinely in the swing and not every time a mob drifts a yard nearer than ideal.
 static constexpr float PB_CASTER_MELEE_FLOOR = 8.0f;
+
+// How far out a bot looks for the cast it is supposed to hide from. Wide enough to cover any
+// single target nuke a boss has, and it is only ever asked on a map whose tactics name such a
+// spell, so the sweep is not something an ordinary fight pays for.
+static constexpr float PB_BREAK_SIGHT_SCAN = 50.0f;
+// How much cast has to be left before walking out of sight is worth starting. Under this the bot
+// arrives as the spell lands, having given up its position for nothing.
+static constexpr uint32 PB_BREAK_SIGHT_MIN_WINDOW_MS = 1200;
+// What fraction of the remaining cast is treated as usable for walking. The rest pays for the
+// bot's own reaction, for a path that is longer than the straight line, and for the spline taking
+// a moment to start.
+static constexpr float PB_BREAK_SIGHT_TIME_BUDGET = 0.6f;
+// The shortest move worth making. Below this the bot is shuffling on the spot and cover that
+// close to where it already stands is cover it was already behind.
+static constexpr float PB_BREAK_SIGHT_MIN_MOVE = 4.0f;
+// The health below which a bot stops dodging and stands where it can be healed. A dodge costs
+// nothing but position, right up to the point where position is what the heal needs, and a bot
+// that ducks behind a wall at a tenth of its health has traded one hit it would have survived for
+// a heal it will not.
+static constexpr float PB_BREAK_SIGHT_MIN_HEALTH = 35.0f;
+// The longest a walk to cover may be the only thing a bot is doing. Set past the longest cast
+// worth dodging plus the time to cross the widest ring the search will offer, so it never cuts a
+// genuine walk short, and short enough that a walk which is never going to arrive costs one dodge
+// rather than the fight.
+static constexpr uint32 PB_BREAK_SIGHT_HOLD_MS = 4000;
+
 
 // How badly a hostile cast wants taking away. Ordered, and compared against, so the gaps between
 // them carry no meaning beyond the ordering.
@@ -4393,6 +4420,166 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
 // Deliberately not conditional on being attacked. StepAwayFromHeldAttacker already covers a bot
 // that is being hit and rooted, and waiting to be hit is waiting too long: what kills a clothed
 // character at this range is the cleave that is not aimed at it.
+Unit* PartyBotAI::FindCastToBreakSightFrom() const
+{
+    if (!m_tactics)
+        return nullptr;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_BREAK_SIGHT_SCAN, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy || !pEnemy->IsAlive() || !pEnemy->IsCreature())
+            continue;
+
+        uint32 const spellId = m_tactics->GetBreakSightSpell(pEnemy->GetEntry());
+        if (!spellId)
+            continue;
+
+        Spell* pSpell = pEnemy->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+        if (!pSpell || pSpell->getState() != SPELL_STATE_PREPARING)
+            continue;
+
+        if (!pSpell->m_spellInfo || pSpell->m_spellInfo->Id != spellId)
+            continue;
+
+        // Aimed at this bot and not at whoever is stood next to it. One bot walking away cannot
+        // take the spell off anybody else, so a bot that is not the target has a position to lose
+        // here and nothing to win.
+        if (pSpell->m_targets.getUnitTargetGuid() != me->GetObjectGuid())
+            continue;
+
+        // Already behind something. The cast is going to fail where the bot stands, and moving now
+        // could only walk it back into sight.
+        if (!pEnemy->IsWithinLOSInMap(me))
+            continue;
+
+        if (pSpell->GetCastedTime() < PB_BREAK_SIGHT_MIN_WINDOW_MS)
+            continue;
+
+        return pEnemy;
+    }
+
+    return nullptr;
+}
+
+// Walk out of sight of a cast rather than eat it.
+//
+// This is what a player does to Archmage Arugal, and the reason it works is that the sight check on
+// a spell is not made once when the cast starts. Spell::cast re-runs CheckCast when the cast
+// completes, and the unit target branch of it refuses SPELL_FAILED_LINE_OF_SIGHT for any spell
+// without SPELL_ATTR_EX2_IGNORE_LINE_OF_SIGHT. So a three second cast that started with the bot in
+// the open fails outright if the bot is behind a wall three seconds later.
+//
+// Deliberately an individual dodge and not the party-wide version of the tactic. Only the bot the
+// spell names moves, which keeps this out of the business of coordinating forty positions, and
+// means at most one member of the group is ever out of position for it. The party-wide version --
+// everybody stacked behind one wall while the tank holds the boss at the corner -- needs a place to
+// stand that is a fact about the room, and nothing here knows the room.
+//
+// Ordered after InterruptHostileCasters in the tick on purpose. Taking the cast away is strictly
+// better than dodging it, since it costs no position and no uptime, so a bot that can interrupt has
+// already tried by the time this is reached.
+bool PartyBotAI::TakeCoverFromCast()
+{
+    if (!m_tactics)
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+
+    // A walk already under way is the whole of the tick: the point of it is to be somewhere else,
+    // and standing still halfway to cover to cast something is how a bot ends up eating the spell
+    // it set out to dodge.
+    if (m_breakSightSince &&
+        WorldTimer::getMSTimeDiff(m_breakSightSince, now) < PB_BREAK_SIGHT_HOLD_MS &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return true;
+
+    m_breakSightSince = 0;
+
+    // Ranged and healers only, which is the same line BackOutOfMeleeRange draws and for a harder
+    // reason. Measured: a five man that let melee dodge wiped Arugal at a hundred percent health,
+    // with every one of the four dodges taken by a melee bot. Arugal carries Void Bolt twice, on a
+    // five to seven second timer while somebody is in melee and a one second timer while nobody is,
+    // so a melee bot stepping out of melee to dodge one cast buys five more, each of which sends
+    // somebody else out of melee. Nobody attacks and the group loses to a boss it out-damages.
+    //
+    // A bot that fights from thirty yards has no such trade to make: the dodge moves it within its
+    // own range and costs it a cast, not its uptime.
+    if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
+        return false;
+
+    if (m_holdPosition || IsInDuel())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE) || me->IsTaxiFlying())
+        return false;
+
+    Unit* pCaster = FindCastToBreakSightFrom();
+    if (!pCaster)
+        return false;
+
+    // A heal already in the air outranks the dodge. Going out of sight now loses the heal as well,
+    // which leaves the bot worse off than if it had stood still and taken the hit.
+    if (GetIncomingHeals(me) > 0)
+        return false;
+
+    // And below the floor the bot stops dodging altogether and stands where it can be healed. A
+    // dodge costs nothing but position right up to the point where position is what the next heal
+    // needs.
+    if (me->GetHealthPercent() < PB_BREAK_SIGHT_MIN_HEALTH)
+        return false;
+
+    // A heal of its own is worth more than the hit. Anything else is not: moving cancels the cast,
+    // and a nuke given up is cheaper than two hundred and fifty damage taken.
+    if (Spell const* pOwnCast = me->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+    {
+        if (pOwnCast->m_spellInfo && pOwnCast->m_spellInfo->IsHealSpell())
+            return false;
+    }
+
+    Spell* pSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell)
+        return false;
+
+    uint32 const remaining = pSpell->GetCastedTime();
+    float const budget = float(remaining) / 1000.0f * PB_BREAK_SIGHT_TIME_BUDGET;
+    float const reach = me->GetSpeed(MOVE_RUN) * budget;
+
+    // Not enough cast left to get anywhere. Arriving as the spell lands would mean giving up the
+    // position and taking the hit as well.
+    if (reach < PB_BREAK_SIGHT_MIN_MOVE)
+        return false;
+
+    float x, y, z;
+    if (!FindBreakSightSpot(pCaster, reach, x, y, z))
+        return false;
+
+    if (!me->IsStopped())
+        me->StopMoving();
+
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+    NoteCombatMovement();
+
+    // Zero is the "no walk" value, so a tick counter that happens to land on it borrows the next
+    // millisecond rather than releasing the bot on the following tick.
+    m_breakSightSince = now ? now : 1;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] breaksight bot='%s' role=%s hp=%.0f%% took cover from '%s' casting "
+                 "'%s' with %ums left, %.1fy to (%.1f %.1f)",
+                 me->GetName(), GetRoleName(GetRole()), me->GetHealthPercent(),
+                 pCaster->GetName(),
+                 pSpell->m_spellInfo ? pSpell->m_spellInfo->SpellName[0].c_str() : "something",
+                 remaining, me->GetDistance2d(x, y), x, y);
+    }
+
+    return true;
+}
+
 bool PartyBotAI::BackOutOfMeleeRange()
 {
     if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
@@ -4608,6 +4795,12 @@ bool PartyBotAI::RecoverLineOfSight()
     if (!me->IsStopped())
         me->StopMoving();
     me->GetMotionMaster()->Clear(false, true);
+    // Idle before anything conditional, because the clear above takes the default generator with
+    // it and the SafeMoveTo below has a failure path. Leaving on that path used to leave the bot
+    // with no movement generator at all, which the next MotionMaster::UpdateMotion answered with an
+    // assertion, an uncaught throw, and a dead world thread. Every other clear in this file pushes
+    // idle on the next line for the same reason; this was the one that did not.
+    me->GetMotionMaster()->MoveIdle();
 
     // The same rule the rest of the movement obeys, with the same escape: a firing line that wakes
     // the next room is not a firing line, but going a few degrees wide of the thing in the way is
@@ -6157,6 +6350,11 @@ void PartyBotAI::UpdateInCombatAI()
     }
 
     if (CheckForDispelTargets())
+        return;
+
+    // Behind the interrupt, which is the better answer to the same cast, and ahead of everything
+    // that would rather stand still. See TakeCoverFromCast.
+    if (TakeCoverFromCast())
         return;
 
     // Ahead of every class rotation, because half of them have their own version of this rule and

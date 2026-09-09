@@ -50,8 +50,79 @@ enum WailingCavernsCreatures
 // these are fought in are small and the extra yard buys nothing but another chance of a wall.
 constexpr float WC_MELEE_AOE_STANDOFF = 14.0f;
 
+// Shadowfang Keep.
+enum ShadowfangKeepCreatures
+{
+    NPC_ARCHMAGE_ARUGAL         = 4275,
+};
+
+enum ShadowfangKeepSpells
+{
+    // Arugal's only cast worth moving for, and the only one of his three that can be moved for at
+    // all. Three seconds, single target, two hundred and twenty to two hundred and fifty eight
+    // shadow damage at a level where the tank has well under two thousand health, and no
+    // SPELL_ATTR_EX2_IGNORE_LINE_OF_SIGHT, so the sight check at the end of the cast applies.
+    //
+    // The other two are instant and cannot be dodged by anybody: Arugal's Curse (7621) picks a
+    // random player, and Thundershock (7803) hits everything around him.
+    //
+    // Frequency is the reason this matters more here than the raw damage suggests. His spell list
+    // carries Void Bolt twice, once with CF_ONLY_IN_MELEE on a five to seven second timer and once
+    // with CF_NOT_IN_MELEE on a one second timer. Kiting him without cover is therefore far worse
+    // than standing still; kiting him into cover is the whole of the fight.
+    SPELL_VOID_BOLT             = 7588,
+};
+
+// Why there is no fight position for Arugal, having measured one and tried it.
+//
+// The measurement said there should be. Over his whole room, terrain and vmaps: standing anywhere
+// on his platform nothing breaks his sight except the eleven yard drop off its edge, which is not a
+// dodge; standing on the sunken floor below it there are two dozen places within six yards that do,
+// and the floor is out of sight of the platform to begin with. So the tank was made to walk him down
+// the stairs, a melee length at a time, and it did -- the legs descend one fifty one, one forty
+// eight, one forty five, and it arrives.
+//
+// Then he leaves. He carries three separate Shadow Ports, 7136 to (-85.8 2150.2 155.6), 7586 to
+// (-105.9 2154.9 156.4) and 7587 to (-102.9 2124.3 155.6), on timers of twenty two, thirty four and
+// forty eight seconds and again whenever a root wears off. Every one of the three is up on the
+// raised level and not one is on the floor, so the drag is undone within seconds of finishing and
+// the tank spends the fight walking him down a staircase he ports back up. Two attempts, five drag
+// legs each, and the fight ends up further from the position than it started.
+//
+// Which is the mechanical version of the advice every guide to him gives: do not chase him, he
+// teleports back. Nothing can hold him, so nothing here tries to.
+
 DungeonTactics const g_dungeonTactics[] =
 {
+    {
+        MAP_SHADOWFANG_KEEP,
+        "Shadowfang Keep",
+
+        // Nothing in the instance sleeps, charms or fears often enough to cost a shaman its earth
+        // totem for the whole run. The one reliable fear belongs to Sever, who is not on the way
+        // to anything, and Tremor would do nothing at all for the rest of it.
+        /* wantsTremorTotem */ false,
+
+        /* escortNpcEntry */ 0,
+        /* escortGuardRadius */ 0.0f,
+
+        /* focusFirst */ {},
+
+        /* creatures */
+        {
+            {
+                NPC_ARCHMAGE_ARUGAL,
+                // No standoff of its own. Thundershock reaches whoever is near him and Void Bolt
+                // reaches everybody, so there is no distance that helps, and his room is a sunken
+                // floor with a raised platform where pushing the casters out means pushing them
+                // off it.
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ SPELL_VOID_BOLT,
+
+            },
+        },
+    },
+
     {
         MAP_WAILING_CAVERNS,
         "Wailing Caverns",
@@ -77,12 +148,12 @@ DungeonTactics const g_dungeonTactics[] =
             // Grasping Vines: roots and stuns everything within ten yards, and cannot be
             // interrupted. Verdan also has the largest health pool in the instance, so the fight
             // lasts long enough for a rooted healer to matter.
-            { NPC_VERDAN_THE_EVERLIVING, WC_MELEE_AOE_STANDOFF },
+            { NPC_VERDAN_THE_EVERLIVING, WC_MELEE_AOE_STANDOFF, 0 },
             // Thundercrack, plus a fight fought while adds are still arriving.
-            { NPC_MUTANUS_THE_DEVOURER, WC_MELEE_AOE_STANDOFF },
+            { NPC_MUTANUS_THE_DEVOURER, WC_MELEE_AOE_STANDOFF, 0 },
             // Thunderclap, which is the one thing separating Pythas from the other three
             // Fanglords.
-            { NPC_LORD_PYTHAS, WC_MELEE_AOE_STANDOFF },
+            { NPC_LORD_PYTHAS, WC_MELEE_AOE_STANDOFF, 0 },
         },
     },
 };
@@ -96,6 +167,15 @@ float DungeonTactics::GetRangedStandoff(uint32 creatureEntry) const
             return tactic.rangedStandoff;
 
     return 0.0f;
+}
+
+uint32 DungeonTactics::GetBreakSightSpell(uint32 creatureEntry) const
+{
+    for (auto const& tactic : creatures)
+        if (tactic.creatureEntry == creatureEntry)
+            return tactic.breakSightSpellId;
+
+    return 0;
 }
 
 bool DungeonTactics::IsFocusFirst(uint32 creatureEntry) const

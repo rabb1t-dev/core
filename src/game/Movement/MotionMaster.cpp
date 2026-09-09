@@ -178,7 +178,26 @@ void MotionMaster::UpdateMotion(uint32 diff)
     if (m_owner->HasUnitState(UNIT_STATE_CAN_NOT_MOVE))
         return;
 
-    MANGOS_ASSERT(!empty());
+    // An empty stack is a bug in whoever emptied it, but it is not worth the world for. This used
+    // to be MANGOS_ASSERT(!empty()), which throws, which nothing on the map update thread catches,
+    // so one unit with no movement generator aborted the process and took every player on the realm
+    // with it. Three times in this log.
+    //
+    // Clear(reset=false, all=true) is what leaves it empty: DirectClean pops the default generator
+    // along with the rest and only re-initialises inside its !all branch, so a caller that clears
+    // and then fails to push -- one early return on a path that meant to move -- hands the next
+    // tick an empty stack. The delayed half of the same clean already self-heals here, further down
+    // this function, where m_expList is drained. This is the direct half getting the same treatment.
+    if (empty())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_ERROR,
+                 "MotionMaster: %s had an empty movement stack on update; reinitialising it. "
+                 "Something cleared all generators without pushing one.",
+                 m_owner->GetGuidStr().c_str());
+        Initialize();
+        return;
+    }
+
     m_cleanFlag |= MMCF_UPDATE;
 
     if (!top()->Update(*m_owner, diff))
@@ -217,7 +236,11 @@ void MotionMaster::UpdateMotionAsync(uint32 diff)
     if (m_owner->HasUnitState(UNIT_STATE_CAN_NOT_MOVE))
         return;
 
-    MANGOS_ASSERT(!empty());
+    // See UpdateMotion. Left to the synchronous update to report and repair, since it runs for the
+    // same unit on the same tick and doing it in both would log the same fault twice.
+    if (empty())
+        return;
+
     m_cleanFlag |= MMCF_UPDATE;
 
     top()->UpdateAsync(*m_owner, diff);

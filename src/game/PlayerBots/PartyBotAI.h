@@ -115,6 +115,14 @@ public:
     // this and the other half had none.
     bool BackOutOfMeleeRange();
 
+    // A cast aimed at this bot that the instance tactics say to break line of sight against, or
+    // null when there is none, when it is aimed at somebody else, or when the bot is already out
+    // of sight and so has nothing left to do about it.
+    Unit* FindCastToBreakSightFrom() const;
+    // Step out of sight of it. True whenever the bot is walking to cover or already there, so that
+    // the rest of the tick is left alone until it is done.
+    bool TakeCoverFromCast();
+
     bool StepAwayFromHeldAttacker();
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
@@ -271,6 +279,12 @@ public:
     // alongside it because a bot changes maps without being reinitialised.
     DungeonTactics const* m_tactics = nullptr;
     uint32 m_tacticsMapId = 0;
+    // When the walk to cover was started, or zero when there is no such walk. Needed because a
+    // point move in flight is not on its own evidence of one: half this class asks for point moves,
+    // and hiding behind a wall is the only one that is allowed to be the whole of a tick. Aged out
+    // rather than trusted, so a walk that cannot finish -- shoved, rooted, or sent at a spot the
+    // mesh changed its mind about -- releases the bot back to fighting on its own.
+    uint32 m_breakSightSince = 0;
     // What the bot last could not see, and for how many ticks running. A bot standing behind rock
     // is the single most common wasted tick in a cave instance, and the count is what tells a
     // corner that will clear itself apart from one that will not.

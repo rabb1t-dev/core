@@ -108,6 +108,8 @@ ChatCommand * ChatHandler::getCommandTable()
         { "select",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessSelectCommand,       "", nullptr },
         { "enemy",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessEnemyCommand,        "", nullptr },
         { "respawn",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessRespawnCommand,      "", nullptr },
+        { "cover",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessCoverCommand,        "", nullptr },
+        { "ground",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessGroundCommand,       "", nullptr },
         { "items",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessItemsCommand,        "", nullptr },
         { "wear",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessWearCommand,         "", nullptr },
         { "stow",       SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessStowCommand,         "", nullptr },
