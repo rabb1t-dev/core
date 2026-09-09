@@ -73,6 +73,10 @@ public:
     // shared bot code makes for itself, which are buffs and heals, carry on unchanged.
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     bool IsOverThreatCeiling(Unit const* pTarget) const;
+    // Which tank owns which target, so that a raid's worth of tanks does not all claim the
+    // exemptions written for the single tank of a five man.
+    bool IsAssignedTankFor(Unit const* pTarget) const;
+
     bool IsInOpeningRamp(Unit const* pTarget) const;
     void HoldOpeningSwings(Unit const* pTarget);
     float GetThreatPullRatio(Unit const* pTarget) const;
@@ -106,6 +110,11 @@ public:
     Creature* FindGuardedEscort() const;
     Unit* SelectEscortAttackTarget() const;
     bool RecoverLineOfSight();
+    // One rule for every caster and healer: do not stand in a melee arc a raid boss can swing
+    // through. Shared rather than per class, because half the rotations had their own version of
+    // this and the other half had none.
+    bool BackOutOfMeleeRange();
+
     bool StepAwayFromHeldAttacker();
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
@@ -247,6 +256,11 @@ public:
     // What the hold is waiting for. Empty for a hold asked for on its own, which then waits only for
     // the order to release.
     ObjectGuid m_pullTargetGuid;
+    // Where the close-in walk is currently headed, so it is re-issued when the mob moves and
+    // not on every tick. Unset until the walk has been aimed once.
+    float m_pullCloseX = 0.0f;
+    float m_pullCloseY = 0.0f;
+    bool m_pullCloseAimed = false;
     PartyBotPullPhase m_pullPhase = PULL_PHASE_NONE;
     time_t m_pullSince = 0;
     // When the shot currently being waited on was asked for, so that a queued autorepeat which is

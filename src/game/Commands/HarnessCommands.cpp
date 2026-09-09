@@ -34,6 +34,7 @@
 #include "MasterPlayer.h"
 #include "Mail/Mail.h"
 #include "ItemEvaluator.h"
+#include "MoveSpline.h"
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
@@ -349,6 +350,16 @@ bool ChatHandler::HandleHarnessPathCommand(char* args)
                   (actualEnd.z - z) * (actualEnd.z - z)),
         arrived);
 
+    // The waypoints themselves, which is the difference between knowing a route exists and
+    // knowing where it goes. Molten Core's first pull is the case that wanted this: the raid
+    // needs a staging spot roughly thirty yards from the pack, every straight-line candidate
+    // between twenty five and forty five yards out is off the mesh because the direct line
+    // crosses lava, and the only honest way to find a spot on the actual walkable ledge is to
+    // read the ledge off a route that already crosses it.
+    for (size_t i = 0; i < points.size(); ++i)
+        PSendSysMessage("point i=%u x=%.2f y=%.2f z=%.2f",
+            uint32(i), points[i].x, points[i].y, points[i].z);
+
     return true;
 }
 
@@ -522,6 +533,194 @@ bool ChatHandler::HandleHarnessDespawnCommand(char* args)
 
     PSendSysMessage("despawn entry=%u range=%.0f removed=%u",
         entry, range, pTarget->DespawnNearCreaturesByEntry(entry, range));
+    return true;
+}
+
+// .harness select <character> <entry> [range]
+// Point a character's selection at the nearest live creature of an entry.
+//
+// This is `.harness despawn`'s problem in the other direction. A command arriving over SOAP has
+// selected nothing, and the commands that matter most for watching a fight begin -- `.partybot
+// pull` above all -- read a selection and refuse without one. Every alternative is worse: a
+// summoned punching bag is not the pull being tested, and a pull driven by hand from a client
+// cannot be repeated identically, which is the whole point of running one twice.
+//
+// Reports the distance as well as the guid, because "the nearest Molten Giant" is only the mob
+// intended while the character is standing where the run meant to put it, and a teleport that
+// silently landed somewhere else otherwise reads as a pull that went wrong.
+bool ChatHandler::HandleHarnessSelectCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Syntax: .harness select <character> <entry> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 200.0f;
+    ExtractFloat(&args, range);
+
+    Creature* pCreature = pTarget->FindNearestCreature(entry, range, true);
+    if (!pCreature)
+    {
+        PSendSysMessage("select none entry=%u range=%.0f", entry, range);
+        return true;
+    }
+
+    pTarget->SetSelectionGuid(pCreature->GetObjectGuid());
+
+    PSendSysMessage("select entry=%u guid=%u dist=%.1f health=%u maxhealth=%u incombat=%u name=%s",
+        entry, pCreature->GetGUIDLow(), pTarget->GetDistance(pCreature),
+        pCreature->GetHealth(), pCreature->GetMaxHealth(),
+        pCreature->IsInCombat() ? 1 : 0, pCreature->GetName());
+    return true;
+}
+
+// .harness enemy <character> <entry> [range]
+// Every creature of an entry near this character, one line each, live and dead.
+//
+// What a pull is actually judged on, and judged per creature rather than in aggregate. The
+// mob's health over time answers "did they kill it", its combat timer answers "is this the
+// fight we started", and its victim answers "is the tank holding it" -- none of the three
+// readable from any character's own info line, because a stalemate and a kill look identical
+// from the raid's side: nobody dies in either.
+//
+// All of them and not just the nearest, which was the first version of this and was wrong in a
+// way that reported a success as a failure. Molten Core's first pull is two giants fifteen
+// yards apart; the nearest-only reading followed the first one to its death, switched silently
+// to the second at full health, and called a clean kill a raid that had achieved nothing. The
+// guid on every line is what lets the caller follow the creature it actually pulled.
+bool ChatHandler::HandleHarnessEnemyCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Syntax: .harness enemy <character> <entry> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 300.0f;
+    ExtractFloat(&args, range);
+
+    std::list<Creature*> creatures;
+    pTarget->GetCreatureListWithEntryInGrid(creatures, entry, range);
+
+    PSendSysMessage("enemies entry=%u range=%.0f count=%u", entry, range,
+        uint32(creatures.size()));
+
+    for (Creature* pCreature : creatures)
+    {
+        Unit const* pVictim = pCreature->GetVictim();
+
+        PSendSysMessage("enemy guid=%u alive=%u health=%u maxhealth=%u percent=%.1f "
+                        "incombat=%u combat=%u dist=%.1f attackers=%u victim=%s",
+            pCreature->GetGUIDLow(),
+            pCreature->IsAlive() ? 1 : 0,
+            pCreature->GetHealth(), pCreature->GetMaxHealth(), pCreature->GetHealthPercent(),
+            pCreature->IsInCombat() ? 1 : 0,
+            uint32(pCreature->IsInCombat() ? pCreature->GetCombatTime(false) : 0),
+            pTarget->GetDistance(pCreature),
+            uint32(pCreature->GetAttackers().size()),
+            pVictim ? pVictim->GetName() : "-");
+    }
+
+    return true;
+}
+
+// .harness respawn <character> <entry> [range]
+// Put every creature of an entry back the way it spawned: alive, whole, home, out of combat.
+//
+// The opposite of `.harness despawn`, and needed for the same reason plus one more. A suite that
+// pulls the same pack twice has to get the pack back, and in a raid instance the respawn timer
+// is measured in tens of minutes. The obvious alternative is a fresh instance, and that does
+// not work either: an instance is not recycled while anything is standing in it and is unloaded
+// on a delay after that, so a run that dismisses its raid and walks the leader out and back
+// lands in the same copy with the same corpses on the floor. One run scored that as a pass.
+//
+// Whole rather than merely alive. A creature that evaded back to its spawn point is not dead,
+// so respawning it does nothing, and it can still be sitting on half health with the last
+// fight's debuffs on it -- which makes the next pull easier than the one before by an amount
+// nobody recorded. Reports what it had to do to each, so a run can say which.
+bool ChatHandler::HandleHarnessRespawnCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry))
+    {
+        SendSysMessage("Syntax: .harness respawn <character> <entry> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 300.0f;
+    ExtractFloat(&args, range);
+
+    std::list<Creature*> creatures;
+    pTarget->GetCreatureListWithEntryInGrid(creatures, entry, range);
+
+    uint32 raised = 0;
+    uint32 healed = 0;
+
+    for (Creature* pCreature : creatures)
+    {
+        if (!pCreature->IsAlive())
+        {
+            // The corpse first. Respawn on its own leaves a creature that is alive again and
+            // still has a corpse lying under it in every client's world state.
+            pCreature->RemoveCorpse();
+            pCreature->Respawn();
+            ++raised;
+            continue;
+        }
+
+        bool touched = false;
+
+        if (pCreature->IsInCombat())
+        {
+            pCreature->CombatStop(true);
+            touched = true;
+        }
+
+        pCreature->RemoveAllAuras();
+
+        if (pCreature->GetHealth() != pCreature->GetMaxHealth())
+        {
+            pCreature->SetHealth(pCreature->GetMaxHealth());
+            touched = true;
+        }
+
+        // Home, and told to go there rather than teleported, so that anything watching sees the
+        // same reset a real evade produces.
+        pCreature->GetMotionMaster()->MoveTargetedHome();
+
+        if (touched)
+            ++healed;
+    }
+
+    PSendSysMessage("respawn entry=%u range=%.0f found=%u raised=%u reset=%u",
+        entry, range, uint32(creatures.size()), raised, healed);
     return true;
 }
 
@@ -1402,6 +1601,48 @@ bool ChatHandler::HandleHarnessInfoCommand(char* args)
         if (CombatBotBaseAI const* pAI = dynamic_cast<CombatBotBaseAI const*>(pEntry->ai.get()))
             PSendSysMessage("bot role=%u spec=%s", uint32(pAI->m_role),
                 pAI->m_specName.empty() ? "-" : pAI->m_specName.c_str());
+    }
+
+    // Why a bot is standing still, which the motion type above cannot answer on its own. A
+    // chase generator is installed and the bot has not moved for thirty seconds is the same
+    // reading as a chase working perfectly, and the difference is in here: `orders` is the
+    // suspension of the aggro rule that a pull depends on, `avoidaggro` is whether that rule
+    // applies to this bot at all, and `spline` says whether any movement was ever launched.
+    // Diagnosing one stuck puller without these took an afternoon of reading the generator.
+    PSendSysMessage("movement orders=%u avoidaggro=%u moving=%u stopped=%u spline=%u "
+                    "state=0x%x rooted=%u casterchase=%.1f",
+        pTarget->HasAttackOrders() ? 1 : 0,
+        pTarget->AvoidsAggroPulls() ? 1 : 0,
+        pTarget->IsMoving() ? 1 : 0,
+        pTarget->IsStopped() ? 1 : 0,
+        pTarget->movespline->Finalized() ? 1 : 0,
+        pTarget->GetUnitState(),
+        pTarget->HasUnitState(UNIT_STATE_ROOT) ? 1 : 0,
+        pTarget->GetMinChaseDistance());
+
+    // Weapon and defense skill, which decide whether a swing lands at all and were invisible
+    // from every other angle. A level sixty in full blues whose Swords sits at 10 of 300 looks
+    // identical to a properly geared one everywhere else in this command, and against a level
+    // sixty three creature defending at 315 it misses very nearly every swing: that is a raid
+    // whose melee made six percent of its damage and whose tank made three hundred points in
+    // ninety-five seconds and so held nothing. One line per level-capped skill the character
+    // has, `skill name=<id> value=<v> max=<m> cap=<what its level allows>`.
+    uint32 const skillCapForLevel = pTarget->GetSkillMaxForLevel();
+    for (uint32 skillId = 1; skillId < sSkillLineStore.GetNumRows(); ++skillId)
+    {
+        SkillLineEntry const* pSkillLine = sSkillLineStore.LookupEntry(skillId);
+        if (!pSkillLine)
+            continue;
+
+        if (pSkillLine->categoryId != SKILL_CATEGORY_WEAPON && skillId != SKILL_DEFENSE)
+            continue;
+
+        if (!pTarget->HasSkill(skillId))
+            continue;
+
+        PSendSysMessage("skill id=%u value=%u max=%u cap=%u name=%s", skillId,
+            pTarget->GetSkillValue(skillId), pTarget->GetSkillValuePure(skillId),
+            skillCapForLevel, pSkillLine->name[0]);
     }
 
     Group* pGroup = pTarget->GetGroup();

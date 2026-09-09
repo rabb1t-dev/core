@@ -4,6 +4,8 @@
 #include "Player.h"
 #include "Bag.h"
 #include "Group.h"
+#include "VMapFactory.h"
+#include "GridMap.h"
 #include "Totem.h"
 #include "PlayerBotMgr.h"
 #include "Opcodes.h"
@@ -2469,12 +2471,15 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
             if (tankOnly && !isTank)
                 continue;
 
-            // Avoid all healers picking same target.
-            if (pTarget && !isTank && AreOthersOnSameTarget(pMember->GetObjectGuid(), false, true))
-                continue;
-
-            // Including this bot's own cast already in flight.
-            if (IsAlreadyHealing(pMember->GetObjectGuid()))
+            // Skip anyone whose missing health is already covered by heals in flight, this
+            // bot's own included. Two things were wrong with what this replaced. It asked
+            // whether anyone else was casting at all rather than how much was coming, so a
+            // single Renew on a tank at ten percent counted as handled; and it was guarded on
+            // `pTarget`, which meant the very first damaged member considered was exempt from
+            // the check entirely, so with twelve healers iterating the same group in the same
+            // order, all twelve picked the same member. Tanks were exempt on purpose, which is
+            // right in a five man and is a dozen healers stacked on one warrior in a raid.
+            if (pMember->GetHealth() + GetIncomingHeals(pMember) >= pMember->GetMaxHealth())
                 continue;
 
             // The tank is worth starting on a little sooner, but never above what the caller
@@ -2852,26 +2857,101 @@ bool CombatBotBaseAI::IsValidBuffTarget(Unit const* pTarget, SpellEntry const* p
     return true;
 }
 
-Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSpellEntry) const
+// Whether somebody else is already putting this buff where it is about to be put.
+//
+// A raid buff is cast on one member and lands on that member's whole subgroup, so two casters
+// picking the same subgroup is not merely one wasted cast: at Prayer of Fortitude's thirty four
+// hundred mana it is most of a priest's bar. Five priests scanning the same group in the same
+// order in the same second all chose the same first unbuffed member, and did so again on the
+// next cooldown, and again: sixty of these went out in one forty-six second trash pull with
+// every healer in the raid finishing under twenty percent mana.
+//
+// Asked about the subgroup rather than the exact target, because that is the unit of effect.
+// Matched on the first spell in the chain so a priest holding rank two does not read a rank one
+// cast as somebody else's business.
+bool CombatBotBaseAI::IsBuffAlreadyIncoming(Player const* pTarget,
+                                            SpellEntry const* pSpellEntry) const
 {
     Group* pGroup = me->GetGroup();
-    if (pGroup)
+    if (!pGroup || !pTarget || !pSpellEntry)
+        return false;
+
+    uint32 const chain = sSpellMgr.GetFirstSpellInChain(pSpellEntry->Id);
+    uint8 const subGroup = pTarget->GetSubGroup();
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
-        for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me)
+            continue;
+
+        for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_MAX_SPELL; ++i)
         {
-            if (Player* pMember = itr->getSource())
-            {
-                if (me->IsValidHelpfulTarget(pMember) &&
-                   !pMember->IsGameMaster() &&
-                    IsValidBuffTarget(pMember, pSpellEntry) &&
-                    me->IsWithinLOSInMap(pMember) &&
-                    me->IsWithinDist(pMember, 30.0f))
-                    return pMember;
-            }
+            Spell const* pSpell = pMember->GetCurrentSpell(CurrentSpellTypes(i));
+            if (!pSpell || !pSpell->m_spellInfo)
+                continue;
+
+            if (sSpellMgr.GetFirstSpellInChain(pSpell->m_spellInfo->Id) != chain)
+                continue;
+
+            // A self-cast buff carries no explicit unit target.
+            ObjectGuid const castAt = pSpell->m_targets.getUnitTargetGuid();
+            Player const* pCastTarget = castAt ? sObjectAccessor.FindPlayer(castAt) : pMember;
+            if (pCastTarget && pCastTarget->GetSubGroup() == subGroup)
+                return true;
         }
     }
 
-    return nullptr;
+    return false;
+}
+
+// Which subgroup a buffer should reach for first, so that several of them spread out instead of
+// queueing behind each other. Seeded off the caster's own guid because that is the only thing in
+// reach that every bot can compute for itself and no two agree on, and the alternative -- all of
+// them starting at subgroup one -- is what produced the pile-up above.
+uint8 CombatBotBaseAI::GetBuffSubGroupOrder(uint8 subGroup) const
+{
+    uint8 const offset = uint8(me->GetGUIDLow() % MAX_RAID_SUBGROUPS);
+    return uint8((subGroup + MAX_RAID_SUBGROUPS - offset) % MAX_RAID_SUBGROUPS);
+}
+
+Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSpellEntry) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    // Ranked rather than taken first-past-the-post. First-past-the-post is the same answer for
+    // every buffer in the raid, which is how five priests came to cast the same three thousand
+    // four hundred mana buff at the same member in the same second.
+    Player* pBest = nullptr;
+    uint8 bestOrder = 0;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+
+        if (!me->IsValidHelpfulTarget(pMember) ||
+            pMember->IsGameMaster() ||
+            !IsValidBuffTarget(pMember, pSpellEntry) ||
+            !me->IsWithinLOSInMap(pMember) ||
+            !me->IsWithinDist(pMember, 30.0f))
+            continue;
+
+        if (IsBuffAlreadyIncoming(pMember, pSpellEntry))
+            continue;
+
+        uint8 const order = GetBuffSubGroupOrder(pMember->GetSubGroup());
+        if (!pBest || order < bestOrder)
+        {
+            pBest = pMember;
+            bestOrder = order;
+        }
+    }
+
+    return pBest;
 }
 
 Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSingleSpellEntry, SpellEntry const* pGroupSpellEntry, SpellEntry const*& pSelectedSpellEntry) const
@@ -2893,40 +2973,64 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSingleSpellEntry, S
         return SelectBuffTarget(pSingleSpellEntry);
     }
 
-    Player* pFirstMissingMember = nullptr;
-    uint8 missingMemberCount = 0;
+    // Counted per subgroup rather than across the raid, because a subgroup is what the group
+    // version of one of these spells actually covers: it lands on the target and the target's
+    // party, not on everyone. Across a raid the old count answered "more than one member is
+    // missing this" with thirty, and then cast the group version at whichever member the group
+    // happened to list first -- correct for the five it reached, and re-bought on every cooldown
+    // for the other thirty five, who were never in range of it and never would be.
+    Player* pBest = nullptr;
+    uint8 bestOrder = 0;
+    uint8 bestSubGroupMissing = 0;
+
     Group* pGroup = me->GetGroup();
     if (pGroup)
     {
+        std::map<uint8 /*subgroup*/, std::pair<Player*, uint8 /*missing*/>> perSubGroup;
+
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
-            if (Player* pMember = itr->getSource())
+            Player* pMember = itr->getSource();
+            if (!pMember)
+                continue;
+
+            if (!me->IsValidHelpfulTarget(pMember) ||
+                pMember->IsGameMaster() ||
+                !me->IsWithinLOSInMap(pMember) ||
+                !me->IsWithinDist(pMember, 30.0f) ||
+                !IsValidBuffTarget(pMember, pSingleSpellEntry) ||
+                !IsValidBuffTarget(pMember, pGroupSpellEntry))
+                continue;
+
+            auto& entry = perSubGroup[pMember->GetSubGroup()];
+            if (!entry.first)
+                entry.first = pMember;
+            ++entry.second;
+        }
+
+        for (auto const& itr : perSubGroup)
+        {
+            Player* pCandidate = itr.second.first;
+
+            // Somebody else is already buying this subgroup its buff.
+            if (IsBuffAlreadyIncoming(pCandidate, pGroupSpellEntry) ||
+                IsBuffAlreadyIncoming(pCandidate, pSingleSpellEntry))
+                continue;
+
+            uint8 const order = GetBuffSubGroupOrder(itr.first);
+            if (!pBest || order < bestOrder)
             {
-                if (!me->IsValidHelpfulTarget(pMember) ||
-                    pMember->IsGameMaster() ||
-                    !me->IsWithinLOSInMap(pMember) ||
-                    !me->IsWithinDist(pMember, 30.0f) ||
-                    !IsValidBuffTarget(pMember, pSingleSpellEntry) ||
-                    !IsValidBuffTarget(pMember, pGroupSpellEntry))
-                    continue;
-
-                if (!pFirstMissingMember)
-                    pFirstMissingMember = pMember;
-
-                ++missingMemberCount;
-                if (missingMemberCount > 1)
-                {
-                    pSelectedSpellEntry = pGroupSpellEntry;
-                    return pFirstMissingMember;
-                }
+                pBest = pCandidate;
+                bestOrder = order;
+                bestSubGroupMissing = itr.second.second;
             }
         }
     }
 
-    if (missingMemberCount == 1)
-        pSelectedSpellEntry = pSingleSpellEntry;
+    if (pBest)
+        pSelectedSpellEntry = (bestSubGroupMissing > 1) ? pGroupSpellEntry : pSingleSpellEntry;
 
-    return pFirstMissingMember;
+    return pBest;
 }
 
 Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
@@ -2974,6 +3078,97 @@ CombatBotRoles CombatBotBaseAI::GetEffectiveRole(Player const* pTarget) const
         return ROLE_HEALER;
 
     return IsMeleeWeaponClass(pTarget->GetClass()) ? ROLE_MELEE_DPS : ROLE_RANGE_DPS;
+}
+
+// The one tank the group is relying on to hold what it is fighting, out of however many tanks
+// the roster happens to contain.
+//
+// A five man has one tank and needed none of this. A forty man brought four, and with nothing
+// naming one of them the target's job, all four fought for it: the Molten Core capture has
+// twenty four taunts spent on a single trash giant, split eight, eight, six and two, mostly
+// taking it off each other, and a threat list whose top entry rotated between three casters and
+// two of the tanks. Threat cannot be held by a committee.
+//
+// Chosen by the lowest guid rather than by anything about the fight, because every bot has to
+// reach the same answer independently on the same tick and the guid is the only thing in reach
+// that cannot disagree. Which tank it is matters far less than that they all name the same one.
+Player* CombatBotBaseAI::GetGroupMainTank() const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return (m_role == ROLE_TANK) ? me : nullptr;
+
+    Player* pMain = nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsAlive() || pMember->GetMapId() != me->GetMapId())
+            continue;
+
+        if (GetEffectiveRole(pMember) != ROLE_TANK)
+            continue;
+
+        if (!pMain || pMember->GetGUIDLow() < pMain->GetGUIDLow())
+            pMain = pMember;
+    }
+
+    return pMain;
+}
+
+// Healing already on its way to this unit from the group, this bot's own casts included.
+//
+// A heal lands when the cast finishes, so for the second and a half in between the target's
+// health bar still reads exactly as low as it did when the first healer picked it. With one
+// healer that is a wasted cast now and then. With twelve it is twelve casts into the same
+// health bar: the Molten Core capture has two hundred and seventy nine thousand healing done
+// against seventy thousand damage taken, six healers casting Flash Heal into a target at ninety
+// two percent within the same second, and every healer in the raid at three percent mana by the
+// end of one trash pull. The wipe that followed was a mana wipe.
+//
+// Estimated from base points rather than from a real spell calculation, which would mean
+// running the caster's own bonuses for a number that only has to be good enough to answer
+// "is this deficit already covered". Underestimating is the safe direction: it heals twice.
+int32 CombatBotBaseAI::GetIncomingHeals(Unit const* pTarget) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return 0;
+
+    ObjectGuid const guid = pTarget->GetObjectGuid();
+    int32 incoming = 0;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember)
+            continue;
+
+        for (uint32 i = CURRENT_FIRST_NON_MELEE_SPELL; i < CURRENT_MAX_SPELL; ++i)
+        {
+            Spell const* pSpell = pMember->GetCurrentSpell(CurrentSpellTypes(i));
+            if (!pSpell || !pSpell->m_spellInfo)
+                continue;
+
+            if (!pSpell->m_spellInfo->IsHealSpell())
+                continue;
+
+            // A self-cast heal carries no explicit unit target.
+            ObjectGuid const castAt = pSpell->m_targets.getUnitTargetGuid()
+                                    ? pSpell->m_targets.getUnitTargetGuid()
+                                    : pMember->GetObjectGuid();
+            if (castAt != guid)
+                continue;
+
+            for (uint32 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+            {
+                if (pSpell->m_spellInfo->Effect[eff] == SPELL_EFFECT_HEAL)
+                    incoming += pSpell->m_spellInfo->EffectBasePoints[eff];
+            }
+        }
+    }
+
+    return incoming;
 }
 
 SpellEntry const* CombatBotBaseAI::SelectBlessingForTarget(Player const* pTarget) const
@@ -3144,6 +3339,87 @@ void CombatBotBaseAI::LearnArmorProficiencies()
             break;
         }
     }
+}
+
+// Every weapon and armour proficiency the class can hold. A real level sixty has all of them:
+// they are trained for coppers at low level and nothing about a character's history makes one
+// of them optional, so listing them by hand would only be a list to get wrong. Found instead
+// by their effect, which is what a proficiency spell is.
+//
+// This is not cosmetic. A proficiency spell is what creates the weapon's skill line, and a
+// skill line that does not exist cannot be raised by UpdateSkillsToMaxSkillsForLevel. A
+// roster rogue provisioned at level one and set to sixty therefore went into Molten Core with
+// Swords at 10 of 300 against a creature whose defense is 315, which is a miss on very nearly
+// every swing: the raid's whole melee contingent made six percent of its damage, and its
+// tank made three hundred points in ninety-five seconds and so held nothing.
+void CombatBotBaseAI::LearnWeaponProficiencies()
+{
+    for (uint32 i = 0; i < sObjectMgr.GetMaxSkillLineAbilityId(); ++i)
+    {
+        SkillLineAbilityEntry const* pAbility = sObjectMgr.GetSkillLineAbility(i);
+        if (!pAbility)
+            continue;
+
+        SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(pAbility->spellId);
+        if (!pSpellEntry)
+            continue;
+
+        bool isProficiency = false;
+        for (uint32 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+        {
+            if (pSpellEntry->Effect[eff] == SPELL_EFFECT_WEAPON ||
+                pSpellEntry->Effect[eff] == SPELL_EFFECT_PROFICIENCY)
+            {
+                isProficiency = true;
+                break;
+            }
+        }
+
+        if (!isProficiency)
+            continue;
+
+        // Plate at forty is the one proficiency in the game that is genuinely level gated, and
+        // IsSpellFitByClassAndRace does not read spell level, so this is checked separately.
+        if (pSpellEntry->spellLevel > me->GetLevel())
+            continue;
+
+        if (!me->IsSpellFitByClassAndRace(pSpellEntry->Id))
+            continue;
+
+        if (me->HasSpell(pSpellEntry->Id))
+            continue;
+
+        me->LearnSpell(pSpellEntry->Id, false, false);
+    }
+}
+
+// Bring a character loaded from the database up to what its level says it is.
+//
+// The generated-bot branch of init does all of this and more, but it also unequips every slot
+// and re-rolls the gear, which is exactly what a roster member carrying earned gear must never
+// have done to it. So the parts that are not gear are pulled out here and run on the load path
+// as well: spellbook, proficiencies, talents and skills. Everything here is idempotent, which
+// it has to be, because a roster member is summoned again every raid night.
+//
+// The order matters in one place. Proficiencies come before the skill update, because learning
+// a proficiency is what creates the skill line at a value of one, and the update can only raise
+// lines that already exist.
+void CombatBotBaseAI::MakeCharacterCurrentForLevel()
+{
+    LearnClassSpellsForLevel();
+    LearnArmorProficiencies();
+    LearnWeaponProficiencies();
+
+    // A roster member's level is set to the leader's before the session loads, and LoadFromDB
+    // calls InitTalentForLevel afterwards, which refunds any talent the new level cannot pay
+    // for. Refunding is all it does, so a member that has ever been levelled down and back up
+    // is carrying unspent points and a half-built tree. Re-applying the authored spec is the
+    // only thing that spends them, and ApplyPremadeSpecTemplateToPlayer resets before it
+    // applies, so this converges on the same build every time rather than accreting.
+    if (me->GetFreeTalentPoints())
+        LearnPremadeSpecForClass();
+
+    me->UpdateSkillsToMaxSkillsForLevel();
 }
 
 PlayerPremadeSpecTemplate const* CombatBotBaseAI::FindPremadeSpecByName(std::string const& name) const
@@ -3810,6 +4086,40 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
         if (me->GetHealth() <= powerCost)
             return false;
         return true;
+    }
+
+    // Requirements that cannot become true by trying again, checked here rather than discovered
+    // in CheckCast. A rotation is a list, a refused spell falls through to the next entry, and a
+    // spell refused for a reason that never changes is offered again on every tick for the whole
+    // instance. Two of these were live in the Molten Core captures, both of them a hundred
+    // percent failure rate and both invisible as anything but noise in the log:
+    //
+    //   Backstab needs a dagger in the main hand, and the rogues are a swords build. Thirty
+    //   eight attempts, thirty eight refusals with SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND,
+    //   and the energy spent on nothing because the rotation had already decided this was the
+    //   ability worth spending on.
+    //
+    //   Nature's Grasp is outdoors only and Molten Core is a cave. One druid produced two
+    //   hundred and thirty nine refusals in under a minute -- several a second, every one
+    //   written to the log -- and the flood buried everything else that run was capturing.
+    if (!me->HasItemFitToSpellReqirements(pSpellEntry))
+        return false;
+
+    // Guarded the same way Spell::CheckCast guards it, so the two cannot disagree about a
+    // server with the indoor check switched off.
+    if ((pSpellEntry->Attributes & (SPELL_ATTR_ONLY_OUTDOORS | SPELL_ATTR_ONLY_INDOORS)) &&
+        !me->IsGameMaster() &&
+        sWorld.getConfig(CONFIG_BOOL_VMAP_INDOOR_CHECK) &&
+        VMAP::VMapFactory::createOrGetVMapManager()->isLineOfSightCalcEnabled())
+    {
+        bool const outdoors = me->GetTerrain()->IsOutdoors(
+            me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
+
+        if ((pSpellEntry->Attributes & SPELL_ATTR_ONLY_OUTDOORS) && !outdoors)
+            return false;
+
+        if ((pSpellEntry->Attributes & SPELL_ATTR_ONLY_INDOORS) && outdoors)
+            return false;
     }
 
     if (me->GetPower(powerType) < powerCost)

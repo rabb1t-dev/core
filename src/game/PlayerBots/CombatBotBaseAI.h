@@ -210,6 +210,13 @@ public:
     void AddAllSpellReagents();
     void SummonPetIfNeeded();
     void LearnArmorProficiencies();
+    void LearnWeaponProficiencies();
+
+    // What the generated-bot init branch does minus everything that touches gear, so that a
+    // roster member loaded from the database is the level sixty its level column claims
+    // rather than a level one wearing level sixty gear.
+    void MakeCharacterCurrentForLevel();
+
     void LearnPremadeSpecForClass();
     PlayerPremadeSpecTemplate const* FindPremadeSpecByName(std::string const& name) const;
     PlayerPremadeSpecTemplate const* SelectPremadeSpecTemplate() const;
@@ -236,6 +243,12 @@ public:
     Unit* SelectAttackerDifferentFrom(Unit const* pExcept) const;
     Unit* SelectHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
     Unit* SelectPeriodicHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
+    // Whether another group member is already putting this buff on this subgroup, and the order
+    // this bot should walk the subgroups in. Together they stop every buffer in a raid choosing
+    // the same target on the same tick, which at a raid buff's mana cost is most of a bar.
+    bool IsBuffAlreadyIncoming(Player const* pTarget, SpellEntry const* pSpellEntry) const;
+    uint8 GetBuffSubGroupOrder(uint8 subGroup) const;
+
     Player* SelectBuffTarget(SpellEntry const* pSpellEntry) const;
     Player* SelectBuffTarget(SpellEntry const* pSingleSpellEntry, SpellEntry const* pGroupSpellEntry, SpellEntry const*& pSelectedSpellEntry) const;
     Player* SelectDispelTarget(SpellEntry const* pSpellEntry) const;
@@ -317,6 +330,13 @@ public:
         uint32 manaUsers = 0;
     };
     CombatBotRoles GetEffectiveRole(Player const* pTarget) const;
+
+    // The one tank the group is relying on, so that a raid with four of them still has one
+    // threat list to hold rather than four tanks trading a mob between themselves.
+    Player* GetGroupMainTank() const;
+
+    // Healing already in flight at this unit from anywhere in the group, this bot included.
+    int32 GetIncomingHeals(Unit const* pTarget) const;
     TotemAudience SurveyTotemAudience() const;
     SpellEntry const* SelectTotemForSlot(TotemSlot slot) const;
     bool IsTotemSpellCoveredByAnotherShaman(TotemSlot slot, SpellEntry const* pSpellEntry) const;

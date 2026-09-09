@@ -38,6 +38,20 @@ FAILURE_MARKERS = (
 )
 
 
+def _pairs(text):
+    """One key=value line into a dict, with the trailing value allowed to contain spaces."""
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        out.update(dict(re.findall(r"(\w+)=(\S+)", line)))
+        trailing = re.search(r"(\w+)=([^=]*)$", line)
+        if trailing:
+            out[trailing.group(1)] = trailing.group(2)
+    return out
+
+
 class CommandError(RuntimeError):
     pass
 
@@ -103,6 +117,7 @@ class Harness:
         fields = {}
         members = []
         items = []
+        skills = []
         # Repeated lines are collected rather than merged, since each one describes a different
         # thing and folding them into the same dict leaves only whichever came last.
         for line in text.splitlines():
@@ -122,10 +137,15 @@ class Harness:
                 members.append(pairs)
             elif line.startswith("item "):
                 items.append(pairs)
+            elif line.startswith("skill "):
+                skills.append(pairs)
             else:
                 fields.update(pairs)
         fields["members_detail"] = members
         fields["items"] = items
+        # Weapon and defense skill, which decide whether a swing lands and are the difference
+        # between a level sixty and a level one wearing a level sixty's gear.
+        fields["skills"] = skills
         return fields
 
     def login(self, character, timeout=60.0):
@@ -296,6 +316,46 @@ class Harness:
         return {"summary": summary,
                 "hostiles": sorted(hostiles, key=lambda h: -h["threat"])}
 
+    def select(self, character, entry, range_yards=200.0):
+        """Point a character's selection at the nearest live creature of an entry.
+
+        None when nothing of that entry is in range. A command arriving over SOAP has selected
+        nothing, and `.partybot pull` reads a selection, so this is what makes a scripted pull
+        of a real spawn possible at all.
+        """
+        text = self.run(f"harness select {character} {entry} {range_yards:.0f}")
+        if "select none" in text:
+            return None
+        return _pairs(text)
+
+    def enemies(self, character, entry, range_yards=300.0):
+        """Every creature of an entry near this character, keyed by guid.
+
+        Keyed rather than listed because a pull has to be followed per creature: the first
+        version of this returned the nearest one, and against a pack of two it followed the
+        first giant to its death, switched to the second at full health, and reported a clean
+        kill as a raid that had achieved nothing.
+        """
+        text = self.run(f"harness enemy {character} {entry} {range_yards:.0f}")
+        out = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("enemy "):
+                continue
+            row = _pairs(line)
+            out[int(row["guid"])] = row
+        return out
+
+    def respawn(self, character, entry, range_yards=300.0):
+        """Put every creature of an entry near this character back as it spawned.
+
+        The reset a repeated pull needs. A raid instance's respawn timer is tens of minutes and
+        a fresh instance cannot be had on demand, so this is the only way to run the same pull
+        twice inside one session.
+        """
+        return _pairs(self.run(
+            f"harness respawn {character} {entry} {range_yards:.0f}"))
+
     def graveyard(self, map_id, x, y, z, team=HORDE):
         """Where a ghost dying at this spot releases to, as (map, x, y, z)."""
         text = self.run(f"harness graveyard {map_id} {x:.2f} {y:.2f} {z:.2f} {team}")
@@ -311,13 +371,25 @@ class Harness:
         which is the only meaningful test of arrival at a portal.
         """
         text = self.run(f"harness path {character} {x:.2f} {y:.2f} {z:.2f} {trigger}")
-        f = dict(re.findall(r"(\w+)=(\S+)", text))
+        summary = [l for l in text.splitlines() if l.strip().startswith("path ")]
+        f = dict(re.findall(r"(\w+)=(\S+)", summary[0] if summary else text))
+
+        # The waypoints, which are the difference between knowing a route exists and knowing
+        # where it goes. Needed to find somewhere a raid can stand when the straight line to
+        # the pack crosses ground nothing can walk on.
+        points = []
+        for line in text.splitlines():
+            match = re.match(r"^\s*point i=\d+ x=(\S+) y=(\S+) z=(\S+)$", line)
+            if match:
+                points.append(tuple(float(g) for g in match.groups()))
+
         return {
             "type": f["type"].split("(")[0],
             "length": float(f["length"]),
             "shortfall": float(f["shortfall"]),
             "reached": tuple(float(v) for v in f["reached"].split(",")),
             "arrived": int(f["arrived"]) == 1,
+            "points": points,
         }
 
 

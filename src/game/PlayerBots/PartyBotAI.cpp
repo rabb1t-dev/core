@@ -35,6 +35,7 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "Packets/Loot.h"
+#include "Geometry.h"
 #include "Utilities/Random.h"
 
 #include <random>
@@ -251,9 +252,19 @@ static constexpr int PB_PULL_SHOT_WAIT = 4;
 // people already standing there does not leave the puller circling for a spot.
 static constexpr float PB_PULL_ANCHOR_TOLERANCE = 4.0f;
 
+// How far the mob has to move before the close-in walk is re-aimed at it. Below this the walk is
+// left alone, since re-issuing a point move restarts the path and a mob shifting a yard is not
+// worth a fresh route.
+static constexpr float PB_PULL_CLOSE_REAIM = 5.0f;
+
 // How far a bot backs off when it flees melee. Shared by the move and by the check that runs
 // ahead of it, so the position tested is always the position taken.
 static constexpr float PB_DISTANCING_RANGE = 15.0f;
+
+// How close a hostile creature may get to a caster or healer before it walks away from it. Set at
+// the melee floor rather than at the standoff it would like, so this fires only when the bot is
+// genuinely in the swing and not every time a mob drifts a yard nearer than ideal.
+static constexpr float PB_CASTER_MELEE_FLOOR = 8.0f;
 
 // How badly a hostile cast wants taking away. Ordered, and compared against, so the gaps between
 // them carry no meaning beyond the ordering.
@@ -901,11 +912,20 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
         return false;
 
     uint32 const rangedSpellId = GetRangedAttackSpellId();
-    if (!rangedSpellId)
+    SpellEntry const* pSpell = rangedSpellId ? sSpellMgr.GetSpellEntry(rangedSpellId) : nullptr;
+
+    // A ranged weapon has a minimum range as well as a maximum, and owning one was being read as
+    // a commitment to use it. A puller that had walked all the way in -- which is what the closing
+    // phase does when no shot was available from the anchor -- then stood on top of the mob unable
+    // to shoot it, because five yards is inside a gun's dead zone, and never swung either, because
+    // the melee branch was only reachable by a bot with no ranged weapon at all. The Molten Core
+    // capture has a tank do exactly that at dist=0.0 for four seconds while two level sixty two
+    // giants killed it, having pulled both of them with its body and attacked neither.
+    if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
     {
-        // Nothing to shoot with, so the pull is made with a fist. Worth doing rather than refusing:
-        // it still brings the mob back to a group that is standing still, which is the point, and it
-        // is what a warrior without a gun would have to do anyway.
+        // Nothing to shoot with from here, so the pull is made with a fist. Worth doing rather
+        // than refusing: it still brings the mob back to a group that is standing still, which is
+        // the point, and it is what a warrior without a gun would have to do anyway.
         if (!me->CanReachWithMeleeAutoAttack(pTarget))
             return false;
 
@@ -916,10 +936,6 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
         }
         return me->Attack(pTarget, true);
     }
-
-    SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(rangedSpellId);
-    if (!pSpell || !pSpell->IsTargetInRange(me, pTarget))
-        return false;
 
     // Forced, and not conditional on IsStopped. These are two different questions that are usually
     // answered the same way and were being treated as one: IsStopped reads a unit state, while
@@ -986,6 +1002,7 @@ bool PartyBotAI::BeginPull(Unit* pTarget, float anchorX, float anchorY, float an
     m_pullPhase = PULL_PHASE_APPROACH;
     m_pullSince = time(nullptr);
     m_pullShotSince = 0;
+    m_pullCloseAimed = false;
     m_holdX = anchorX;
     m_holdY = anchorY;
     m_holdZ = anchorZ;
@@ -1032,6 +1049,7 @@ void PartyBotAI::EndPull()
     m_pullPhase = PULL_PHASE_NONE;
     m_pullSince = 0;
     m_pullShotSince = 0;
+    m_pullCloseAimed = false;
     me->SetAttackOrders(ObjectGuid());
     me->SetCasterChaseDistance(0.0f);
 
@@ -1153,8 +1171,68 @@ bool PartyBotAI::UpdatePullSequence()
             // walk ends early whenever it can and only reaches melee when no shot was ever possible.
             me->SetCasterChaseDistance(0.0f);
 
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
-                me->GetMotionMaster()->MoveChase(pTarget, 1.0f, 0.0f);
+            // Walked as a route to a point, not chased. A chase over this distance does not move
+            // the bot at all: it aims at a point one yard from the target rather than at the
+            // target, computes that point through GetNearPointAroundPosition and a walk-hit
+            // adjustment off the target's own footing, and when the result is not something the
+            // mesh will path to, _setTargetLocation returns before it ever launches a spline. It
+            // then repeats that failure every hundred milliseconds in silence. Molten Core's first
+            // pull is the case in hand: the route from the raid's staging point to the giant is a
+            // clean nineteen-point path of seventy eight yards, every bearing on every ring around
+            // the giant paths cleanly too, and the tank stood still through the whole thirty second
+            // timeout with UNIT_STATE_CHASE set and UNIT_STATE_CHASE_MOVE never set once.
+            //
+            // A point move asks the pathfinder the same question the harness asks and gets the
+            // same answer. It is also the cheaper of the two by a wide margin over this distance,
+            // since it is one path rather than one every tick, and the target being pulled is by
+            // definition standing still.
+            float const targetX = pTarget->GetPositionX();
+            float const targetY = pTarget->GetPositionY();
+
+            // Arrived, and the shot above still refused, so this is a melee pull. Swinging is
+            // what ends the sequence; walking any further is what filled a log with a hundred
+            // "closing on foot" lines a second at dist=0.0 while the mob killed the puller.
+            if (me->CanReachWithMeleeAutoAttack(pTarget))
+            {
+                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                {
+                    me->GetMotionMaster()->Clear(false, true);
+                    me->GetMotionMaster()->MoveIdle();
+                }
+
+                if (me->Attack(pTarget, true))
+                {
+                    m_pullPhase = PULL_PHASE_FIRE;
+                    LogPull("in melee, swinging");
+                }
+
+                return true;
+            }
+
+            // Re-aimed only when the mob has actually moved, so a patroller is followed and a
+            // stationary one is walked to once. Idle means the walk finished or was never
+            // launched, and both want the same answer.
+            bool const drifted = m_pullCloseAimed &&
+                (Geometry::GetDistance2D(targetX, targetY, m_pullCloseX, m_pullCloseY) >
+                 PB_PULL_CLOSE_REAIM);
+
+            if (!m_pullCloseAimed || drifted ||
+                me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
+            {
+                m_pullCloseX = targetX;
+                m_pullCloseY = targetY;
+                m_pullCloseAimed = true;
+
+                if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+                {
+                    me->GetMotionMaster()->Clear(false, true);
+                    me->GetMotionMaster()->MoveIdle();
+                }
+
+                me->GetMotionMaster()->MovePoint(0, targetX, targetY, pTarget->GetPositionZ(),
+                                                 MOVE_PATHFINDING);
+                LogPull("closing on foot");
+            }
 
             return true;
         }
@@ -1929,6 +2007,33 @@ void PartyBotAI::UpdateDeadAI()
     }
 }
 
+// Whether this bot is the tank whose job this particular target is.
+//
+// Every rule below that a tank is exempt from -- the threat ceiling, the opening hold, the
+// decision to taunt -- is exempt because the tank is the one meant to be at the top of that
+// target's threat list. That reasoning holds for one tank and inverts for four: an off-tank
+// free-firing into the main tank's target is a damage dealer with no ceiling, which is
+// precisely the thing the ceiling exists to prevent, and it was reading as a tank and
+// skipping it. So the exemption follows the assignment rather than the role.
+//
+// An off-tank holding something else is still a tank in full: it is the assigned tank for
+// whatever it is actually fighting, and answers yes here for that target.
+bool PartyBotAI::IsAssignedTankFor(Unit const* pTarget) const
+{
+    if (m_role != ROLE_TANK || !pTarget)
+        return false;
+
+    Player* pMain = GetGroupMainTank();
+    if (!pMain || pMain == me)
+        return true;
+
+    // Taken to include what the main tank is merely targeting, not only what is hitting it.
+    // At the moment a pull goes wrong those are different answers, and that is the moment the
+    // off-tanks most need to keep their threat off it.
+    return pMain->GetVictim() != pTarget &&
+           pMain->GetTargetGuid() != pTarget->GetObjectGuid();
+}
+
 bool PartyBotAI::IsInOpeningRamp(Unit const* pTarget) const
 {
     Creature const* pCreature = pTarget->ToCreature();
@@ -1947,7 +2052,7 @@ bool PartyBotAI::IsInOpeningRamp(Unit const* pTarget) const
 
 void PartyBotAI::HoldOpeningSwings(Unit const* pTarget)
 {
-    if (m_role == ROLE_TANK || IsInDuel() || !IsInOpeningRamp(pTarget))
+    if (IsAssignedTankFor(pTarget) || IsInDuel() || !IsInOpeningRamp(pTarget))
         return;
 
     // Only spellcasts pass through CanTryToCastSpell, so the opening hold was silence for a
@@ -1978,7 +2083,7 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
 {
     // The tank is the one meant to be at the top of the list, and a group with nobody tanking
     // has no ceiling to speak of: whoever is being hit is holding it by default.
-    if (m_role == ROLE_TANK || IsInDuel() || !pTarget->CanHaveThreatList())
+    if (IsAssignedTankFor(pTarget) || IsInDuel() || !pTarget->CanHaveThreatList())
         return false;
 
     // Leave the opening to whoever is tanking it. The ratio below cannot govern the first
@@ -2014,7 +2119,10 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
     if (topThreat <= 0.0f)
         return false;
 
-    float const ceiling = GetThreatPullRatio(pTarget) - (m_role == ROLE_MELEE_DPS
+    // An off-tank reaching here is standing in melee and is governed by the melee band, the
+    // same as any other character whose threat is measured from inside the boss's reach.
+    float const ceiling = GetThreatPullRatio(pTarget) -
+        ((m_role == ROLE_MELEE_DPS || m_role == ROLE_TANK)
         ? PB_THREAT_HEADROOM_MELEE
         : PB_THREAT_HEADROOM_RANGED);
 
@@ -4207,6 +4315,102 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
     return true;
 }
 
+// Back a caster or healer out of a melee range it never chose to be in.
+//
+// The standoff machinery in BeginChasing cannot do this, and its own comment claiming otherwise
+// was wrong. It works by handing a distance to the chase generator, and the generator applies it
+// through PathInfo::UpdateForCaster, which walks forward along the path and truncates it at the
+// first point inside cast range. That only ever stops a caster short on its way in. A caster
+// already inside the range is answered by the function's first branch, which clears the path
+// entirely and reports success: stay exactly where you are.
+//
+// Which is fine in a five man, because the mob walks to the tank and the caster is behind the
+// tank. In a forty man the mob walks through the raid to reach the tank, and every caster and
+// healer it passes is left standing in its melee arc for the rest of the fight. The capture that
+// prompted this has a warlock at vdist=1.9 with melee=1 casting Shadow Bolt into a level sixty
+// two giant, and fourteen of the raid's nineteen casters and rogues dead by the end of one trash
+// pull that nobody should have died on.
+//
+// Deliberately not conditional on being attacked. StepAwayFromHeldAttacker already covers a bot
+// that is being hit and rooted, and waiting to be hit is waiting too long: what kills a clothed
+// character at this range is the cleave that is not aimed at it.
+bool PartyBotAI::BackOutOfMeleeRange()
+{
+    if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
+        return false;
+
+    if (m_holdPosition || IsInDuel())
+        return false;
+
+    // A caster with no mana and a wand is a melee character for the rest of the fight, and
+    // walking it out of range of the only attack it has left helps nobody. Matches the condition
+    // BeginChasing uses to decide whether this bot keeps a standoff at all.
+    if (!IsRangedDamageClass(me->GetClass()) ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+        return false;
+
+    if (me->GetPowerPercent(POWER_MANA) <= 10.0f &&
+       !me->GetWeaponForAttack(RANGED_ATTACK, true, true))
+        return false;
+
+    // Whatever is closest and can actually swing at this bot. Asked of the enemies in the fight
+    // rather than of this bot's own target, because the mob that has wandered into a healer is by
+    // definition not the one the healer is looking at.
+    Unit* pCrowder = nullptr;
+    float closest = 0.0f;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_CASTER_MELEE_FLOOR, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy || !pEnemy->IsAlive() || !pEnemy->IsCreature())
+            continue;
+
+        // Only what is in a position to hit. Something rooted or stuck across a gap is already
+        // harmless, and giving up a casting position for it is the trade this is trying to win.
+        if (!pEnemy->CanReachWithMeleeAutoAttack(me))
+            continue;
+
+        float const distance = me->GetDistance(pEnemy);
+        if (!pCrowder || distance < closest)
+        {
+            pCrowder = pEnemy;
+            closest = distance;
+        }
+    }
+
+    if (!pCrowder)
+        return false;
+
+    // A cast in flight is worth more than the two yards. Interrupting it to shuffle would mean a
+    // crowded caster never finishes anything, which is a worse outcome than being crowded: the
+    // step happens on the next tick, between casts, and there is always a next tick.
+    if (me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == DISTANCING_MOTION_TYPE)
+        return true;
+
+    if (!CanIssueCombatMovement())
+        return false;
+
+    if (!me->IsStopped())
+        me->StopMoving();
+
+    if (!RunAwayFromTarget(pCrowder))
+        return false;
+
+    NoteCombatMovement();
+
+    if (IsCombatLogged())
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] backout bot='%s' role=%s stepped out of '%s' melee at %.1fy",
+                 me->GetName(), GetRoleName(m_role), pCrowder->GetName(), closest);
+
+    return true;
+}
+
 bool PartyBotAI::StepAwayFromHeldAttacker()
 {
     if (m_role == ROLE_TANK || m_role == ROLE_MELEE_DPS)
@@ -5077,6 +5281,13 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             if (me->IsGameMaster())
                 me->SetGameMaster(false);
 
+            // Gear is the one thing this branch must not touch, and for a long time that was
+            // taken to mean it should touch nothing. It left roster members as level ones with
+            // a level sixty in the level column: no proficiencies, so no weapon skill lines, so
+            // Swords at 10 against a creature defending at 315 and a raid that missed nearly
+            // every swing it took. Everything that is not gear is brought up to level here.
+            MakeCharacterCurrentForLevel();
+
             me->TeleportTo(m_mapId, m_x, m_y, m_z, m_o);
         }
 
@@ -5887,6 +6098,13 @@ void PartyBotAI::UpdateInCombatAI()
     }
 
     if (CheckForDispelTargets())
+        return;
+
+    // Ahead of every class rotation, because half of them have their own version of this rule and
+    // the other half have none, and the ones that have it disagree about the distance. A rule that
+    // decides whether a clothed character is standing inside a raid boss's swing is not a rule to
+    // leave to nine separate if-chains.
+    if (BackOutOfMeleeRange())
         return;
 
     switch (me->GetClass())
@@ -7179,12 +7397,15 @@ void PartyBotAI::UpdateInCombatAI_Priest()
         if (me->GetShapeshiftForm() == FORM_NONE)
         {
             // Holy Nova is the worst mana per point of healing the priest owns, and 83 casts of it
-            // went out in one run. On a healer that bar is the group's survival, so it is allowed
-            // only while there is enough of it to spare and the priest really is surrounded.
+            // went out in one run. Not for a healer at all, at any mana level: the condition it
+            // needs is three things in melee range of the priest, and a healer that finds itself
+            // there is not looking for an area spell to cast, it is in the wrong place and
+            // BackOutOfMeleeRange is about to walk it out. Leaving it available above a mana
+            // threshold was the previous compromise and it only meant every priest in the raid
+            // spent down to the threshold before healing became the priority.
             if (m_spells.priest.pHolyNova &&
+                GetRole() != ROLE_HEALER &&
                 GetAttackersInRangeCount(10.0f) > 2 &&
-               (GetRole() != ROLE_HEALER ||
-                me->GetPowerPercent(POWER_MANA) > CB_HEAL_MANA_CONSERVE_PERCENT) &&
                 CanTryToCastSpell(me, m_spells.priest.pHolyNova))
             {
                 if (DoCastSpell(me, m_spells.priest.pHolyNova) == SPELL_CAST_OK)
@@ -7525,6 +7746,14 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
 
 bool PartyBotAI::ShouldTauntTarget(Unit const* pVictim) const
 {
+    // Somebody else's target. The rule below already refuses to taunt off another tank, and
+    // that was enough with one tank in the group; with four it left every off-tank free to
+    // taunt the main tank's mob the moment a caster took it, so a single slip was answered by
+    // four taunts and the mob finished on whichever off-tank taunted last. The tank that is
+    // supposed to be holding it is the only one that should be reaching for a taunt.
+    if (!IsAssignedTankFor(pVictim))
+        return false;
+
     Unit const* pHolder = pVictim->GetVictim();
     if (!pHolder || pHolder == me)
         return false;
@@ -7702,7 +7931,13 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
 
     if (rageToSpare)
     {
+        // In melee reach before shouting, because a shout is centred on the warrior and not on
+        // the target: out of range it debuffs nothing, so the aura guard above never becomes
+        // true and the shout is bought again on every cooldown forever. That is the Molten Core
+        // capture's sixty four Demoralizing Shouts against thirty three Sunder Armors, from a
+        // tank that had lost the giant and was chasing it around the room the whole time.
         if (m_spells.warrior.pDemoralizingShout &&
+            me->CanReachWithMeleeAutoAttack(pVictim) &&
            !pVictim->HasAura(m_spells.warrior.pDemoralizingShout->Id) &&
             CanTryToCastSpell(me, m_spells.warrior.pDemoralizingShout))
         {
