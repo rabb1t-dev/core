@@ -271,9 +271,13 @@ static constexpr float PB_CASTER_MELEE_FLOOR = 8.0f;
 enum PbInterruptPriority : uint32
 {
     PB_INTERRUPT_NONE = 0,
-    PB_INTERRUPT_DAMAGE = 1,
-    PB_INTERRUPT_HEAL = 2,
-    PB_INTERRUPT_CONTROL = 3,
+    // Something the mob is doing to itself. Lowest of the tiers that are worth anything, so an
+    // interrupt is spent here only when the mob is not known to have worse in its book, and never
+    // in preference to a heal or a crowd control.
+    PB_INTERRUPT_BUFF = 1,
+    PB_INTERRUPT_DAMAGE = 2,
+    PB_INTERRUPT_HEAL = 3,
+    PB_INTERRUPT_CONTROL = 4,
 };
 
 // The tauren racial. Granted at character creation rather than trained, so it is not in any class
@@ -2953,7 +2957,38 @@ static uint32 ScoreSpellForInterrupt(SpellEntry const* pSpellEntry)
         }
     }
 
-    return PB_INTERRUPT_NONE;
+    // A hostile creature spending a cast on itself. Recognised by who it is aimed at rather than
+    // by what it does, and that is the point: the classification above is a list of aura types
+    // and effects, and the buffs that matter most do not appear in one. Shadowfang Moonwalker's
+    // Anti-Magic Shield is a two second cast whose whole effect is a script hook hanging off a
+    // dummy aura, so it carries no mechanic, heals nobody and deals no damage -- it scored zero
+    // and the bots let it through every time, and it makes the mob immune to the entire caster
+    // half of the group with no way to remove it afterwards, since it is not dispellable either.
+    //
+    // Reading the target instead covers that spell, every other absorb or immunity, and every
+    // enrage and haste buff, without naming any of them. The reasoning is simple enough to trust:
+    // a hostile spending two seconds casting at itself is doing something it wants and the group
+    // does not, so taking it away is never wrong. It ranks lowest because it is also never
+    // urgent, and the hold below already keeps an interrupt back when the mob has worse to come.
+    bool selfCast = false;
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!pSpellEntry->Effect[i])
+            continue;
+
+        // Every effect that names a target has to name the caster. A spell with one effect on
+        // itself and another on the group is not a self buff, it is that other thing.
+        if (pSpellEntry->EffectImplicitTargetA[i] != TARGET_UNIT_CASTER)
+            return PB_INTERRUPT_NONE;
+
+        if (pSpellEntry->EffectImplicitTargetB[i] &&
+            pSpellEntry->EffectImplicitTargetB[i] != TARGET_UNIT_CASTER)
+            return PB_INTERRUPT_NONE;
+
+        selfCast = true;
+    }
+
+    return selfCast ? PB_INTERRUPT_BUFF : PB_INTERRUPT_NONE;
 }
 
 // Whether a spell takes long enough to cast that there is anything to interrupt.
@@ -3192,7 +3227,11 @@ bool PartyBotAI::InterruptHostileCasters()
     {
         { PB_INTERRUPT_CONTROL, true,  0 },
         { PB_INTERRUPT_DAMAGE,  false, 0 },
-        { PB_INTERRUPT_DAMAGE,  true,  1 },
+        // Down to a self buff on the last pass, and only with an ability to spare. A mob shield
+        // is worth taking away and is never worth keeping a lone Kick for, so it belongs exactly
+        // here: reachable, and reachable last. Left at DAMAGE this tier could never be selected
+        // at all, which would have made recognising it pointless.
+        { PB_INTERRUPT_BUFF,    true,  1 },
     };
 
     for (InterruptPass const& pass : passes)
@@ -3288,7 +3327,7 @@ bool PartyBotAI::InterruptHostileCasters()
     // without a line saying so.
     if (IsCombatLogged())
     {
-        if (Unit* pWanted = SelectInterruptTarget(candidates.front(), PB_INTERRUPT_DAMAGE, true))
+        if (Unit* pWanted = SelectInterruptTarget(candidates.front(), PB_INTERRUPT_BUFF, true))
         {
             uint32 const priority = GetInterruptPriority(pWanted);
             uint32 const worstKnown = GetWorstKnownCastPriority(pWanted);
@@ -3298,6 +3337,12 @@ bool PartyBotAI::InterruptHostileCasters()
             if (priority <= PB_INTERRUPT_DAMAGE && priority < worstKnown)
             {
                 detail = "held for something worse";
+            }
+            else if (priority == PB_INTERRUPT_BUFF && candidates.size() < 2)
+            {
+                // One interrupt and the mob is only buffing itself. Keeping it is the decision
+                // the passes above make deliberately, and it reads as a missed interrupt.
+                detail = "kept the only interrupt rather than spend it on a self buff";
             }
             else
             {
@@ -3551,6 +3596,20 @@ static uint32 GetHeldInPlaceDurationMs(Unit const* pEnemy)
 // freezing that looks like the bot has stopped working.
 bool PartyBotAI::SafeMoveTo(float x, float y, float z)
 {
+    // Reachable before safe, because an unreachable destination is not made acceptable by having
+    // nothing hostile near it. MovePoint answers an off-mesh point with a straight line rather
+    // than a refusal, so without this the bot walks into whatever is between it and the spot and
+    // the caller re-issues the same destination every tick.
+    if (!CanWalkTo(x, y, z))
+    {
+        float detourX, detourY, detourZ;
+        if (!FindSafeDetour(x, y, z, detourX, detourY, detourZ))
+            return false;
+
+        me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING);
+        return true;
+    }
+
     if (!WouldPathPullExtraEnemies(x, y, z))
     {
         me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);

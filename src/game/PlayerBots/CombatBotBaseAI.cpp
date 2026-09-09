@@ -5,6 +5,8 @@
 #include "Bag.h"
 #include "Group.h"
 #include "VMapFactory.h"
+#include "Maps/PathFinder.h"
+#include "Geometry.h"
 #include "GridMap.h"
 #include "Totem.h"
 #include "PlayerBotMgr.h"
@@ -4904,6 +4906,12 @@ static constexpr float CB_DETOUR_ANGLES[] =
 // How far one leg of a detour goes before the decision is made again.
 static constexpr float CB_DETOUR_LEG_LENGTH = 12.0f;
 
+// How near a mesh route has to finish to the spot that was asked for before the spot counts as
+// reachable. Detour returns a partial route rather than failing, so a query at a point inside a
+// wall comes back looking successful with its end against the wall; without a tolerance test that
+// reads as walkable and the bot is sent at the wall again.
+static constexpr float CB_DETOUR_ARRIVE_TOLERANCE = 2.0f;
+
 // How far a feared creature ends up from whoever feared it. A fear does not send a mob wandering a
 // few steps: FleeingMovementGenerator runs it out until it is between twenty eight and thirty eight
 // yards of the caster and then moves it at random inside that band for the rest of the duration.
@@ -5023,6 +5031,37 @@ bool CombatBotBaseAI::WouldPathPullExtraEnemies(float x, float y, float z) const
 // Reports the first waypoint whose leg is safe, not the whole route. The caller moves to it and the
 // next update runs this again from there, so the detour is followed one leg at a time and re-judged
 // against wherever everything has moved to meanwhile.
+// Whether the bot could actually walk to a spot, asked of the pathfinder.
+//
+// This replaces a line of sight test that was standing in for the same question and is not the
+// same question. A point across a railing, over a stairwell drop, or on the far side of a
+// waist-high wall is in plain view and completely unreachable, and every detour in Shadowfang
+// Keep's courtyard is a candidate like that: the mobs there carry sixteen and seventeen yard
+// aggro radii in a space barely wider than one of them, so almost every position is refused for
+// aggro, the detour search runs continuously, and each detour was chosen by eyesight alone.
+//
+// MovePoint then made it worse rather than catching it. Handed an off-mesh destination it gets
+// PATHFIND_NOPATH back and the generator draws a straight line to it anyway, so the bot walks
+// into the geometry -- and the caller re-issues the same destination on the next tick. One level
+// twenty three warrior spent an entire Shadowfang pull doing that: `moving=1` on every tick,
+// zero damage on almost all of them.
+//
+// Requires a real mesh route and requires it to arrive. PATHFIND_NORMAL on its own is not
+// enough, since Detour degrades to a partial route rather than failing, and a partial route to
+// a point inside a wall ends at the wall.
+bool CombatBotBaseAI::CanWalkTo(float x, float y, float z) const
+{
+    PathInfo path(me);
+    path.calculate(x, y, z);
+
+    if (!(path.getPathType() & PATHFIND_NORMAL))
+        return false;
+
+    Vector3 const reached = path.getActualEndPosition();
+    return Geometry::GetDistance3D(reached.x, reached.y, reached.z, x, y, z)
+        <= CB_DETOUR_ARRIVE_TOLERANCE;
+}
+
 bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
                                      float& outX, float& outY, float& outZ) const
 {
@@ -5058,11 +5097,14 @@ bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
 
             me->UpdateAllowedPositionZ(x, y, z);
 
+            // Aggro first, because it is arithmetic against a list already in hand and the
+            // reachability test below is a mesh query.
             if (WouldPathPullExtraEnemies(x, y, z))
                 continue;
 
-            // And it has to be somewhere the bot can actually walk to.
-            if (!me->IsWithinLOS(x, y, z + 2.0f))
+            // And it has to be somewhere the bot can actually walk to, which is a question for
+            // the pathfinder and not for line of sight. See CanWalkTo.
+            if (!CanWalkTo(x, y, z))
                 continue;
 
             outX = x;

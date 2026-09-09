@@ -315,6 +315,10 @@ public:
     // A way to somewhere that the direct line cannot reach safely: the same destination approached
     // off a bearing, the way a player steers a few degrees wide of a camp rather than stopping.
     // False when nothing within the search found a clear route.
+    // Whether the bot could actually walk to a spot. Asked of the pathfinder, because line of
+    // sight was standing in for this and a point across a railing is visible and unreachable.
+    bool CanWalkTo(float x, float y, float z) const;
+
     bool FindSafeDetour(float destX, float destY, float destZ,
                         float& outX, float& outY, float& outZ) const;
 
