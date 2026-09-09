@@ -94,8 +94,20 @@ MIN_SKILL_RATIO = 1.0
 MIN_EQUIPPED = 14
 
 
+# Set once the raid is in the world, so a failure can put it away again.
+_harness = None
+
+
 def fatal(message):
     print(f"FAIL {message}")
+
+    # Dismissed on the way out, and not only on success. A group keeps its offline members, so a
+    # run that died on a failed audit left all thirty nine seats occupied by characters that were
+    # no longer in the world: the next run, and every `.partybot add` after it, was refused with
+    # "Cannot add more bots. Group is full." while the leader stood there alone.
+    if _harness is not None:
+        _harness.run("raidguild dismiss", allow_failure=True)
+
     sys.exit(1)
 
 
@@ -382,7 +394,9 @@ def main():
                              "the raid could chain pulls rather than win one")
     args = parser.parse_args()
 
+    global _harness
     harness = Harness.from_env()
+    _harness = harness
     harness.login(LEADER)
     harness.execute(LEADER, "gm on")
     harness.execute(LEADER, "gm visible off")
