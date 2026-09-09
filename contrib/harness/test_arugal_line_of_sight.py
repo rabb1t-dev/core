@@ -68,8 +68,19 @@ def arugal(harness):
 def main():
     harness = Harness.from_env()
     harness.login(LEADER)
-    harness.execute(LEADER, f"character level {LEADER} {LEVEL}")
-    harness.execute(LEADER, "revive")
+    # Setting the level takes the character out of the world for a moment, so the revive that
+    # follows it finds no player. Tolerated and re-logged rather than raced against, since neither
+    # of the two is worth failing a run over.
+    harness.run(f"harness exec {LEADER} character level {LEADER} {LEVEL}", allow_failure=True)
+    for _ in range(20):
+        if harness.info(LEADER):
+            break
+        time.sleep(1.0)
+        try:
+            harness.login(LEADER)
+        except Exception:
+            pass
+    harness.run(f"harness exec {LEADER} revive", allow_failure=True)
     dismiss(harness)
 
     harness.execute(LEADER, "go xyz %f %f %f %d" % OUTSIDE)
