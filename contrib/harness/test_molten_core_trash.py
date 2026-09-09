@@ -377,6 +377,9 @@ def main():
                         help="assemble and audit the raid, then stop without pulling")
     parser.add_argument("--keep", action="store_true",
                         help="leave the raid in the world afterwards")
+    parser.add_argument("--no-rest", action="store_true",
+                        help="pull again without waiting for mana, which is the test of whether "
+                             "the raid could chain pulls rather than win one")
     args = parser.parse_args()
 
     harness = Harness.from_env()
@@ -425,9 +428,20 @@ def main():
         harness.teleport(LEADER, *MC_STAGING, MC_MAP)
         time.sleep(6.0)
 
-        _, error = rest(harness, names)
-        if error:
-            print(f"  warning {error}")
+        if args.no_rest:
+            # Out of combat is still required, since a pull begun while the last one is still
+            # resolving measures the overlap and not the pull. Mana is not.
+            _, error = wait_for(harness,
+                                lambda cur: (not [n for n, m in cur.items()
+                                                  if int(m.get("incombat", 0))], "still fighting"),
+                                120.0, "the raid never left combat")
+            if error:
+                print(f"  warning {error}")
+            print("  no rest: pulling again on whatever mana is left")
+        else:
+            _, error = rest(harness, names)
+            if error:
+                print(f"  warning {error}")
 
         reset_pack(harness, LEADER)
 

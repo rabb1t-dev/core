@@ -103,6 +103,11 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
 // Decline the move and stand still. Returning without launching leaves the generator to ask again on
 // its next update, so a bot held here resumes by itself the moment the route clears, whether that is
 // because the pack got pulled by someone else, died, or the target moved somewhere reachable.
+// How far a follower may fall behind before the aggro rule stops applying to its route home.
+// Beyond twice the visibility a group keeps of itself, a bot is not lagging, it has been left,
+// and no position is safe for a character standing on its own in a dungeon.
+static float const FOLLOW_PULL_RULE_LEASH = 40.0f;
+
 static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, char const* movement)
 {
     Creature* pCreature = FindPullOnPath(owner, path);
@@ -760,7 +765,17 @@ void FollowMovementGenerator<T>::_setTargetLocation(T &owner)
     // The follow is where most of the pulling actually came from, and the one an endpoint check in
     // the AI could never have covered: a bot trailing its leader re-picks this spot every time the
     // leader moves, so the route is chosen fresh several times a second all the way down a corridor.
-    if (RefusePathThatWouldPull(owner, path, "follow"))
+    //
+    // Except once the bot is genuinely being left behind, at which point following wins. The rule
+    // trades a possible pull against a certain one, and past this distance the trade inverts: a
+    // bot abandoned in a dungeon is not avoiding the pack, it is standing next to it alone with
+    // no group and no healer, and it will still be there when the leader walks back through. A
+    // possible pull with the group present is the better of the two outcomes, and it is the one a
+    // player makes when they are late and have to run for it.
+    bool const beingLeftBehind =
+        !i_target->IsWithinDist(&owner, FOLLOW_PULL_RULE_LEASH, false);
+
+    if (!beingLeftBehind && RefusePathThatWouldPull(owner, path, "follow"))
         return;
 
     m_bRecalculateTravel = false;

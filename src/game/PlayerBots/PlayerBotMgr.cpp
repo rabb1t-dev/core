@@ -907,8 +907,12 @@ bool ChatHandler::PartyBotAddRequirementCheck(Player const* pPlayer, Player cons
         return false;
     }
 
-    // Restrictions when the command is made public to avoid abuse.
-    if (GetSession()->GetSecurity() <= SEC_PLAYER && !sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
+    // Restrictions when the command is made public to avoid abuse. Asked of the handler and not
+    // of the session, for the same reason as the level argument below: a driven command runs in
+    // the puppet's session with the caller's authority, and the puppet has no reason to be a game
+    // master. Read off the session, these refuse a scripted setup step for being in a dungeon --
+    // which is where a raid test necessarily starts.
+    if (GetAccessLevel() <= SEC_PLAYER && !sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
     {
         if (pPlayer->IsDead())
         {
@@ -1026,34 +1030,62 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
         // so a shaman asked for as a healer arrived as enhancement, and a druid as balance.
         //
         // Only consumed when it really is a role name: the next argument is otherwise a level, and
-        // taking it for a role would eat it. The parse position is restored on a miss so the level
-        // and spec that follow are unaffected.
+        // taking it for a role would eat it. The longer of two words that share a prefix is
+        // always tried first -- "healer" before "heal", "meleedps" before "melee" -- though
+        // ExtractLiteralArg would reject the short form anyway, since it requires whitespace or
+        // end of string after the literal.
         if (botClass && botRole == ROLE_INVALID)
         {
-            char* argsBeforeRole = args;
-            if (char* argRole = ExtractArg(&args))
+            // Matched literal by literal rather than pulled off and compared, because pulling it
+            // off cannot be undone. ExtractArg reaches strtok, which writes its terminator over
+            // the separator in the caller's buffer, so "mage 60 fire-pve" becomes "mage\0" then
+            // "60\0fire-pve"; putting the pointer back to the start of "60" restores the position
+            // and not the string, and the level parse below then runs into the terminator and the
+            // spec is unreachable. That is `.partybot add mage 60 fire-pve` silently arriving with
+            // no spec at all: six of the nine authored specs failed their own test that way, each
+            // reporting a build belonging to whichever template the fallback happened to pick.
+            //
+            // ExtractLiteralArg only touches the buffer when the literal matches, which is exactly
+            // the lookahead this wants.
+            static struct { char const* word; CombatBotRoles role; } const roleWords[] =
             {
-                std::string roleOption = argRole;
-                CombatBotRoles requested = ROLE_INVALID;
+                { "tank",     ROLE_TANK       },
+                { "healer",   ROLE_HEALER     },
+                { "heal",     ROLE_HEALER     },
+                { "meleedps", ROLE_MELEE_DPS  },
+                { "melee",    ROLE_MELEE_DPS  },
+                { "rangedps", ROLE_RANGE_DPS  },
+                { "ranged",   ROLE_RANGE_DPS  },
+                { "caster",   ROLE_RANGE_DPS  },
+            };
 
-                if (roleOption == "tank")
-                    requested = ROLE_TANK;
-                else if (roleOption == "healer" || roleOption == "heal")
-                    requested = ROLE_HEALER;
-                else if (roleOption == "meleedps" || roleOption == "melee")
-                    requested = ROLE_MELEE_DPS;
-                else if (roleOption == "rangedps" || roleOption == "ranged" || roleOption == "caster")
-                    requested = ROLE_RANGE_DPS;
-                else if (roleOption == "dps")
-                    requested = CombatBotBaseAI::IsMeleeDamageClass(botClass) ? ROLE_MELEE_DPS
-                                                                             : ROLE_RANGE_DPS;
+            CombatBotRoles requested = ROLE_INVALID;
+            char const* roleWord = nullptr;
 
-                if (requested == ROLE_INVALID)
+            for (auto const& entry : roleWords)
+            {
+                if (ExtractLiteralArg(&args, entry.word))
                 {
-                    // Not a role, so it belongs to whoever parses next.
-                    args = argsBeforeRole;
+                    requested = entry.role;
+                    roleWord = entry.word;
+                    break;
                 }
-                else if (!CombatBotBaseAI::GetDefaultSpecNameForRole(botClass, requested))
+            }
+
+            // Last, because "dps" is a prefix of nothing here but is resolved against the class
+            // rather than named outright, and keeping it out of the table above keeps the table a
+            // plain mapping.
+            if (requested == ROLE_INVALID && ExtractLiteralArg(&args, "dps"))
+            {
+                requested = CombatBotBaseAI::IsMeleeDamageClass(botClass) ? ROLE_MELEE_DPS
+                                                                         : ROLE_RANGE_DPS;
+                roleWord = "dps";
+            }
+
+            if (requested != ROLE_INVALID)
+            {
+                std::string const roleOption = roleWord;
+                if (!CombatBotBaseAI::GetDefaultSpecNameForRole(botClass, requested))
                 {
                     // Refused rather than quietly ignored. A mage asked to tank has no talent
                     // tree, no armour and no threat tools for it, and spawning something that
@@ -1062,15 +1094,24 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
                     SetSentErrorMessage(true);
                     return false;
                 }
-                else
-                {
-                    botRole = requested;
-                }
+
+                botRole = requested;
             }
         }
 
-        // Prevent setting a custom level for bots unless the account is a GM or skipping checks is enabled.
-        if (GetSession()->GetSecurity() > SEC_PLAYER || sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
+        // Prevent setting a custom level for bots unless the account is a GM or skipping checks is
+        // enabled. Asked of the handler rather than of the session, because those are different
+        // questions the moment a command is being driven rather than typed: `.harness exec` runs
+        // in the puppet character's session with the caller's authority, and reading the session
+        // asks whether the puppet is a game master, which it has no reason to be.
+        //
+        // Silently, and that is what made it worth finding. The level was left unconsumed and the
+        // spec parse below took it: `.partybot add mage 60 fire-pve` set the spec name to "60",
+        // which FindPremadeSpecByName accepts as an entry id, so the bot came back wearing
+        // premade template sixty and the fire build was never applied. Six of the nine authored
+        // specs failed their own test that way, each reporting a build belonging to some other
+        // spec entirely, and nothing anywhere said the argument had been misread.
+        if (GetAccessLevel() > SEC_PLAYER || sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS))
             ExtractUInt32(&args, botLevel);
 
         // Optional trailing spec, by name or entry. Role cannot express which of two builds

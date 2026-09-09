@@ -9782,7 +9782,24 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
     if (aggroRadius <= 0.0f)
         return false;
 
-    return pCreature->GetDistance(x, y, z) < aggroRadius + margin;
+    if (pCreature->GetDistance(x, y, z) >= aggroRadius + margin)
+        return false;
+
+    // Through a wall does not count, and leaving this out paralysed bots in tight dungeons. A
+    // creature wakes by seeing something: Creature::MoveInLineOfSight is where that happens and it
+    // is gated on line of sight, so a mob in a side room, on the floor above, or behind a closed
+    // door cannot be pulled by walking down the corridor past it. Judged on distance alone, it
+    // could -- and in a keep built out of narrow corridors with occupied rooms on both sides and
+    // more mobs directly overhead, every waypoint of every route is inside something's radius.
+    //
+    // The effect was a group that would not follow at all. The generator refused each path and
+    // called StopMoving, so four bots stood still in an empty corridor with nothing in sight,
+    // and the only thing that freed them was being ordered onto a target -- which suspends this
+    // rule wholesale and so hid the cause behind an apparent fix.
+    //
+    // Last, and deliberately: this is a vmap raycast and everything above it is arithmetic, so
+    // it is only paid for the few creatures that were about to refuse the position anyway.
+    return pCreature->IsWithinLOS(x, y, z);
 }
 
 // How far out to look for creatures a move might wake. Has to cover the furthest point of any path

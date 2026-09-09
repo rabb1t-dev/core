@@ -459,6 +459,20 @@ bool RaidGuildMgr::DismissMember(std::string const& name, std::string& error)
         return false;
     }
 
+    // Out of the group before the session goes, because a group keeps its offline members --
+    // which is right for a real raid, whose members log in again, and wrong for a roster, whose
+    // members were summoned to a body and dismissed from it. Left in, a dismissed roster holds
+    // all forty seats forever: the leader is alone in the world and `.partybot add` answers
+    // "Cannot add more bots. Group is full." with one member visible and a count of forty.
+    //
+    // Ahead of the logout rather than after it, because after it there is no Player to remove
+    // and the group would have to be edited through the database instead.
+    if (Player* pPlayer = FindSummonedMember(*pMember))
+    {
+        if (Group* pGroup = pPlayer->GetGroup())
+            pGroup->RemoveMember(pPlayer->GetObjectGuid(), 0);
+    }
+
     // Logging out is what saves the character, so this is the only way a member may be
     // sent away. Killing the session instead loses everything since the last periodic save,
     // which is up to fifteen minutes of a raid night.
