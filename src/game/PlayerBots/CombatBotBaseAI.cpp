@@ -4618,13 +4618,14 @@ static constexpr size_t CB_CASTER_CHASE_COUNT =
 // a second thing to get wrong. What is left here is the bot's own use of it: the discretionary
 // choices this class makes before any movement is issued, where declining costs nothing but a worse
 // position. The generators catch what these cannot, which is the route taken to get there.
-bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z) const
+bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z, float extraMargin) const
 {
     // Under orders, so this stops being a discretionary choice. See Player::GetAttackOrders.
     if (me->HasAttackOrders())
         return false;
 
-    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z, CB_PULL_CHECK_MARGIN);
+    Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z,
+        CB_PULL_CHECK_MARGIN + extraMargin);
     if (!pCreature)
         return false;
 

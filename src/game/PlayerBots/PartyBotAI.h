@@ -281,6 +281,8 @@ public:
     time_t m_gatherSwitchTime = 0;
     time_t m_lastCombatMove = 0;
     time_t m_lastFacingCheck = 0;
+    // How many checks in a row have wanted the melee bot on the other side of its target.
+    uint32 m_facingChangeStreak = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told
     // apart from a slow one. Negative distance means the run has not started yet.
     float m_corpseRunBestDistance = -1.0f;

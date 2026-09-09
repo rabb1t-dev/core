@@ -294,6 +294,13 @@ static constexpr uint32 PB_WARRIOR_DPS_RAGE_DUMP = 200;
 // returns to the rear promptly once the tank has moved the fight, long enough not to re-issue a
 // chase every tick.
 static constexpr time_t PB_MELEE_FACING_INTERVAL = 3;
+// Going back behind a target asks for this much more clearance than leaving did, and the answer has
+// to come back the same way twice in a row before anybody walks. Both exist because the rear point
+// is computed from the target's own facing, and a tanked mob turns: without a margin and a
+// confirmation, a rear spot sitting near a camp's edge reads safe and unsafe alternately as the mob
+// rotates, and the bot walks a semicircle every time it changes its mind.
+static constexpr float PB_MELEE_REAR_RETURN_MARGIN = 4.0f;
+static constexpr uint32 PB_MELEE_FACING_CONFIRMATIONS = 2;
 
 // How long between any two repositionings of a bot in combat, shared by every system that does it.
 // Long enough that a short walk completes and the bot settles before anything re-decides.
@@ -3464,13 +3471,42 @@ void PartyBotAI::ReconsiderMeleeChaseAngle()
     pVictim->GetNearPoint(me, x, y, z, 0, pVictim->GetObjectBoundingRadius() + 1.0f,
                           pVictim->GetOrientation() + M_PI_F);
 
-    bool const rearUnsafe = WouldPositionPullExtraEnemies(x, y, z);
+    // Asymmetric on purpose. Leaving the rear is judged at the ordinary margin, because the cost of
+    // staying is a second pack. Returning to it asks for more clearance than that, so a spot that
+    // only just qualified as unsafe does not immediately qualify as safe again.
+    bool const rearUnsafe = m_chasingInFront
+        ? WouldPositionPullExtraEnemies(x, y, z, PB_MELEE_REAR_RETURN_MARGIN)
+        : WouldPositionPullExtraEnemies(x, y, z);
 
     // Already where it ought to be.
     if (rearUnsafe == m_chasingInFront)
+    {
+        m_facingChangeStreak = 0;
+        return;
+    }
+
+    // And it has to still want the move next time it is asked.
+    //
+    // The rear point is taken from the target's live orientation, and a tanked mob turns - towards
+    // a taunt, towards whoever peeled it, or just as it is dragged. So each check is asking about a
+    // different piece of ground, and near the edge of a camp the answer alternated. One capture has
+    // the rogue flipping front to rear and back ten times, every one of them three or six seconds
+    // apart, which is this check running twice: on screen a rogue that walks out of the fight,
+    // turns round, and walks back into it.
+    m_facingChangeStreak = m_facingChangeStreak + 1;
+    if (m_facingChangeStreak < PB_MELEE_FACING_CONFIRMATIONS)
         return;
 
+    // Through the same gate as every other mid-fight reposition. Refacing did not use it, so it
+    // could re-issue a chase over a move that had not finished - the contention this gate exists
+    // to prevent, in the one system that was left outside it.
+    if (!CanIssueCombatMovement())
+        return;
+
+    m_facingChangeStreak = 0;
+
     BeginChasing(pVictim);
+    NoteCombatMovement();
 
     if (IsCombatLogged())
     {

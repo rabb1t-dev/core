@@ -293,7 +293,7 @@ public:
     // lives on this class, and answered here as "no opinion" so that a battleground bot, which
     // has no dungeon to have tactics for, is unaffected.
     virtual float GetTacticalStandoff(Unit const* /*pTarget*/) const { return 0.0f; }
-    bool WouldPositionPullExtraEnemies(float x, float y, float z) const;
+    bool WouldPositionPullExtraEnemies(float x, float y, float z, float extraMargin = 0.0f) const;
 
     // The route, not just where it ends. A destination clear of every aggro radius is no use if
     // getting there crosses one, which is how a bot walks through a pack to stand safely past it.
