@@ -4009,6 +4009,7 @@ SpellCastResult CombatBotBaseAI::DoCastSpell(Unit* pTarget, SpellEntry const* pS
     {
         me->SetFacingToObject(pTarget);
         me->SetOrientation(me->GetAngle(pTarget));
+        me->SendHeartBeat();
     }
 
     if (me->IsMounted())

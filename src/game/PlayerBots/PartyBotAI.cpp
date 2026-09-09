@@ -158,6 +158,28 @@ static constexpr float PB_RISE_SAFETY_MARGIN = 8.0f;
 static constexpr float PB_RISE_ARRIVE_DIST = 5.0f;
 #define PB_MIN_FOLLOW_DIST 3.0f
 #define PB_MAX_FOLLOW_DIST 6.0f
+// How far back each job trails, and how much room it gets of its own.
+//
+// Melee close, because they have to reach the fight anyway. Ranged and healers further out and to
+// the flanks: a caster with nowhere to stand is a caster inside every area effect aimed at the
+// melee, and a healer stacked on the tank is one that dies to the same cleave. The spread is a slot
+// per bot rather than a fresh random roll per call - a roll can hand two bots the same spot, and
+// re-rolling it on every reposition means the formation never settles.
+static constexpr float PB_FORMATION_MELEE_DIST = 4.0f;
+static constexpr float PB_FORMATION_RANGED_DIST = 9.0f;
+static constexpr float PB_FORMATION_HEALER_DIST = 8.0f;
+// Widened while fighting, when standing apart is worth most and nobody is walking through a
+// doorway single file.
+static constexpr float PB_FORMATION_COMBAT_BONUS = 3.0f;
+// The widest a slot may sit off directly behind the leader. Wider than the old spread, and still
+// inside the rear arc for the reason the arc exists: abreast of the leader is a second aggro
+// radius dragged along the wall.
+static constexpr float PB_FORMATION_MAX_OFFSET = 1.15f;
+// How much a slot tightens each time the spot it asks for turns out to be one that would wake
+// something up. Three tries and it gives up and tucks in behind, which is where it used to stand
+// all the time.
+static constexpr float PB_FORMATION_TIGHTEN_STEP = 0.35f;
+static constexpr uint32 PB_FORMATION_TIGHTEN_TRIES = 3;
 // Behind the leader, not anywhere around them. FollowMovementGenerator measures this angle from
 // the leader's own facing, so zero is directly in front, and the full circle this used to draw
 // from put half the group abreast of or ahead of whoever was steering. In a corridor that drags
@@ -779,8 +801,19 @@ bool PartyBotAI::KeepBusy()
                         // shot, so each tick cancelled the shot the previous tick had started and
                         // the wand never actually fired. Writing the angle costs nothing and moves
                         // nothing.
+                        //
+                        // And told to the clients watching. SetOrientation writes the angle on
+                        // the server and sends nothing, so the shot was allowed - the server had
+                        // the hunter facing its target - while every client went on drawing it
+                        // pointing whichever way it stopped walking. A heartbeat carries the new
+                        // orientation without a spline, so the model turns without the movement
+                        // flags that cancel an autorepeat, which is the whole reason
+                        // SetFacingToObject cannot be used here.
                         if (!me->HasInArc(pVictim))
+                        {
                             me->SetOrientation(me->GetAngle(pVictim));
+                            me->SendHeartBeat();
+                        }
 
                         me->Attack(pVictim, false);
                         if (me->CastSpell(pVictim, pRanged, false) == SPELL_CAST_OK)
@@ -877,7 +910,10 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
             return false;
 
         if (!me->HasInArc(pTarget))
+        {
             me->SetOrientation(me->GetAngle(pTarget));
+            me->SendHeartBeat();
+        }
         return me->Attack(pTarget, true);
     }
 
@@ -906,7 +942,10 @@ bool PartyBotAI::FirePullAttack(Unit* pTarget)
     // SetFacingToObject then launched a facing movespline, which sets them straight back. Turning
     // by assignment costs nothing and moves nothing.
     if (!me->HasInArc(pTarget))
+    {
         me->SetOrientation(me->GetAngle(pTarget));
+        me->SendHeartBeat();
+    }
     me->Attack(pTarget, false);
 
     // Cast directly rather than through DoCastSpell, which would refuse this outright.
@@ -3525,6 +3564,99 @@ void PartyBotAI::ReconsiderMeleeChaseAngle()
 // yards, re-deciding, and walking back - which from outside is a tank stuttering instead of
 // fighting. One clock and one rule: a point move already under way is left to finish, and nothing
 // else issues one until it has.
+// Where this bot trails the leader, and how far off to the side.
+//
+// Everyone used to roll urand(3,6) yards at a random angle inside a narrow rear cone on every call,
+// which has two faults: two bots can roll the same spot, and re-rolling on every reposition means
+// the group never holds a shape. A slot derived from the bot's own guid is stable for the life of
+// the bot and different from its neighbours' without anybody having to agree on anything.
+//
+// The rear arc is kept. Its reason has not changed: a bot abreast of or ahead of whoever is
+// steering is a second aggro radius dragged along the wall, and in a corridor that pulls exactly
+// what the leader was walking around. Spreading out happens across the rear, not around it.
+void PartyBotAI::GetFormationSlot(float& distance, float& angle) const
+{
+    switch (m_role)
+    {
+        case ROLE_HEALER:
+            distance = PB_FORMATION_HEALER_DIST;
+            break;
+        case ROLE_RANGE_DPS:
+            distance = PB_FORMATION_RANGED_DIST;
+            break;
+        default:
+            distance = PB_FORMATION_MELEE_DIST;
+            break;
+    }
+
+    if (me->IsInCombat())
+        distance = distance + PB_FORMATION_COMBAT_BONUS;
+
+    // Two bits of the guid give four lanes across the rear, and a third staggers the depth so two
+    // bots sharing a lane are not standing on each other either.
+    uint32 const seed = me->GetGUIDLow();
+    uint32 const lane = seed % 4;
+    bool const deeper = ((seed / 4) % 2) == 1;
+
+    // Casters and healers take the outer lanes, melee the inner ones, so the back line is not
+    // standing in the lane the melee walk down to reach the fight.
+    bool const outer = (m_role == ROLE_HEALER || m_role == ROLE_RANGE_DPS);
+    float const lanes[4] = { 0.35f, -0.35f, PB_FORMATION_MAX_OFFSET, -PB_FORMATION_MAX_OFFSET };
+    float offset = outer ? lanes[(lane % 2) + 2] : lanes[lane % 2];
+
+    // The two remaining lanes for whoever is left over, so a party of four melee still fans out.
+    if (!outer && lane >= 2)
+        offset = offset * 2.0f;
+
+    if (offset > PB_FORMATION_MAX_OFFSET)
+        offset = PB_FORMATION_MAX_OFFSET;
+    if (offset < -PB_FORMATION_MAX_OFFSET)
+        offset = -PB_FORMATION_MAX_OFFSET;
+
+    if (deeper)
+        distance = distance + 2.0f;
+
+    angle = M_PI_F + offset;
+}
+
+// The same slot, tightened until the ground it names is ground nothing objects to.
+//
+// Spreading out is only free while it does not wake anything, which is the one condition attached
+// to it. A slot that would put a bot inside an unengaged creature's aggro radius is pulled in
+// towards directly-behind and shortened, and if three tries do not find room it settles for the
+// old tucked-in position rather than insisting.
+void PartyBotAI::GetSafeFormationSlot(Unit const* pLeader, float& distance, float& angle) const
+{
+    GetFormationSlot(distance, angle);
+
+    if (!pLeader)
+        return;
+
+    float const wanted = angle - M_PI_F;
+
+    for (uint32 attempt = 0; attempt <= PB_FORMATION_TIGHTEN_TRIES; ++attempt)
+    {
+        float const scale = 1.0f - (PB_FORMATION_TIGHTEN_STEP * attempt);
+        float const tryAngle = M_PI_F + (wanted * scale);
+        float const tryDistance = distance * scale;
+
+        float x, y, z;
+        pLeader->GetNearPoint(pLeader, x, y, z, 0, tryDistance,
+                              pLeader->GetOrientation() + tryAngle);
+
+        if (!WouldPositionPullExtraEnemies(x, y, z))
+        {
+            angle = tryAngle;
+            distance = tryDistance;
+            return;
+        }
+    }
+
+    // Nowhere spread out is safe, so stand where the group always used to.
+    angle = M_PI_F;
+    distance = PB_MIN_FOLLOW_DIST;
+}
+
 bool PartyBotAI::CanIssueCombatMovement() const
 {
     if (me->IsMoving() &&
@@ -5322,7 +5454,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             // from a reposition is still following, just following the wrong unit, and a bare
             // type check leaves it trailing whoever it went to help for the rest of the fight.
             else if (pFollowing != pLeader)
-                me->GetMotionMaster()->MoveFollow(pLeader, urand(PB_MIN_FOLLOW_DIST, PB_MAX_FOLLOW_DIST), frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+            {
+                float slotDistance, slotAngle;
+                GetSafeFormationSlot(pLeader, slotDistance, slotAngle);
+                me->GetMotionMaster()->MoveFollow(pLeader, slotDistance, slotAngle);
+            }
         }
         else
         {
