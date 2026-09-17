@@ -63,6 +63,10 @@ public:
     void OnPlayerLogin() final;
     void UpdateAI(uint32 const diff) final;
     void OnPacketReceived(WorldPacket const* packet) final;
+    // Asked rather than answered for. UpdateLootRolls votes on this bot's behalf, one roll per
+    // tick, after DecideLootRoll has scored the item and after any person in the group has had
+    // their say.
+    bool AnswersLootRollsItself() const final { return true; }
 
     void CloneFromPlayer(Player const* pPlayer);
     bool AddToPlayerGroup();
@@ -84,6 +88,7 @@ public:
     float EstimateSpellThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     SpellEntry const* PickRankForThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     Player* GetPartyLeader() const;
+    bool WaitForOfflineLeader();
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
@@ -167,6 +172,9 @@ public:
     bool AddFillerDamage(Unit* pTarget);
     bool KeepBusy();
     bool IsWorthDotting(Unit const* pVictim) const;
+    void SampleVictimHealth();
+    float EstimateSecondsToLive(Unit const* pVictim) const;
+    float EstimateSecondsPerComboPoint() const;
     void UpdateLootRolls();
     bool ShouldDeferRollToPlayers(Roll const* pRoll) const;
     bool DidPlayerNeedRoll(Roll const* pRoll) const;
@@ -176,6 +184,7 @@ public:
     bool CanAnyPlayerLoot(Creature* pCreature) const;
     bool LootCorpse(Creature* pCreature);
     bool IsCastingFillerDamage() const;
+    bool IsCastingFillerAutoRepeat() const;
     Player* GetGroupTank() const;
     Unit* SelectHealTargetOutOfReach() const;
     Unit const* GetCurrentFollowTarget() const;
@@ -231,6 +240,12 @@ public:
     // Throttle for the per-tick state line. Mutable because logging is the one thing a const
     // reporting function is allowed to change about the bot.
     mutable uint32 m_lastTickLog = 0;
+    // The target whose health is being watched, what it last was, when it was last looked at,
+    // and how fast it is falling. Behind EstimateSecondsToLive, which is what the rotations ask.
+    ObjectGuid m_ttlVictimGuid;
+    uint32 m_ttlLastHealth = 0;
+    uint32 m_ttlLastSample = 0;
+    float m_ttlDamagePerSecond = 0.0f;
     ObjectGuid m_leaderGuid;
     ObjectGuid m_cloneGuid;
     uint8 m_race = 0;
@@ -254,6 +269,9 @@ public:
     // Throttle for the "still down" lines, which are otherwise asked for once a second for as
     // long as the bot stays dead.
     time_t m_lastDeathLog = 0;
+    // When the owner went offline, or zero while they are here. A crashed client is indistinguishable
+    // from a quit one at this level, so both are waited out: see WaitForOfflineLeader.
+    time_t m_leaderOfflineSince = 0;
     // Coordinated pull. m_holdPosition itself lives on the base class, next to the chase it has to
     // be able to refuse. The anchor is remembered so that the puller has somewhere to come back to,
     // and so a bot shoved off its spot has somewhere to return to.
@@ -311,6 +329,18 @@ public:
     time_t m_gatherSwitchTime = 0;
     time_t m_lastCombatMove = 0;
     time_t m_lastFacingCheck = 0;
+    // Where the last drag away from a neighbouring camp was aimed, kept only so the next drag can
+    // report how far the tank has since strayed from it.
+    float m_lastDragX = 0.0f;
+    float m_lastDragY = 0.0f;
+    float m_lastDragZ = 0.0f;
+    time_t m_lastDragTime = 0;
+    // Throttle for the "no poison to apply" line, which would otherwise repeat every tick a rogue
+    // spends out of combat.
+    time_t m_lastPoisonLog = 0;
+    // Whether this death has already had the bot's standing orders torn up. Reset on rising, so
+    // every death gets one clearing and no death gets one per tick.
+    bool m_ordersClearedByDeath = false;
     // How many checks in a row have wanted the melee bot on the other side of its target.
     uint32 m_facingChangeStreak = 0;
     // Where the corpse run was last seen to have got somewhere, so a stalled run can be told

@@ -126,13 +126,19 @@ static constexpr float PB_THREAT_RAMP_HEALTH_RATIO = 5.0f;
 // of it.
 static constexpr float PB_THREAT_RANK_SHARE = 0.5f;
 // Rage, in the tenths the field is stored in. Below the first a tank has too little to run its
-// list at all and reaches for Bloodrage. The other two are floors under the abilities that cost
-// rage without using the global cooldown, and they exist so that spending on those can never be
-// what leaves Shield Slam short: Shield Slam is twenty, so anything taken outside the cooldown
-// has to leave that behind it.
+// list at all and reaches for Bloodrage. The second is a floor under Shield Block, which costs
+// rage without using the global cooldown, and it exists so that spending there can never be what
+// leaves Shield Slam short: Shield Slam is twenty, so anything taken outside the cooldown has to
+// leave that behind it.
+//
+// There was a third for the Heroic Strike and Cleave dump. It is gone, because a tuned number was
+// the wrong tool: sixty rage scaled to forty four at level thirty four and no tank ever came close
+// to it. That floor now comes from the spell costs themselves, at the dump's own call site.
 static constexpr uint32 PB_TANK_RAGE_LOW = 200;
 static constexpr uint32 PB_TANK_RAGE_BLOCK = 300;
-static constexpr uint32 PB_TANK_RAGE_DUMP = 600;
+
+// How often a rogue with nothing to poison its weapons with says so.
+static constexpr time_t PB_POISON_LOG_INTERVAL = 60;
 
 // How often a bot gets to think, which is the ceiling on everything it does.
 //
@@ -225,6 +231,63 @@ static constexpr float PB_DOT_WORTH_TARGET_HEALTH = 50.0f;
 // How far out to look for the rest of the pack.
 static constexpr float PB_DOT_PACK_RADIUS = 30.0f;
 
+// How long the current target has left to live, estimated from how fast its health is actually
+// falling rather than from any property of the target itself.
+//
+// Every rotation that has to choose between a small effect now and a larger one later is really
+// choosing between the two against a deadline, and the deadline is the only part neither the
+// spell data nor the creature template knows: the same boar dies in four seconds to a full party
+// and forty to a lone healer. Measuring it costs one subtraction a tick and replaces a pile of
+// rules about health percentages and creature rank that were each wrong about a different fight.
+static constexpr uint32 PB_TTL_SAMPLE_INTERVAL_MS = 500;
+// Weight on the newest sample. Low enough that one unlucky second of misses does not convince a
+// bot the fight has stalled, high enough to follow a real change within a few seconds.
+static constexpr float PB_TTL_SMOOTHING = 0.35f;
+// What to report before enough of a fight has been watched to say anything, and what to report
+// for a target nothing is damaging. Long, so a bot with no evidence behaves as it would on a
+// fight worth investing in: assuming the mob is nearly dead spends the opening on the wrong thing
+// every time, and a bot that has just acquired a target is in exactly that position.
+static constexpr float PB_TTL_UNKNOWN_SECONDS = 3600.0f;
+
+// A global cooldown, the floor under what one more combo point can possibly cost however full the
+// energy bar is.
+static constexpr float PB_ROGUE_GCD_SECONDS = 1.5f;
+// A full bar. Another builder past this overcaps and the point is thrown away, so a rogue holding
+// five has no reason left to wait whatever the fight is doing.
+static constexpr uint32 PB_ROGUE_MAX_COMBO = 5;
+// Below this a finisher is worse than the builder it replaces: one point of Eviscerate spends
+// thirty five energy to do less than the Sinister Strike that would have made a second point.
+static constexpr uint32 PB_ROGUE_FINISHER_MIN_COMBO = 2;
+// Margin on the time-to-live comparison, covering the global cooldown the finisher itself has to
+// wait out. Without it a rogue decides it has just enough time, starts building, and watches the
+// mob die on the cast it was one tick short of.
+static constexpr float PB_ROGUE_FINISHER_LEAD_SECONDS = 1.5f;
+// How long a fight has to promise before Slice and Dice is worth a bar of combo points. It buys
+// attack speed for the rest of the fight and no damage at all up front, so on anything dying
+// inside its own shortest duration it is a finisher that did nothing. This is what keeps it off
+// dungeon trash, where being gated on combo points alone had it beating Eviscerate to every point
+// a rogue ever earned.
+static constexpr float PB_ROGUE_SND_MIN_FIGHT_SECONDS = 12.0f;
+// Points to put behind Slice and Dice once a fight has earned it. Its duration scales with them,
+// so buying it cheap means buying it again, and every refresh is a bar not spent on damage.
+//
+// Four was unreachable, which made the whole thing dead code rather than conservative. Seven
+// rogues across two runs reached four points on between half a percent and nine percent of their
+// engaged ticks, and four points together with a fight long enough to want the haste on nought to
+// two percent - so Slice and Dice was cast once in five hundred casts by one rogue and never at
+// all by two others. The fight-length gate above was the part that was doing the real work.
+//
+// Three buys fifteen seconds, which comfortably covers the twelve second floor, and is reached
+// often enough to land once on every fight that lasts. Note this is a floor and not a target: the
+// bar keeps building when the fight is long enough to spend it twice.
+static constexpr uint32 PB_ROGUE_SND_MIN_COMBO = 3;
+// How little Slice and Dice may have left before it is worth refreshing early. Waiting for it to
+// lapse means the haste is already gone by the time the rogue starts paying for it again.
+static constexpr float PB_ROGUE_SND_REFRESH_SECONDS = 3.0f;
+// Rupture wants a fight that comfortably outlasts it rather than merely outlasts it, which is
+// what keeps it off the mob that dies two ticks into it.
+static constexpr float PB_ROGUE_RUPTURE_FIGHT_MULTIPLE = 1.25f;
+
 // How long to leave a corpse before deciding who it belongs to. Loot permission is not settled at
 // the moment of death: the round robin assignment a bot holds is given up a tick later, and group
 // rolls take seconds, so reading it immediately would call a corpse nobody's while it was still
@@ -291,6 +354,13 @@ static constexpr float PB_BREAK_SIGHT_MIN_HEALTH = 35.0f;
 // genuine walk short, and short enough that a walk which is never going to arrive costs one dodge
 // rather than the fight.
 static constexpr uint32 PB_BREAK_SIGHT_HOLD_MS = 4000;
+
+// How long after the pull rule declines a route a gap closer stays off the table. The rule is asked
+// again on every recomputed path, so a bot that is still being held keeps refreshing this, and one
+// that has genuinely been let through stops. Long enough to outlast the gap between two of those
+// recomputes and short enough that a bot released mid-chase is not still declining to hurry a
+// second later.
+static constexpr uint32 PB_SPRINT_AFTER_REFUSAL_MS = 2000;
 
 
 // How badly a hostile cast wants taking away. Ordered, and compared against, so the gaps between
@@ -540,6 +610,82 @@ Player* PartyBotAI::GetPartyLeader() const
         return originalLeader;
     }
     return nullptr;
+}
+
+// How long the party waits for an owner who has gone offline. Long enough to cover a client that
+// died and has to be relaunched, patched through a launcher and logged back in, and short enough
+// that a party genuinely abandoned in a dungeon does not sit there for the rest of the uptime.
+static constexpr time_t PB_LEADER_OFFLINE_GRACE = 15 * MINUTE;
+
+// Whether the leader is merely offline, in which case this bot waits instead of being deleted.
+//
+// Offline is not gone, and treating the two the same is what made a client crash cost the whole
+// run. The Player object dies with the socket, GetPartyLeader then found nobody, and every bot
+// asked to be removed on the spot. That is not just the loss of the bots: Group::RemoveMember
+// disbands a group that had two members or fewer, so the party came apart as the bots left it, and
+// an instance's bind lives on the group -- InstanceMap::Add deliberately hands the player's own
+// bind over to the group on entry and unbinds them personally. So the disband took the only bind
+// to that instance with it, and Player::LoadFromDB, finding a saved instance id it can no longer
+// account for, put the owner at the dungeon entrance. Walking back in minted a new copy. Five
+// Shadowfangs in the characters table are what that looked like from the outside.
+//
+// Waiting is the whole fix, and nothing here has to be written to the database. The bots stay in
+// the world, so the group keeps its members, so it never disbands, so the bind survives, so the
+// owner logs back into the instance they left, at the position their own logout saved, still in
+// the party they left it with.
+bool PartyBotAI::WaitForOfflineLeader()
+{
+    Group* pGroup = me->GetGroup();
+
+    // A leader still listed in the group is one who logged out; member slots outlive the session.
+    // Anything else -- kicked from the group, replaced as leader, the bot promoted to lead -- is a
+    // real refusal from GetPartyLeader and still means removal, which is why this asks about the
+    // slot rather than assuming every null leader is a crash.
+    if (!pGroup || !pGroup->IsMember(m_leaderGuid))
+        return false;
+
+    // Found means the refusal was about something other than presence, and the caller should act on
+    // it as before rather than wait for somebody who is standing right there.
+    if (ObjectAccessor::FindPlayerNotInWorld(m_leaderGuid))
+        return false;
+
+    time_t const now = time(nullptr);
+
+    if (!m_leaderOfflineSince)
+    {
+        m_leaderOfflineSince = now;
+
+        // Parked once, on the way in, rather than every tick. The bots are not going to fight well
+        // with nobody to follow or heal towards, and a party left mid-pull will probably die where
+        // it stands -- but it dies in the instance, with corpses to run back to, which is a great
+        // deal better than being deleted along with the group and the bind.
+        me->AttackStop();
+        me->SetAttackOrders(ObjectGuid());
+        // Unconditional, because StopMoving already asks whether there is a spline to stop and
+        // clears the movement flags either way, which is the half that matters for a bot.
+        me->StopMoving();
+        me->GetMotionMaster()->Clear(false, true);
+        me->GetMotionMaster()->MoveIdle();
+
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] hold bot='%s' role=%s owner went offline, holding position on map "
+                     "%u for up to %us so the group and its instance bind survive the reconnect",
+                     me->GetName(), GetRoleName(GetRole()), me->GetMapId(),
+                     uint32(PB_LEADER_OFFLINE_GRACE));
+    }
+
+    if ((now - m_leaderOfflineSince) >= PB_LEADER_OFFLINE_GRACE)
+    {
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] hold bot='%s' gave up on an owner offline for %us and is leaving "
+                     "the group", me->GetName(), uint32(now - m_leaderOfflineSince));
+
+        return false;
+    }
+
+    return true;
 }
 
 bool PartyBotAI::IsValidDistancingTarget(Unit* pTarget, Unit* pEnemy)
@@ -2878,7 +3024,13 @@ void PartyBotAI::GetInterruptSpells(std::vector<SpellEntry const*>& out) const
             break;
         case CLASS_ROGUE:
             add(m_spells.rogue.pKick);
-            add(m_spells.rogue.pKidneyShot);
+            // Kidney Shot only with something to spend. It costs combo points, and offering it
+            // without any meant the driver kept reaching for it and the server kept refusing:
+            // one rogue attempted it seventy six times in a run and landed six, the other seventy
+            // rejected with SPELL_FAILED_NO_COMBO_POINTS. Kick is the interrupt that costs no bar,
+            // so it stays first and this remains the fallback for when Kick is down.
+            if (me->GetComboPoints())
+                add(m_spells.rogue.pKidneyShot);
             break;
         case CLASS_SHAMAN:
             add(m_spells.shaman.pEarthShock);
@@ -3234,7 +3386,7 @@ bool PartyBotAI::InterruptHostileCasters()
     if (candidates.empty())
         return false;
 
-    // Three passes, in decreasing order of how sure the spend is.
+    // Four passes, in decreasing order of how sure the spend is.
     //
     //   Control is taken immediately and always: nothing a mob owns is worse than a sleep on the
     //   healer, so there is never a reason to hold for something better.
@@ -3248,6 +3400,10 @@ bool PartyBotAI::InterruptHostileCasters()
     //   first for what it is worth saving for and spends the second on whatever is being cast,
     //   where a rogue owning only Kick keeps it. Ownership rather than readiness, since a bot with
     //   two abilities has one to spare often enough for the distinction not to earn its keep.
+    //
+    //   And last, a self buff with the only ability there is, but only from a mob that has nothing
+    //   worse. The pass above needs a spare ability and so does not exist for a party of four that
+    //   owns one interrupt each, which is most five mans at level twenty.
     struct InterruptPass { uint32 minPriority; bool mayPreempt; uint32 firstAbility; };
 
     static constexpr InterruptPass passes[] =
@@ -3256,9 +3412,21 @@ bool PartyBotAI::InterruptHostileCasters()
         { PB_INTERRUPT_DAMAGE,  false, 0 },
         // Down to a self buff on the last pass, and only with an ability to spare. A mob shield
         // is worth taking away and is never worth keeping a lone Kick for, so it belongs exactly
-        // here: reachable, and reachable last. Left at DAMAGE this tier could never be selected
+        // here: reachable, and reachable late. Left at DAMAGE this tier could never be selected
         // at all, which would have made recognising it pointless.
         { PB_INTERRUPT_BUFF,    true,  1 },
+        // And a self buff with the only ability there is, when it is the worst thing that mob is
+        // known to cast. The pass above reads "never keep a lone Kick for a shield", which is the
+        // right rule when there is something worse to keep it for and wrong when there is not: a
+        // party of four owning one interrupt each never reached that pass at all, so every
+        // Shadowfang Moonwalker got its Anti-Magic Shield up, unremovable and undispellable,
+        // against a group that had recognised the cast and declined it four times a second.
+        //
+        // Not a preempt, so the hold in SelectInterruptTarget still applies and still refuses a
+        // buff from a mob with worse in its book -- Kick is kept for the sleep, as before. This is
+        // the same reasoning the DAMAGE pass already runs on: waiting for something worse from a
+        // mob whose worst is this means waiting forever.
+        { PB_INTERRUPT_BUFF,    false, 0 },
     };
 
     for (InterruptPass const& pass : passes)
@@ -3365,12 +3533,11 @@ bool PartyBotAI::InterruptHostileCasters()
             {
                 detail = "held for something worse";
             }
-            else if (priority == PB_INTERRUPT_BUFF && candidates.size() < 2)
-            {
-                // One interrupt and the mob is only buffing itself. Keeping it is the decision
-                // the passes above make deliberately, and it reads as a missed interrupt.
-                detail = "kept the only interrupt rather than spend it on a self buff";
-            }
+            // No branch for a lone interrupt declining a self buff any more. It used to say so,
+            // and it was the truth for as long as the last pass needed a spare ability, but a
+            // buff from a mob with nothing worse is now taken with whatever the bot has. Reaching
+            // here with one means something else stopped it, and the per-ability detail below is
+            // the answer -- the old line named a policy that no longer applies and hid a cooldown.
             else
             {
                 // Which ability, and what stopped it. "None were castable" was true and useless:
@@ -4161,7 +4328,44 @@ bool PartyBotAI::GatherLooseEnemies()
         // Nothing left to fetch. Walk whatever is already following back to the anchor so it piles
         // up there rather than wherever the last add happened to be standing, which is the half of
         // this that turns a peel into a pull. Only worth doing while something is actually in tow.
-        if (me->GetAttackers().empty())
+        //
+        // And the mob the group is already fighting is not in tow. It used to count, because the
+        // question asked was only whether anything at all was hitting this bot, and the answer is
+        // yes for every melee in every fight. So a warrior stood in the boss, found itself more
+        // than twelve yards from the anchor, and walked back -- with the boss, which the tank
+        // already had, and which followed the tank rather than the warrior. Measured against
+        // Arugal, who teleports every thirteen seconds and so puts the whole group out of position
+        // on a timer: two warriors did this two hundred and six times in one session, median walk
+        // fourteen yards, and spent over half the fight beyond ten yards of the boss they were
+        // supposed to be hitting. The rogue in the same party never moved, which is what made it
+        // look like a movement bug rather than this.
+        //
+        // And with no tank there is nowhere to walk to. GetGatherAnchor falls back to a healer or
+        // a ranged member when nobody is tanking, so without this the rule ferried every melee's
+        // attacker into the back line -- the exact opposite of what herding is for, and worse than
+        // doing nothing. Measured on a tankless party of three melee and a healer: five walks in
+        // sixty four seconds, every one of them dragging a mob onto the healer.
+        //
+        // Note GetGroupTank only recognises a bot in the tank role, so a human tanking the group
+        // reads as no tank at all. That is the conservative way round: the walk is a convenience
+        // and standing still is never the thing that loses a fight.
+        Player* pTank = GetGroupTank();
+        if (!pTank)
+            return false;
+
+        Unit const* pMainTarget = pTank->GetVictim();
+
+        bool inTow = false;
+        for (Unit* pAttacker : me->GetAttackers())
+        {
+            if (pAttacker != pMainTarget)
+            {
+                inTow = true;
+                break;
+            }
+        }
+
+        if (!inTow)
             return false;
 
         // Not the tank. The tank is where the pile belongs, so walking it towards the group's back
@@ -4362,8 +4566,9 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
         return false;
 
     // Nothing to get away from.
-    if (!me->FindUnengagedCreatureAggroedByPosition(me->GetPositionX(), me->GetPositionY(),
-                                                    me->GetPositionZ(), PB_DRAG_BACK_MARGIN))
+    Creature* const pNeighbour = me->FindUnengagedCreatureAggroedByPosition(
+        me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), PB_DRAG_BACK_MARGIN);
+    if (!pNeighbour)
         return false;
 
     Player* pLeader = GetPartyLeader();
@@ -4392,11 +4597,33 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
 
     if (IsCombatLogged())
     {
+        // A drag validates its destination as clear before it moves, so one step ought to settle
+        // it. Captures show the same mob dragged five times in half a minute, which means the
+        // situation is being recreated between drags. The field that answers why is driftback:
+        // how far the tank now stands from where the previous drag was supposed to leave it. Near
+        // zero means the step did not buy enough clearance and the neighbour is simply still in
+        // range; near the step length means something walked the tank back again, and the only
+        // candidate is the chase generator following the victim to its old ground.
+        float driftBack = -1.0f;
+        if (m_lastDragTime)
+            driftBack = me->GetDistance(m_lastDragX, m_lastDragY, m_lastDragZ);
+
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] dragback bot='%s' pulled '%s' %.1fy back towards the group to clear "
-                 "a neighbouring camp",
-                 me->GetName(), pVictim->GetName(), PB_DRAG_BACK_STEP);
+                 "'%s' (lvl %u, aggro %.1fy, %.1fy away) from %.1f %.1f %.1f to %.1f %.1f %.1f, "
+                 "vdist=%.1f driftback=%.1f since=%ld",
+                 me->GetName(), pVictim->GetName(), PB_DRAG_BACK_STEP,
+                 pNeighbour->GetName(), pNeighbour->GetLevel(),
+                 pNeighbour->GetAttackDistance(me), me->GetDistance(pNeighbour),
+                 me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(), x, y, z,
+                 me->GetDistance(pVictim), driftBack,
+                 m_lastDragTime ? long(time(nullptr) - m_lastDragTime) : -1L);
     }
+
+    m_lastDragX = x;
+    m_lastDragY = y;
+    m_lastDragZ = z;
+    m_lastDragTime = time(nullptr);
 
     return true;
 }
@@ -5311,7 +5538,24 @@ void PartyBotAI::UpdateLootRolls()
 
     // A player wants it, so the bots are out of it regardless of what it would be worth to them.
     // Passing rather than greeding, so that the roll is not merely lost but uncontested.
-    RollVote const vote = playerClaimed ? ROLL_PASS : DecideLootRoll(itemId);
+    //
+    // Said out loud, because this is the one pass DecideLootRoll never gets to report and it looks
+    // identical from the outside to a bot that judged the item and declined it. A group whose every
+    // roll is claimed by the person in it writes no roll lines at all, and the log then reads as a
+    // loot system that is not running rather than one standing aside.
+    RollVote vote = ROLL_PASS;
+    if (playerClaimed)
+    {
+        if (IsCombatLogged())
+        {
+            ItemPrototype const* pProto = sObjectMgr.GetItemPrototype(itemId);
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] roll bot='%s' passes on '%s' (%u): a player needed it",
+                     me->GetName(), pProto ? pProto->Name1 : "something", itemId);
+        }
+    }
+    else
+        vote = DecideLootRoll(itemId);
 
     pGroup->CountRollVote(me, lootedTarget, itemSlot, vote);
 }
@@ -5594,9 +5838,19 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     Player* pLeader = GetPartyLeader();
     if (!pLeader)
     {
+        // An owner who is merely offline is waited for rather than answered by deleting the party.
+        // WaitForOfflineLeader carries the reasoning; the short version is that the group, and the
+        // instance bind hanging off it, only survive a crashed client if the bots do.
+        if (WaitForOfflineLeader())
+            return;
+
         botEntry->requestRemoval = true;
         return;
     }
+
+    // Back, so the clock stops. Reset here rather than in the helper: this is the one place that
+    // knows the leader is present again, and a stale start time would shorten the next wait.
+    m_leaderOfflineSince = 0;
 
     if (!pLeader->IsInWorld())
         return;
@@ -5643,6 +5897,37 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
     if (me->IsDead())
     {
+        // A wipe used to be outlived by the instruction that caused it. Attack orders, the pull
+        // sequence and the hold that comes with it are all "do this now" state, and dying cleared
+        // none of it, so the group would walk its corpse run, stand up, and resume: the puller
+        // still pulling, everybody else still ordered onto a mob now back at full health. The
+        // second wipe is a replay of the first and the group never gets to choose otherwise.
+        //
+        // Cleared once, on the tick the death is noticed, rather than on every dead tick. Both
+        // EndPull and ReleaseHold speak to the pet, and a corpse has no business issuing pet
+        // commands on a loop.
+        if (!m_ordersClearedByDeath)
+        {
+            m_ordersClearedByDeath = true;
+
+            if (IsPulling())
+                EndPull();
+
+            if (m_holdPosition)
+                ReleaseHold();
+
+            // EndPull and ReleaseHold each clear one of these, and a bot can die without either
+            // being in progress - killed under a plain attack order, which is the common case in
+            // a wipe.
+            me->SetAttackOrders(ObjectGuid());
+            m_pullTargetGuid.Clear();
+
+            // The add a warrior had broken off to collect, and the target it meant to go back to.
+            // Both name mobs from the fight that just killed it.
+            m_gatherPeelTarget.Clear();
+            m_gatherReturnTarget.Clear();
+        }
+
         UpdateDeadAI();
         return;
     }
@@ -5659,6 +5944,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     m_ghostStart = 0;
     m_leaderWaitSince = 0;
     m_corpseRunBestDistance = -1.0f;
+    m_ordersClearedByDeath = false;
 
     // An order is spent once its target is gone or is fighting somebody. At that point the aggro
     // rule lets the bot approach anyway, since the mob is engaged, so holding the suspension open
@@ -6104,13 +6390,29 @@ void PartyBotAI::LogCombatTick() const
             }
         }
 
+        // Where the tank is and how far off its victim, which the other two roles have always
+        // logged and this one never did. Without them a capture can show a fight being dragged
+        // away from a camp five times in thirty seconds and give no way to ask the obvious
+        // question, which is whether the tank is ending up back where it started each time.
+        //
+        // And whether it is swinging, which is the question behind the rage. Two tanks across two
+        // runs held a median of eight rage and never passed twenty seven, which is too little to
+        // run a threat list with and is why the group needed a hundred and thirteen peels. Rage is
+        // earned by hitting and being hit, so before tuning any threshold it is worth knowing
+        // whether the auto attack is even turning: melee is the state flag, swing is what is left
+        // on the main hand timer.
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
-                 "attackers=%u nearby=%u mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u "
-                 "gcd=%u stance=%u dmg=%u",
+                 "vdist=%.1f pos=%.1f %.1f %.1f moving=%u melee=%u swing=%u attackers=%u nearby=%u "
+                 "mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u gcd=%u stance=%u dmg=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
+                 pVictim ? me->GetDistance(pVictim) : 0.0f,
+                 me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
+                 uint32(me->IsStopped() ? 0 : 1),
+                 uint32(me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) ? 1 : 0),
+                 me->GetAttackTimer(BASE_ATTACK),
                  uint32(me->GetAttackers().size()),
                  pVictim ? uint32(me->GetEnemyCountInRadiusAround(pVictim, 8.0f)) : 0u,
                  myThreat, topThreat, topName, uint32(hasAggro),
@@ -6144,7 +6446,7 @@ void PartyBotAI::LogCombatTick() const
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
                  "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u "
-                 "cp=%u cpmine=%u front=%u stealth=%u gcd=%u dmg=%u",
+                 "cp=%u cpmine=%u front=%u stealth=%u gcd=%u ttl=%.1f dmg=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
@@ -6157,7 +6459,7 @@ void PartyBotAI::LogCombatTick() const
                  comboPoints, uint32(comboOnVictim ? 1 : 0),
                  uint32(m_chasingInFront ? 1 : 0),
                  uint32(me->HasAuraType(SPELL_AURA_MOD_STEALTH) ? 1 : 0),
-                 gcd, me->TakeDamageTally());
+                 gcd, EstimateSecondsToLive(pVictim), me->TakeDamageTally());
         return;
     }
 
@@ -6223,10 +6525,34 @@ void PartyBotAI::LogCombatTick() const
             ration = "conserve";
     }
 
+    // Which gate stopped the heal, and whether the wand was up while it did. wreason says the
+    // target was acceptable; this says what happened to the spell afterwards. Without it the
+    // difference between "no target" and "target, but every heal refused" is invisible, and
+    // the second one is what let a tank die with the healer at ninety percent mana.
+    char const* healGate = "n/a";
+    if (pWorst)
+    {
+        healGate = "no_heals";
+        bool castable = false;
+        for (SpellEntry const* pHeal : m_spellListDirectHeal)
+        {
+            if (CanTryToCastSpell(pWorst, pHeal))
+            {
+                castable = true;
+                break;
+            }
+            // Ends on the cheapest heal, which is the one most likely to have been affordable,
+            // so its refusal is the interesting one.
+            healGate = DescribeCastRefusal(pWorst, pHeal);
+        }
+        if (castable)
+            healGate = "ok";
+    }
+
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u attackers=%u gcd=%u "
-             "healed=%u dmg=%u",
+             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u autorepeat=%u "
+             "healgate=%s attackers=%u gcd=%u healed=%u dmg=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",
@@ -6234,6 +6560,8 @@ void PartyBotAI::LogCombatTick() const
              pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason, ration,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
+             uint32(me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) ? 1 : 0),
+             healGate,
              uint32(me->GetAttackers().size()), gcd,
              me->TakeHealingTally(), me->TakeDamageTally());
 }
@@ -6242,6 +6570,12 @@ void PartyBotAI::UpdateInCombatAI()
 {
     if (IsCombatLogged())
         LogCombatTick();
+
+    // Before every branch below, and deliberately not inside any of them. The estimate is built
+    // from a difference between consecutive looks at the target, so it is only as good as the
+    // regularity of the looking: sampling it from inside a rotation would stop sampling on every
+    // tick that rotation returned early, which is most of the interesting ones.
+    SampleVictimHealth();
 
     // Ahead of every early return below, because a damage dealer that took a different branch
     // this tick is still swinging.
@@ -6349,7 +6683,17 @@ void PartyBotAI::UpdateInCombatAI()
             return;
     }
 
-    if (CheckForDispelTargets())
+    // Dispelling competes with healing for the same tick and the same mana, and for anything whose
+    // job is healing it used to win that competition unconditionally, because it sat here in front
+    // of the entire rotation. A Scarlet Monastery capture has the priest's second most cast spell
+    // being Dispel Magic - fifty one casts in combat, a median target at ninety one percent health,
+    // and thirty of them repeats on the same ally inside twenty seconds - while the same healer
+    // spent a fifth of its ticks under thirty percent mana. Frostbolt slows on a rogue were
+    // outranking heals on the tank.
+    //
+    // So healers dispel from below the rotation, where a real heal has already had the tick. Every
+    // other role keeps it here: they have no healing for it to displace.
+    if (m_role != ROLE_HEALER && CheckForDispelTargets())
         return;
 
     // Behind the interrupt, which is the better answer to the same cast, and ahead of everything
@@ -6402,6 +6746,12 @@ void PartyBotAI::UpdateInCombatAI()
     // in, so there is nothing to save them for. Below the rotation because they are a multiplier on
     // it rather than a substitute, and not returning, since neither costs the bot its tick.
     UseOffensiveRacial();
+
+    // The healer's dispel, now that healing has had its chance at the tick. Above the speculative
+    // heal because a debuff that is actually worth removing is worth more than a heal cast on
+    // spec, and below everything that answers a health bar.
+    if (m_role == ROLE_HEALER && CheckForDispelTargets())
+        return;
 
     // Nothing needed healing this tick, which for a healer is the moment to start a cast anyway.
     // Below the rotation so a real heal always wins, and above KeepBusy because a heal already
@@ -7465,15 +7815,31 @@ bool PartyBotAI::IsCastingFillerDamage() const
            (m_spells.priest.pShadowWordPain && id == m_spells.priest.pShadowWordPain->Id);
 }
 
+// The wand counts too.
+//
+// AddFillerDamage ends in KeepBusy, which fires the wand, and the wand is what a healer
+// conserving mana falls through to -- so it is the filler a healer is actually running most
+// of the time. It was invisible here because it lives in CURRENT_AUTOREPEAT_SPELL rather
+// than CURRENT_GENERIC_SPELL, so the abandon above never fired for it and the healer stayed
+// on the wand while the tank died. One capture has the priest wanding Aku'mai for twenty two
+// seconds with full mana, watching the tank fall from 86 percent to dead without attempting
+// a single heal.
+bool PartyBotAI::IsCastingFillerAutoRepeat() const
+{
+    return me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr;
+}
+
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
     // A filler nuke is worth abandoning the instant somebody actually needs healing. Nothing else
     // can be cast while one is going out, so a Smite started against a healthy group and left to
     // run holds up the first heal of a fight that has just turned.
     if (GetRole() == ROLE_HEALER &&
-        IsCastingFillerDamage() &&
+        (IsCastingFillerDamage() || IsCastingFillerAutoRepeat()) &&
         SelectHealTarget(PB_FILLER_ABANDON_HEALTH, PB_FILLER_ABANDON_HEALTH))
     {
+        // Cancels the wand as well as a cast: InterruptNonMeleeSpells covers
+        // CURRENT_AUTOREPEAT_SPELL, and KeepBusy will not start another while one is running.
         me->InterruptNonMeleeSpells(false);
     }
 
@@ -7745,6 +8111,108 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
 // Agony is the plainest case, ramping so that most of its total lands in its final third, but
 // Corruption and Immolate lose on a short fight too, and between them they were taking every cast
 // the rotation had -- Shadow Bolt sits last, behind all three, and never got a look in.
+// One sample of the current target's health, kept so that the rotation can ask how long the
+// target has left instead of guessing from how much of it is gone.
+//
+// Health percentage cannot answer that question and was what every previous attempt used. A mob
+// at thirty percent is nearly dead if the party is killing it in six seconds and has half a
+// minute left if the party is barely scratching it, and a rotation cannot tell those apart from
+// the percentage alone -- which is how a rogue ended up spending its whole bar at two combo
+// points on a boss and holding it at three on a boar until the boar died.
+//
+// Only downward movement counts. A mob that was healed says nothing about how fast it is dying,
+// and a mob whose health went up because it evaded and reset says less than nothing.
+void PartyBotAI::SampleVictimHealth()
+{
+    Unit const* pVictim = me->GetVictim();
+    uint32 const now = WorldTimer::getMSTime();
+
+    if (!pVictim || !pVictim->IsAlive())
+    {
+        m_ttlVictimGuid.Clear();
+        m_ttlDamagePerSecond = 0.0f;
+        return;
+    }
+
+    // A new target starts a new measurement. Carrying the old rate across would have the rogue
+    // spend its opening bar on a full health mob because the last one died fast.
+    if (pVictim->GetObjectGuid() != m_ttlVictimGuid)
+    {
+        m_ttlVictimGuid = pVictim->GetObjectGuid();
+        m_ttlLastHealth = pVictim->GetHealth();
+        m_ttlLastSample = now;
+        m_ttlDamagePerSecond = 0.0f;
+        return;
+    }
+
+    uint32 const elapsed = WorldTimer::getMSTimeDiff(m_ttlLastSample, now);
+    if (elapsed < PB_TTL_SAMPLE_INTERVAL_MS)
+        return;
+
+    uint32 const health = pVictim->GetHealth();
+
+    // A window in which the target lost nothing is evidence too, and feeding it in as a zero is
+    // what lets the estimate decay when a fight stops rather than holding the last rate forever.
+    // A mob that has been crowd controlled and left alone should read as living a long time,
+    // because it is.
+    float const sample = (health < m_ttlLastHealth)
+                       ? float(m_ttlLastHealth - health) * 1000.0f / float(elapsed)
+                       : 0.0f;
+
+    m_ttlDamagePerSecond = (m_ttlDamagePerSecond > 0.0f)
+                         ? (m_ttlDamagePerSecond * (1.0f - PB_TTL_SMOOTHING)) + (sample * PB_TTL_SMOOTHING)
+                         : sample;
+
+    m_ttlLastHealth = health;
+    m_ttlLastSample = now;
+}
+
+// How many seconds the target has left at the rate it is currently losing health. Reports a long
+// time when it does not know, which is the safe direction: a bot with no evidence should behave
+// as it would on a fight worth investing in, and every caller treats a short answer as licence to
+// spend everything it has.
+float PartyBotAI::EstimateSecondsToLive(Unit const* pVictim) const
+{
+    if (!pVictim || !pVictim->IsAlive())
+        return 0.0f;
+
+    if (pVictim->GetObjectGuid() != m_ttlVictimGuid || m_ttlDamagePerSecond <= 0.0f)
+        return PB_TTL_UNKNOWN_SECONDS;
+
+    return float(pVictim->GetHealth()) / m_ttlDamagePerSecond;
+}
+
+// How long until this rogue can land one more combo point: the wait for enough energy to pay for
+// a builder, plus the global cooldown that builder occupies.
+//
+// Measured against Sinister Strike rather than whichever builder the rotation will actually pick,
+// because it is the one always available and the one the rogue falls back to when it cannot get
+// behind the target. Backstab costs more, so the estimate is optimistic by the difference on the
+// ticks where Backstab is what gets cast, which errs towards building - the same direction the
+// unknown case errs, and the cheaper mistake of the two.
+float PartyBotAI::EstimateSecondsPerComboPoint() const
+{
+    SpellEntry const* pBuilder = m_spells.rogue.pSinisterStrike;
+    if (!pBuilder)
+        return PB_ROGUE_GCD_SECONDS;
+
+    // Talent reductions are real rage and energy off the cost, so the cost has to come from the
+    // same place the cast will take it from rather than from the spell data. Passing false for
+    // dropModCharge asks what it would cost without spending a talent's proc charge to find out.
+    uint32 const cost = Spell::CalculatePowerCost(pBuilder, me, nullptr, nullptr, false);
+    uint32 const energy = me->GetPower(POWER_ENERGY);
+
+    // Twenty energy a regeneration tick, before the server's own rate multiplier.
+    float const perSecond = (20.0f * sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_ENERGY)) /
+                            (float(REGEN_TIME_PLAYER_FULL) / 1000.0f);
+
+    float wait = 0.0f;
+    if (energy < cost && perSecond > 0.0f)
+        wait = float(cost - energy) / perSecond;
+
+    return wait + PB_ROGUE_GCD_SECONDS;
+}
+
 bool PartyBotAI::IsWorthDotting(Unit const* pVictim) const
 {
     // Anything that is not an ordinary mob lives long enough for anything.
@@ -8133,27 +8601,6 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
             return;
     }
 
-    // Spend the surplus. These land on the next swing instead of costing a cast, so the only
-    // thing they compete for is rage, and rage a tank is sitting on is threat it has decided not
-    // to make. The floor is set high enough that what is spent here is genuinely spare. The test
-    // for this used to be inverted, dumping only below thirty rage and pooling in silence above
-    // it, so a tank being hit hard enough to be flush was also the one doing least with it.
-    if (me->GetPower(POWER_RAGE) >= ScaleTankRage(PB_TANK_RAGE_DUMP))
-    {
-        if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
-            CanTryToCastSpell(pVictim, m_spells.warrior.pCleave))
-        {
-            if (DoCastSpell(pVictim, m_spells.warrior.pCleave) == SPELL_CAST_OK)
-                return;
-        }
-        else if (m_spells.warrior.pHeroicStrike &&
-            CanTryToCastSpell(pVictim, m_spells.warrior.pHeroicStrike))
-        {
-            if (DoCastSpell(pVictim, m_spells.warrior.pHeroicStrike) == SPELL_CAST_OK)
-                return;
-        }
-    }
-
     // The global cooldown, best threat per rage first. Shield Slam leads it and works in any
     // stance despite reading like a Defensive ability; Revenge is nearly free and its own
     // cooldown means it is never what gets crowded out.
@@ -8219,6 +8666,37 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     {
         if (DoCastSpell(pVictim, m_spells.warrior.pSunderArmor) == SPELL_CAST_OK)
             return;
+    }
+
+    // Spend the surplus. Heroic Strike and Cleave are off the global cooldown and land on the
+    // next swing rather than costing a cast, so the only thing they compete for is rage.
+    //
+    // This used to sit above the threat list behind a tuned floor of sixty rage, scaled to
+    // forty four at level thirty four. Two tanks across two runs never exceeded twenty seven
+    // over more than fifteen hundred ticks, so the floor was not conservative, it was
+    // unreachable: Heroic Strike and Cleave were cast zero times in six hundred and fourteen
+    // casts. Both halves of that are now different.
+    //
+    // It sits last, so it can only take a tick the threat abilities did not want - which in
+    // practice means during the global cooldown one of them just started, exactly where a free
+    // ability belongs. And the floor is no longer a number to argue about. What it has to
+    // guarantee is that spending here does not cost the next Sunder Armor, and the spell costs
+    // answer that directly, at every level and every rank.
+    if (SpellEntry const* pDump = (m_spells.warrior.pCleave &&
+                                   me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1)
+                                ? m_spells.warrior.pCleave
+                                : m_spells.warrior.pHeroicStrike)
+    {
+        uint32 floor = Spell::CalculatePowerCost(pDump, me);
+        if (m_spells.warrior.pSunderArmor)
+            floor += Spell::CalculatePowerCost(m_spells.warrior.pSunderArmor, me);
+
+        if (me->GetPower(POWER_RAGE) >= floor &&
+            CanTryToCastSpell(pVictim, pDump))
+        {
+            if (DoCastSpell(pVictim, pDump) == SPELL_CAST_OK)
+                return;
+        }
     }
 
     if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE &&
@@ -8602,25 +9080,68 @@ bool PartyBotAI::EnterStealthIfNeeded(SpellEntry const* pStealthSpell)
 
 void PartyBotAI::UpdateOutOfCombatAI_Rogue()
 {
+    // Poisons go on through CastWeaponBuff, which leaves no cast line, so a whole run's telemetry
+    // could not answer whether the rogues were fighting with poisoned weapons or bare ones - and
+    // poisons are a real share of a rogue's damage. One line each way settles it: which poison
+    // went on which hand, or that the bot has none to put on.
     if (m_spells.rogue.pMainHandPoison &&
         CanTryToCastSpell(me, m_spells.rogue.pMainHandPoison))
     {
         if (CastWeaponBuff(m_spells.rogue.pMainHandPoison, EQUIPMENT_SLOT_MAINHAND) == SPELL_CAST_OK)
+        {
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] poison bot='%s' applied '%s' to the main hand",
+                         me->GetName(), m_spells.rogue.pMainHandPoison->SpellName[0].c_str());
+            }
             return;
+        }
     }
 
     if (m_spells.rogue.pOffHandPoison &&
         CanTryToCastSpell(me, m_spells.rogue.pOffHandPoison))
     {
         if (CastWeaponBuff(m_spells.rogue.pOffHandPoison, EQUIPMENT_SLOT_OFFHAND) == SPELL_CAST_OK)
+        {
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] poison bot='%s' applied '%s' to the off hand",
+                         me->GetName(), m_spells.rogue.pOffHandPoison->SpellName[0].c_str());
+            }
             return;
+        }
+    }
+
+    if (!m_spells.rogue.pMainHandPoison && IsCombatLogged() &&
+        (time(nullptr) - m_lastPoisonLog) >= PB_POISON_LOG_INTERVAL)
+    {
+        m_lastPoisonLog = time(nullptr);
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] poison bot='%s' has no damage poison it can make, fighting bare",
+                 me->GetName());
     }
 
     if (EnterStealthIfNeeded(m_spells.rogue.pStealth))
         return;
 
-    if (me->GetVictim())
-        UpdateInCombatAI_Rogue();
+    // A victim is not a reason to start a fight. This ran the whole combat rotation on nothing more
+    // than one being set, so a rogue left holding a target the group was not fighting would stealth
+    // up, close on it and open, and the first anyone knew of the pull was the tank taunting it back.
+    // Whatever set that victim -- a stale order, the leader's target, the last thing it fought -- is
+    // not an instruction to engage, and out of combat there is nobody to notice the difference.
+    //
+    // Three things make opening legitimate, and all three are asked rather than assumed. Being the
+    // designated puller, which is the one role whose job is to open. Standing under an explicit
+    // attack order, which is what `partybot attackstart` sets and what the suites drive. Or a victim
+    // the group is already engaged with, which is the ordinary case of a bot that simply has not
+    // been hit yet. Anything else waits, which is what a rogue at the anchor should be doing.
+    if (Unit* pVictim = me->GetVictim())
+    {
+        if (IsPulling() || me->HasAttackOrders() || IsEngagedWithGroup(pVictim))
+            UpdateInCombatAI_Rogue();
+    }
 }
 
 void PartyBotAI::UpdateInCombatAI_Rogue()
@@ -8738,29 +9259,72 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         // is worth nothing against this one. Reading the count alone said otherwise and the
         // finisher was refused with SPELL_FAILED_NO_COMBO_POINTS - twenty times in one run, each
         // one a wasted tick immediately after a target switch.
-        // Combo points belong to a target, so a bar earned on the last mob is worth nothing here.
         uint32 const comboPoints = (me->GetComboTargetGuid() == pVictim->GetObjectGuid())
                                  ? me->GetComboPoints() : 0;
 
-        // Waiting for the fifth point is what a rogue does in a fight long enough to earn it. On
-        // dungeon trash the mob dies first and the points die with it, and holding out for five
-        // was costing nearly every finisher in the run: seven hundred and twelve builders produced
-        // sixteen finishers, and not one Eviscerate in the entire log. Sinister Strike costs forty
-        // five energy, so five points is two hundred and twenty five energy of building, over
-        // twenty seconds of regeneration, against trash that is dead in ten.
+        // The two numbers the whole finisher decision turns on: how long the mob has left, and
+        // how long this rogue needs to earn one more point.
         //
-        // So spend at five as before, but also spend what is in hand on anything about to die, and
-        // put Slice and Dice up early rather than saving for it. Slice and Dice is worth more at
-        // two points now than at five points later, because what it multiplies is every auto
-        // attack for the rest of the fight.
-        bool const targetDyingSoon = pVictim->GetHealthPercent() < 25.0f;
-        bool const wantsSliceAndDice = m_spells.rogue.pSliceAndDice &&
-                                      !me->HasAura(m_spells.rogue.pSliceAndDice->Id) &&
-                                       pVictim->GetHealthPercent() > 30.0f;
+        // Every previous attempt at this picked a combo point threshold and argued about the
+        // number. Five was unreachable on trash, four was unreachable too, and two spent the bar
+        // on everything including bosses. There is no such number, because the right one is not a
+        // property of the rogue at all: it is a property of how long the thing in front of it is
+        // going to live. A Razorfen Kraul capture has both rogues at four hundred and forty four
+        // engaged ticks without once reaching four points, spending forty four Eviscerates at two
+        // and three - all of them from the "target is nearly dead" clause, none of them chosen -
+        // and not one Slice and Dice in seventeen minutes. The thresholds were not mistuned. They
+        // were answering the wrong question.
+        //
+        // So ask the right one, every tick: can I afford one more point and still spend it? If
+        // yes, build, because Eviscerate pays its thirty five energy once however many points it
+        // spends and a bigger one is strictly better. If no, spend what is in hand now, because
+        // the alternative is a mob that dies with the bar still full.
+        //
+        // That single comparison produces both behaviours the old thresholds could not hold at the
+        // same time. On a boar dying in six seconds it spends at two or three, correctly. On a
+        // boss it never comes true, so the rogue builds to five, spends, and builds again - which
+        // is what a full bar is for and what no fixed threshold below five would ever have done.
+        // It also chains: refusing to wait at three because the mob dies in four seconds is the
+        // same test that, one point and four seconds earlier, said building to three was fine.
+        float const secondsToLive = EstimateSecondsToLive(pVictim);
+        float const secondsPerPoint = EstimateSecondsPerComboPoint();
+        bool const canAffordAnotherPoint =
+            secondsToLive > (secondsPerPoint + PB_ROGUE_FINISHER_LEAD_SECONDS);
 
-        if (comboPoints >= 5 ||
-           (comboPoints >= 2 && targetDyingSoon) ||
-           (comboPoints >= 2 && wantsSliceAndDice))
+        // Slice and Dice buys attack speed for the rest of the fight and no damage at all up
+        // front, so it is worth a bar only where there is a rest of the fight to buy. Below that
+        // it is a finisher that did nothing, which is exactly how it beat Eviscerate to every
+        // point a rogue earned for as long as it was gated on combo points alone.
+        //
+        // Refreshed a little early rather than on lapse. Waiting for it to fall off means the
+        // haste is already gone by the time the rogue starts paying for it again, and the rebuy
+        // lands at whatever happens to be in hand instead of at a bar worth spending.
+        bool wantsSliceAndDice = false;
+        if (m_spells.rogue.pSliceAndDice && secondsToLive > PB_ROGUE_SND_MIN_FIGHT_SECONDS)
+        {
+            SpellAuraHolder const* pSnd = me->GetSpellAuraHolder(m_spells.rogue.pSliceAndDice->Id);
+            float const sndLeft = pSnd ? float(pSnd->GetAuraDuration()) / 1000.0f : 0.0f;
+
+            // A negative duration is a permanent aura, which nothing puts on Slice and Dice, but
+            // reading it as "about to expire" would put the rogue in a refresh loop if anything did.
+            wantsSliceAndDice = pSnd
+                              ? (sndLeft >= 0.0f && sndLeft < PB_ROGUE_SND_REFRESH_SECONDS)
+                              : true;
+        }
+
+        // Rupture spreads its damage over a duration that scales with the points spent, so it
+        // wants a fight that outlasts it and a full bar to make it with. Its duration is six
+        // seconds plus two a point, and asking for comfortably longer than that rather than
+        // merely longer is what keeps it off the mob that dies two ticks into it.
+        float const ruptureSeconds = 6.0f + (2.0f * float(comboPoints));
+
+        bool const spendNow =
+            comboPoints >= PB_ROGUE_FINISHER_MIN_COMBO &&
+           (comboPoints >= PB_ROGUE_MAX_COMBO ||        // another builder would overcap the bar
+           !canAffordAnotherPoint ||                    // the points die with the mob otherwise
+           (wantsSliceAndDice && comboPoints >= PB_ROGUE_SND_MIN_COMBO));
+
+        if (spendNow)
         {
             // A finisher chosen at random was the single worst decision any rotation made. Two of
             // the four are not damage at all: bosses are immune to Kidney Shot outright, and Expose
@@ -8769,29 +9333,23 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
             // priority list, and it always was; ordering it is the whole fix.
             SpellEntry const* pComboSpell = nullptr;
 
-            // Slice and Dice first and by a wide margin: it is a multiplier on every auto attack
-            // for the rest of the fight, which is worth more than any single use of the energy.
-            // Not on something already dying, where there is no rest of the fight to buy and the
-            // points are better spent as damage before the mob takes them to the grave.
-            if (wantsSliceAndDice && !targetDyingSoon)
+            // Slice and Dice first where the fight has earned it, because a multiplier on every
+            // remaining auto attack beats any single use of the energy. The fight length test is
+            // already inside wantsSliceAndDice, so by here there is a rest of the fight to buy.
+            if (wantsSliceAndDice && comboPoints >= PB_ROGUE_SND_MIN_COMBO)
             {
                 pComboSpell = m_spells.rogue.pSliceAndDice;
             }
-            // Then Rupture, but only where it will run: it beats Eviscerate over a long fight and
-            // loses badly on anything that dies inside its duration. IsWorthDotting is the same
-            // judgement the warlock makes about its own dots, so the two agree about what counts
-            // as a fight worth investing in.
-            // Only at a full bar, though: Rupture's damage is spread over its duration and scales
-            // with the points spent, so a two point Rupture on a mob that dies in six seconds is
-            // the worst of both.
+            // Then Rupture on a fight long enough to run it out, at a full bar and no less: a two
+            // point Rupture on a mob that dies in six seconds is the worst of both.
             else if (m_spells.rogue.pRupture &&
-                     comboPoints >= 5 &&
-                     IsWorthDotting(pVictim) &&
+                     comboPoints >= PB_ROGUE_MAX_COMBO &&
+                     secondsToLive > (ruptureSeconds * PB_ROGUE_RUPTURE_FIGHT_MULTIPLE) &&
                     !pVictim->HasAura(m_spells.rogue.pRupture->Id))
             {
                 pComboSpell = m_spells.rogue.pRupture;
             }
-            // Otherwise the damage. Eviscerate is what five combo points are for.
+            // Otherwise the damage, which is what the points were being saved for.
             else if (m_spells.rogue.pEviscerate)
             {
                 pComboSpell = m_spells.rogue.pEviscerate;
@@ -8921,9 +9479,21 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
                 return;
         }
 
+        // Out of melee reach is not on its own a reason to close the gap faster. Two of the ways a
+        // bot gets there are cases where closing at all is the mistake: the pull rule has just
+        // refused its route because walking it would wake something, or it has been told to hold
+        // position. Sprint answered both with speed, and the rule then had a bot straining at a
+        // leash it could not see -- until the route cleared for an instant and it arrived, alone,
+        // in front of a pack the tank had not taken yet.
+        //
+        // The refusal is asked about rather than the distance, because the distance is the same in
+        // the case Sprint is actually for: a mob that ran, or a bot that fell behind on a corridor
+        // nothing objects to. Those still get it.
         if (m_spells.rogue.pSprint &&
            !me->HasUnitState(UNIT_STATE_ROOT) &&
            !me->CanReachWithMeleeAutoAttack(pVictim) &&
+           !m_holdPosition &&
+           !me->WasPullRouteRefusedRecently(PB_SPRINT_AFTER_REFUSAL_MS) &&
             CanTryToCastSpell(me, m_spells.rogue.pSprint))
         {
             if (DoCastSpell(me, m_spells.rogue.pSprint) == SPELL_CAST_OK)
@@ -9321,6 +9891,15 @@ void PartyBotAI::UpdateInCombatAI_Druid()
                     if (DoCastSpell(pVictim, m_spells.druid.pEntanglingRoots) == SPELL_CAST_OK)
                         return;
                 }
+                // Caster forms only, and a melee druid out of form is not a caster. This sits in
+                // the FORM_NONE branch, which a feral reaches whenever something has shifted it
+                // out, and kiting to twenty five yards is the last thing a bot wants while it is
+                // trying to get back into bear. The other melee retreat paths already draw this
+                // line -- backout, breaksight and StepAwayFromHeldAttacker all refuse a melee
+                // role -- and this was the one that did not.
+                if (m_role == ROLE_TANK || m_role == ROLE_MELEE_DPS)
+                    return;
+
                 me->SetCasterChaseDistance(25.0f);
                 if (RunAwayFromTarget(pVictim))
                     return;

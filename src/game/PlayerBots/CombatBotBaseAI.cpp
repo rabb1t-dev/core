@@ -1708,7 +1708,23 @@ void CombatBotBaseAI::PopulateSpellData()
             switch (pSpellEntry->Effect[i])
             {
                 case SPELL_EFFECT_HEAL:
-                    m_spellListDirectHeal.insert(pSpellEntry);
+                    // Only the ones that can actually be aimed at somebody.
+                    //
+                    // Anything carrying SPELL_EFFECT_HEAL landed in this list, Holy Nova
+                    // included, and Holy Nova is an area heal centred on the priest: its
+                    // implicit target is the caster's party within its own range, so aiming it
+                    // at a named ally does nothing for that ally unless they happen to be
+                    // standing on the priest. SelectMostEfficientHealingSpell then picked it on
+                    // size alone and a healer spent 171 of ~245 casts on it while the tank it
+                    // was trying to heal stood eighteen yards away and died. Real heals - Flash
+                    // Heal and Heal - got eleven and seven.
+                    //
+                    // The non-healer path that deliberately uses Holy Nova as an area spell is
+                    // untouched; it names the spell directly rather than going through here.
+                    if (pSpellEntry->EffectImplicitTargetA[i] == TARGET_UNIT_FRIEND ||
+                        pSpellEntry->EffectImplicitTargetA[i] == TARGET_UNIT_CASTER ||
+                        pSpellEntry->EffectImplicitTargetA[i] == TARGET_UNIT_FRIEND_NEAR_CASTER)
+                        m_spellListDirectHeal.insert(pSpellEntry);
                     break;
                 case SPELL_EFFECT_ATTACK_ME:
                     m_spellListTaunt.push_back(pSpellEntry);
@@ -3035,11 +3051,77 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSingleSpellEntry, S
     return pBest;
 }
 
+// Whether a debuff this bot could remove is worth the cast and the mana behind it.
+//
+// IsValidDispelTarget answers a different question - whether anything removable is present at all -
+// and answering only that question is what made Dispel Magic a priest's second most cast spell in
+// Scarlet Monastery, at a median target health of ninety one percent, while the same healer spent a
+// fifth of its ticks below thirty percent mana.
+//
+// Two kinds of debuff earn a cast: the ones that stop an ally doing its job, and the ones doing
+// damage. A movement slow, a stat reduction or an armour debuff is neither. Those are cheaper to
+// heal through than to chase, and chasing them against a caster that simply reapplies them is a
+// mana race the healer loses every time.
+bool CombatBotBaseAI::IsWorthDispelling(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    uint32 dispelMask = 0;
+    for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+    {
+        if (pSpellEntry->Effect[i] == SPELL_EFFECT_DISPEL)
+            dispelMask |= Spells::GetDispellMask(DispelType(pSpellEntry->EffectMiscValue[i]));
+    }
+
+    for (auto const& aura : pTarget->GetSpellAuraHolderMap())
+    {
+        SpellAuraHolder const* pHolder = aura.second;
+        if (!pHolder || pHolder->IsPositive())
+            continue;
+
+        SpellEntry const* pProto = pHolder->GetSpellProto();
+        if (!pProto || !((1 << pProto->Dispel) & dispelMask))
+            continue;
+
+        // Something already most of the way through its duration will be gone before the cast
+        // finishes paying for itself. Permanent auras report a negative duration and are always
+        // worth considering, since nothing is going to remove them on its own.
+        int32 const left = pHolder->GetAuraDuration();
+        if (left >= 0 && left < CB_DISPEL_MIN_REMAINING_MS)
+            continue;
+
+        for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+        {
+            switch (pProto->EffectApplyAuraName[i])
+            {
+                case SPELL_AURA_PERIODIC_DAMAGE:
+                case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
+                case SPELL_AURA_PERIODIC_LEECH:
+                case SPELL_AURA_PERIODIC_MANA_LEECH:
+                case SPELL_AURA_MOD_STUN:
+                case SPELL_AURA_MOD_FEAR:
+                case SPELL_AURA_MOD_CONFUSE:
+                case SPELL_AURA_MOD_ROOT:
+                case SPELL_AURA_MOD_SILENCE:
+                case SPELL_AURA_MOD_PACIFY:
+                case SPELL_AURA_MOD_PACIFY_SILENCE:
+                case SPELL_AURA_MOD_CHARM:
+                case SPELL_AURA_MOD_POSSESS:
+                    return true;
+                default:
+                    break;
+            }
+        }
+    }
+
+    return false;
+}
+
 Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
 {
     Group* pGroup = me->GetGroup();
     if (pGroup)
     {
+        time_t const now = time(nullptr);
+
         for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             if (Player* pMember = itr->getSource())
@@ -3049,7 +3131,25 @@ Player* CombatBotBaseAI::SelectDispelTarget(SpellEntry const* pSpellEntry) const
                     IsValidDispelTarget(pMember, pSpellEntry) &&
                     me->IsWithinLOSInMap(pMember) &&
                     me->IsWithinDist(pMember, 30.0f))
+                {
+                    // Out of combat there is nothing better to do with the mana and it will be
+                    // back before it is needed, so anything removable goes. In combat the debuff
+                    // has to earn the cast.
+                    if (me->IsInCombat() && !IsWorthDispelling(pMember, pSpellEntry))
+                        continue;
+
+                    // One dispel per ally per window. Thirty of one capture's fifty two dispels
+                    // were repeats on the same ally inside twenty seconds, which is not a healer
+                    // keeping up - it is a healer being farmed by something that recasts faster
+                    // than it can clear.
+                    auto const last = m_lastDispel.find(pMember->GetObjectGuid());
+                    if (last != m_lastDispel.end() &&
+                        (now - last->second) < CB_DISPEL_REPEAT_SECONDS)
+                        continue;
+
+                    m_lastDispel[pMember->GetObjectGuid()] = now;
                     return pMember;
+                }
             }
         }
     }
@@ -4061,6 +4161,43 @@ void CombatBotBaseAI::AutoEquipGear(uint32 option)
     UpdateVisualHonorRankBasedOnItems();
 }
 
+// Mirrors CanTryToCastSpell's checks, in its order, and names the one that said no.
+// Kept next to it deliberately: if that function grows a gate, this one is wrong until it
+// grows the same gate, and the log quietly starts reporting "ok" for a refused spell.
+char const* CombatBotBaseAI::DescribeCastRefusal(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!pSpellEntry || !pTarget)
+        return "no_spell";
+
+    if (m_preventCasting)
+        return "prevented";
+
+    if (!me->IsSpellReady(pSpellEntry))
+        return "cooldown";
+
+    if (me->HasGCD(pSpellEntry))
+        return "gcd";
+
+    if (pSpellEntry->TargetAuraState &&
+       !pTarget->HasAuraState(AuraState(pSpellEntry->TargetAuraState)))
+        return "target_aurastate";
+
+    if (pSpellEntry->CasterAuraState &&
+       !me->HasAuraState(AuraState(pSpellEntry->CasterAuraState)))
+        return "caster_aurastate";
+
+    uint32 const powerCost = Spell::CalculatePowerCost(pSpellEntry, me);
+    Powers const powerType = Powers(pSpellEntry->powerType);
+
+    if (powerType == POWER_HEALTH)
+        return (me->GetHealth() <= powerCost) ? "health_cost" : "ok";
+
+    if (me->GetPower(powerType) < powerCost)
+        return "power";
+
+    return "ok";
+}
+
 bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const
 {
     if (m_preventCasting)
@@ -4070,6 +4207,15 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
         return false;
 
     if (me->HasGCD(pSpellEntry))
+        return false;
+
+    // An immune target is a refusal that never changes, so offering the spell again next tick
+    // is the same wasted global cooldown over and over. The rotations already know this in
+    // prose - the rogue's finisher list carries a note that bosses are immune to Kidney Shot -
+    // but nothing acted on it, so the cast went out, cost its resource, and did nothing.
+    // Creature overrides this with the mechanic, school and effect immunities from
+    // creature_template, which is where boss immunities actually live.
+    if (pTarget != me && pTarget->IsImmuneToSpell(pSpellEntry, false))
         return false;
 
     if (pSpellEntry->TargetAuraState &&
@@ -6062,6 +6208,17 @@ void CombatBotBaseAI::OnPacketReceived(WorldPacket const* packet)
         case SMSG_LOOT_START_ROLL:
         {
             if (!me)
+                return;
+
+            // Left alone for an AI that judges loot for itself. This blanket pass is here so that a
+            // headless session with no opinion cannot leave a roll waiting out its sixty seconds,
+            // and for a battle bot that is the whole of the right answer. For a party bot it was
+            // the wrong one, and silently: the vote went out on the packet, in the same instant the
+            // roll opened, so by the time UpdateLootRolls came round on the next tick the bot was
+            // no longer listed as undecided and DecideLootRoll was never reached. Every party bot
+            // passed on everything, instantly, and the evaluator behind them -- stat weights,
+            // upgrade deltas, the roll log, all of it -- has never once been consulted in live play.
+            if (AnswersLootRollsItself())
                 return;
 
             uint64 guid = *((uint64*)(*packet).contents());

@@ -113,6 +113,12 @@ static constexpr float CB_HEAL_COMBAT_CEILING_PERCENT = 78.0f;
 // than in bursts, so the cast has to be started earlier to keep ahead of it at all.
 static constexpr float CB_HEAL_TANK_CEILING_BONUS = 7.0f;
 
+// Dispelling in combat. The remaining-duration floor keeps a cast off a debuff that will expire
+// before the cast has paid for itself, and the repeat window stops a mob that reapplies faster
+// than the healer can clear from turning dispelling into a mana race.
+static constexpr int32 CB_DISPEL_MIN_REMAINING_MS = 3000;
+static constexpr time_t CB_DISPEL_REPEAT_SECONDS = 8;
+
 // How often an armour slot gets a permanent enchant. Weapons and shields always do: those are the
 // pieces anybody bothers with, because a weapon enchant scales everything the character does.
 // Bracers and boots are what a real player enchants when the mats happen to be lying around.
@@ -191,6 +197,10 @@ public:
     }
 
     virtual void OnPacketReceived(WorldPacket const* packet) override;
+    // Whether this AI answers group loot rolls on its own schedule. False here, so a headless
+    // session that has no opinion about loot still votes and never leaves a roll waiting out its
+    // timer; PartyBotAI says true, because it has an evaluator and wants to be asked.
+    virtual bool AnswersLootRollsItself() const { return false; }
     void SendBattlefieldPortPacket();
     void SendBattlemasterJoinPacket(uint8 battlegroundId);
     void SendAreaTriggerPacket(uint32 areaTriggerId);
@@ -252,6 +262,7 @@ public:
     Player* SelectBuffTarget(SpellEntry const* pSpellEntry) const;
     Player* SelectBuffTarget(SpellEntry const* pSingleSpellEntry, SpellEntry const* pGroupSpellEntry, SpellEntry const*& pSelectedSpellEntry) const;
     Player* SelectDispelTarget(SpellEntry const* pSpellEntry) const;
+    bool IsWorthDispelling(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool IsValidBuffTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool IsValidHealTarget(Unit const* pTarget, float healthPercent = 100.0f) const;
     float GetMaxHealSpellRange() const;
@@ -274,6 +285,10 @@ public:
 
     SpellCastResult DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry);
     virtual bool CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+    // Which of CanTryToCastSpell's gates refused, for the log. A heal declined inside
+    // SelectMostEfficientHealingSpell never reaches DoCastSpell and so leaves no trace at
+    // all, which is how a healer standing over a dying tank reads as nothing happening.
+    char const* DescribeCastRefusal(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
 
     // Whether this bot's combat decisions are being recorded, gated on the runtime switch.
     bool IsCombatLogged() const;
@@ -824,6 +839,9 @@ public:
     // why its fear never went off.
     mutable time_t m_lastPullLog = 0;
     mutable time_t m_lastFearLog = 0;
+    // When each ally was last dispelled by this bot. Bounded by party size, and written from a
+    // const selector, hence mutable.
+    mutable std::map<ObjectGuid, time_t> m_lastDispel;
     // Told to hold a spot and wait for the fight to arrive, rather than closing on it. Lives here
     // rather than with the rest of the party bot's pull state so that BeginChasing, which every
     // class rotation reaches for and which is defined on this class, can decline. A battleground bot
