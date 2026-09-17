@@ -339,6 +339,7 @@ public:
     // Throttle for the "no poison to apply" line, which would otherwise repeat every tick a rogue
     // spends out of combat.
     time_t m_lastPoisonLog = 0;
+    mutable time_t m_lastStandLog = 0;
     // Whether this death has already had the bot's standing orders torn up. Reset on rising, so
     // every death gets one clearing and no death gets one per tick.
     bool m_ordersClearedByDeath = false;

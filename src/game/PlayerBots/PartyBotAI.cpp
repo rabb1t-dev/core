@@ -451,6 +451,9 @@ static constexpr uint32 PB_HELD_STEP_MIN_REMAINING_MS = 2000;
 // long as it lasts.
 static constexpr time_t PB_HELD_STEP_INTERVAL = 3;
 
+// How often a caster that has decided to stand and take it says so. Once per fight is the useful
+// rate; the decision itself is remade every tick.
+static constexpr time_t PB_STAND_LOG_INTERVAL = 5;
 
 // How many consecutive ticks a bot spends unable to see its own target before it stops arguing
 // with the wall and walks. Four ticks is one second. Not one tick: a mob crossing behind a pillar
@@ -4946,6 +4949,39 @@ bool PartyBotAI::TakeCoverFromCast()
     return true;
 }
 
+// Whether walking away from this enemy would actually get the bot away from it.
+//
+// For a priest with a mob on it the answer is almost always no, and that is the point. A creature
+// chasing a player runs at least as fast as the player does, so a healer that turns and runs takes
+// the same swings it was already taking, from behind, with nothing going out of its hands - and
+// drags the mob across whatever else is in the room on the way, which is how backing out turns into
+// the next pull. Standing still and casting while the tank peels is the better trade every time the
+// gap cannot actually be opened.
+//
+// Not being attacked counts as escapable, and is the case this used to get wrong most often: a mob
+// that merely stands close enough to reach the healer is not chasing anybody, so stepping out of its
+// arc costs nothing and leaves it where the tank has it.
+static constexpr float PB_ESCAPE_SPEED_MARGIN = 1.15f;
+
+static bool CanEscapeOnFoot(Unit const* pBot, Unit const* pEnemy)
+{
+    if (pEnemy->GetVictim() != pBot)
+        return true;
+
+    // Rooted, stunned or confused for long enough to be worth the walk. Same threshold the held
+    // step uses, so the two paths cannot disagree about what counts as pinned.
+    if (GetHeldInPlaceDurationMs(pEnemy) >= PB_HELD_STEP_MIN_REMAINING_MS)
+        return true;
+
+    // Running the other way on its own account.
+    if (pEnemy->HasUnitState(UNIT_STATE_FLEEING))
+        return true;
+
+    // Or slowed enough that the distance will genuinely open. A margin rather than a plain
+    // comparison because a rounding-error advantage buys a yard and costs a cast.
+    return pBot->GetSpeed(MOVE_RUN) > pEnemy->GetSpeed(MOVE_RUN) * PB_ESCAPE_SPEED_MARGIN;
+}
+
 bool PartyBotAI::BackOutOfMeleeRange()
 {
     if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
@@ -4969,6 +5005,7 @@ bool PartyBotAI::BackOutOfMeleeRange()
     // rather than of this bot's own target, because the mob that has wandered into a healer is by
     // definition not the one the healer is looking at.
     Unit* pCrowder = nullptr;
+    Unit* pStuckOn = nullptr;
     float closest = 0.0f;
 
     std::list<Unit*> enemies;
@@ -4984,6 +5021,13 @@ bool PartyBotAI::BackOutOfMeleeRange()
         if (!pEnemy->CanReachWithMeleeAutoAttack(me))
             continue;
 
+        // And only what the bot can actually get away from. Anything else is stood up to.
+        if (!CanEscapeOnFoot(me, pEnemy))
+        {
+            pStuckOn = pEnemy;
+            continue;
+        }
+
         float const distance = me->GetDistance(pEnemy);
         if (!pCrowder || distance < closest)
         {
@@ -4993,7 +5037,27 @@ bool PartyBotAI::BackOutOfMeleeRange()
     }
 
     if (!pCrowder)
+    {
+        // Say so, once in a while, so that a healer being eaten reads as a decision rather than as
+        // an AI that has stopped noticing.
+        if (pStuckOn && IsCombatLogged())
+        {
+            time_t const now = time(nullptr);
+            if (now - m_lastStandLog >= PB_STAND_LOG_INTERVAL)
+            {
+                m_lastStandLog = now;
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] standfast bot='%s' role=%s hp=%.0f%% stayed put with '%s' on "
+                         "it at %.1fy, cannot outrun it (myspeed=%.1f itsspeed=%.1f held=%ums)",
+                         me->GetName(), GetRoleName(m_role), me->GetHealthPercent(),
+                         pStuckOn->GetName(), me->GetDistance(pStuckOn),
+                         me->GetSpeed(MOVE_RUN), pStuckOn->GetSpeed(MOVE_RUN),
+                         GetHeldInPlaceDurationMs(pStuckOn));
+            }
+        }
+
         return false;
+    }
 
     // A cast in flight is worth more than the two yards. Interrupting it to shuffle would mean a
     // crowded caster never finishes anything, which is a worse outcome than being crowded: the
