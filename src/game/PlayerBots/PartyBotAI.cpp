@@ -451,6 +451,7 @@ static constexpr uint32 PB_HELD_STEP_MIN_REMAINING_MS = 2000;
 // long as it lasts.
 static constexpr time_t PB_HELD_STEP_INTERVAL = 3;
 
+
 // How many consecutive ticks a bot spends unable to see its own target before it stops arguing
 // with the wall and walks. Four ticks is one second. Not one tick: a mob crossing behind a pillar
 // is out of sight for a moment and clears on its own, and moving for that would have a bot
@@ -2591,14 +2592,99 @@ Unit* PartyBotAI::GetMarkedTarget(RaidTargetIcon mark) const
 // A crowd-controlled mob can never be the answer. IsValidHostileTarget already refuses anything
 // carrying a break-on-damage aura, which is exactly the sapped, polymorphed, hibernated or shackled
 // mob the group has deliberately taken out of the fight.
+// What the whole party should be killing, and why.
+//
+// Tiers, compared against each other, so the gaps carry no meaning beyond the ordering. The point
+// of tiers rather than one number is the stickiness below: a focus is only given up to something
+// in a strictly higher tier, and inside a tier nobody moves. A single score would have the group
+// drifting between two mobs whose health percentages cross over mid-fight, which is the shape of
+// the complaint this exists to answer.
+enum PbFocusTier : uint32
+{
+    PB_FOCUS_NONE = 0,
+    // Anything in the fight at all.
+    PB_FOCUS_ENGAGED = 1,
+    // A mob whose template says it can heal or control. Worth killing before the melee around it
+    // even while it is doing nothing, because it will.
+    PB_FOCUS_SUPPORT = 2,
+    // Nearly dead. Finishing it removes a whole mob's damage now, which beats a larger amount of
+    // damage spread across mobs that all keep swinging.
+    PB_FOCUS_EXECUTE = 3,
+    // Casting a heal or a crowd control this second.
+    PB_FOCUS_CASTING = 4,
+    // Named by the instance's own tactics as the thing to kill first.
+    PB_FOCUS_TACTICS = 5,
+    // Said out loud by a player: a raid mark, or an explicit attack order.
+    PB_FOCUS_ORDERED = 6,
+};
+
+// Below this share of health a mob is worth finishing ahead of a healthier one.
+static constexpr float PB_FOCUS_EXECUTE_HEALTH = 25.0f;
+
+// The party's current kill target, by group. Held rather than recomputed from scratch because the
+// stickiness is the whole feature: every bot runs the same selection over the same candidates and
+// so agrees without having to be told, but agreeing on a fresh answer every tick is precisely how
+// five bots ended up working five mobs to half health. One of them writes this, the rest read it,
+// and the write only ever happens on an empty focus, a dead one, or a strictly better tier - so it
+// does not matter which bot gets there first.
+struct PartyBotGroupFocus
+{
+    ObjectGuid target;
+    uint32 tier = PB_FOCUS_NONE;
+    time_t since = 0;
+};
+static std::unordered_map<uint32 /*groupId*/, PartyBotGroupFocus> s_groupFocus;
+
+uint32 PartyBotAI::ScoreFocusCandidate(Unit const* pEnemy) const
+{
+    if (!pEnemy)
+        return PB_FOCUS_NONE;
+
+    // An order or a mark is a player talking, and it wins from wherever the mob happens to be.
+    if (me->HasAttackOrders() && me->GetAttackOrders() == pEnemy->GetObjectGuid())
+        return PB_FOCUS_ORDERED;
+
+    if (Group* pGroup = me->GetGroup())
+    {
+        for (auto markId : m_marksToFocus)
+        {
+            if (pGroup->GetTargetWithIcon(markId) == pEnemy->GetObjectGuid())
+                return PB_FOCUS_ORDERED;
+        }
+    }
+
+    if (m_tactics)
+    {
+        if (Creature const* pCreature = pEnemy->ToCreature())
+            if (m_tactics->IsFocusFirst(pCreature->GetEntry()))
+                return PB_FOCUS_TACTICS;
+    }
+
+    // Mid-cast right now. Reuses the interrupt classifier rather than a second opinion about which
+    // spells matter, so a mob channelling a heal reads the same here as it does to a Kick.
+    uint32 const casting = GetInterruptPriority(pEnemy);
+    if (casting >= PB_INTERRUPT_HEAL)
+        return PB_FOCUS_CASTING;
+
+    if (pEnemy->GetHealthPercent() <= PB_FOCUS_EXECUTE_HEALTH)
+        return PB_FOCUS_EXECUTE;
+
+    // Not casting, but known to be able to. Cached per creature entry, so this costs a lookup.
+    if (GetWorstKnownCastPriority(pEnemy) >= PB_INTERRUPT_HEAL)
+        return PB_FOCUS_SUPPORT;
+
+    return PB_FOCUS_ENGAGED;
+}
+
 Unit* PartyBotAI::SelectGroupFocusTarget() const
 {
     Group* pGroup = me->GetGroup();
     if (!pGroup || IsInDuel())
         return nullptr;
 
-    // A pull or an explicit attack order outranks everything: both are instructions, and both are
-    // about a mob that is not yet part of any fight.
+    // A pull or an explicit attack order outranks everything, including whatever the group had
+    // settled on, and unlike everything below it is about a mob that is not part of any fight yet -
+    // so it is answered before the candidate scan, which only looks at mobs that are.
     if (me->HasAttackOrders())
     {
         if (Unit* pOrdered = me->GetMap()->GetUnit(me->GetAttackOrders()))
@@ -2606,37 +2692,34 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
                 return pOrdered;
     }
 
-    // Then the mark, which is the one thing a player can say that means "this one next".
-    for (auto markId : m_marksToFocus)
-    {
-        if (Unit* pMarked = GetMarkedTarget(markId))
-            if (IsValidHostileTarget(pMarked) && IsEngagedWithGroup(pMarked))
-                return pMarked;
-    }
+    Player* const pTank = GetGroupTank();
+    Unit* const pTankVictim = pTank ? pTank->GetVictim() : nullptr;
+    Player* const pLeader = GetPartyLeader();
+    Unit* const pLeaderVictim = pLeader ? pLeader->GetVictim() : nullptr;
 
-    // Then the tank's target. Using it as the anchor is what makes focus fire and threat agree:
-    // damage aimed where the tank already holds aggro cannot pull the mob off it, and the threat
-    // ceiling then has room to let the damage through.
-    if (Player* pTank = GetGroupTank())
+    // Score everything the group is actually fighting.
+    //
+    // Ties are broken, in order, by what the player is on, then by what the tank is on, then by
+    // lowest health, then by guid. The leader and tank preferences are what keep this agreeing with
+    // the old behaviour in the ordinary case - the group converges where the tank holds aggro, so
+    // damage cannot pull the mob off it - and the guid is there so that two bots scoring an exact
+    // tie still arrive at the same mob rather than one each.
+    Unit* pBest = nullptr;
+    uint32 bestTier = PB_FOCUS_NONE;
+    auto const better = [&](Unit* pCandidate, uint32 tier)
     {
-        if (Unit* pTankVictim = pTank->GetVictim())
-            if (IsValidHostileTarget(pTankVictim) && IsEngagedWithGroup(pTankVictim))
-                return pTankVictim;
-    }
-
-    // Then whatever the player is on, since a player with a target has usually chosen it.
-    if (Player* pLeader = GetPartyLeader())
-    {
-        if (Unit* pLeaderVictim = pLeader->GetVictim())
-            if (IsValidHostileTarget(pLeaderVictim) && IsEngagedWithGroup(pLeaderVictim))
-                return pLeaderVictim;
-    }
-
-    // Nothing has been chosen for us, so finish something. The most hurt mob in the fight is the
-    // one closest to being off the board, and taking it off is worth more than spreading the same
-    // damage across the pack.
-    Unit* pWeakest = nullptr;
-    float weakestHealth = 0.0f;
+        if (!pBest)
+            return true;
+        if (tier != bestTier)
+            return tier > bestTier;
+        if ((pCandidate == pLeaderVictim) != (pBest == pLeaderVictim))
+            return pCandidate == pLeaderVictim;
+        if ((pCandidate == pTankVictim) != (pBest == pTankVictim))
+            return pCandidate == pTankVictim;
+        if (pCandidate->GetHealthPercent() != pBest->GetHealthPercent())
+            return pCandidate->GetHealthPercent() < pBest->GetHealthPercent();
+        return pCandidate->GetObjectGuid() < pBest->GetObjectGuid();
+    };
 
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
@@ -2649,16 +2732,72 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
             if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
                 continue;
 
-            float const health = pAttacker->GetHealthPercent();
-            if (!pWeakest || health < weakestHealth)
+            uint32 const tier = ScoreFocusCandidate(pAttacker);
+            if (better(pAttacker, tier))
             {
-                pWeakest = pAttacker;
-                weakestHealth = health;
+                pBest = pAttacker;
+                bestTier = tier;
             }
         }
     }
 
-    return pWeakest;
+    PartyBotGroupFocus& held = s_groupFocus[pGroup->GetId()];
+
+    // Whatever the group settled on last, if it is still a thing worth hitting.
+    Unit* pHeld = held.target ? me->GetMap()->GetUnit(held.target) : nullptr;
+    if (pHeld && (!IsValidHostileTarget(pHeld) || !IsEngagedWithGroup(pHeld)))
+        pHeld = nullptr;
+
+    if (pHeld)
+    {
+        // Re-scored rather than trusted, because the reason a mob was chosen expires: the one that
+        // was casting a heal has finished casting it.
+        uint32 const heldTier = ScoreFocusCandidate(pHeld);
+
+        // An elite or a boss is not abandoned for an add. The group can only be moved off one by a
+        // player saying so, which is the answer to "I have said to fight the boss, stay on it"
+        // without needing the boss to be marked - though marking it is still the way to be sure,
+        // since a mark scores above everything.
+        bool const heavy = pHeld->ToCreature() &&
+                           pHeld->ToCreature()->GetCreatureInfo()->rank != CREATURE_ELITE_NORMAL;
+
+        if (heavy && bestTier < PB_FOCUS_ORDERED)
+            return pHeld;
+
+        // Otherwise: hold unless something is in a strictly higher tier. Equal tiers never move the
+        // group, which is what stops it drifting between two mobs as their health crosses over.
+        if (!pBest || bestTier <= heldTier)
+        {
+            held.tier = heldTier;
+            return pHeld;
+        }
+    }
+
+    if (!pBest)
+    {
+        s_groupFocus.erase(pGroup->GetId());
+        return nullptr;
+    }
+
+    if (held.target != pBest->GetObjectGuid())
+    {
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] focus bot='%s' group=%u now on '%s' (guid=%u tier=%u hp=%.0f) "
+                     "from '%s' held %lds",
+                     me->GetName(), pGroup->GetId(), pBest->GetName(),
+                     pBest->GetObjectGuid().GetCounter(), bestTier, pBest->GetHealthPercent(),
+                     pHeld ? pHeld->GetName() : "nothing",
+                     held.since ? long(time(nullptr) - held.since) : 0L);
+        }
+
+        held.target = pBest->GetObjectGuid();
+        held.since = time(nullptr);
+    }
+
+    held.tier = bestTier;
+    return pBest;
 }
 
 // Take something out of the fight that nobody is killing yet.
@@ -6402,11 +6541,13 @@ void PartyBotAI::LogCombatTick() const
         // whether the auto attack is even turning: melee is the state flag, swing is what is left
         // on the main hand timer.
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vhp=%.0f "
-                 "vdist=%.1f pos=%.1f %.1f %.1f moving=%u melee=%u swing=%u attackers=%u nearby=%u "
-                 "mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u gcd=%u stance=%u dmg=%u",
+                 "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vguid=%u "
+                 "vhp=%.0f vdist=%.1f pos=%.1f %.1f %.1f moving=%u melee=%u swing=%u attackers=%u "
+                 "nearby=%u mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u gcd=%u stance=%u "
+                 "dmg=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
+                 pVictim ? pVictim->GetObjectGuid().GetCounter() : 0u,
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  pVictim ? me->GetDistance(pVictim) : 0.0f,
                  me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
@@ -6445,11 +6586,12 @@ void PartyBotAI::LogCombatTick() const
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
-                 "vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u holding=%u "
-                 "cp=%u cpmine=%u front=%u stealth=%u gcd=%u ttl=%.1f dmg=%u",
+                 "vguid=%u vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u "
+                 "holding=%u cp=%u cpmine=%u front=%u stealth=%u gcd=%u ttl=%.1f dmg=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
                  pVictim ? pVictim->GetName() : "none",
+                 pVictim ? pVictim->GetObjectGuid().GetCounter() : 0u,
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  pVictim ? me->GetDistance(pVictim) : 0.0f,
                  uint32(meleeOn ? 1 : 0), autoRepeat,

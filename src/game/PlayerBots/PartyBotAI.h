@@ -105,6 +105,7 @@ public:
     bool CrowdControlOffFocus();
     void GetInterruptSpells(std::vector<SpellEntry const*>& out) const;
     uint32 GetInterruptPriority(Unit const* pCaster) const;
+    uint32 ScoreFocusCandidate(Unit const* pEnemy) const;
     uint32 GetWorstKnownCastPriority(Unit const* pEnemy) const;
     uint32 GetPowerReservedForInterrupt(Powers powerType, SpellEntry const* pSpellEntry) const;
     Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority,
