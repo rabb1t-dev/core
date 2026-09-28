@@ -386,6 +386,23 @@ static constexpr float PB_BREAK_SIGHT_MIN_HEALTH = 35.0f;
 // rather than the fight.
 static constexpr uint32 PB_BREAK_SIGHT_HOLD_MS = 4000;
 
+// How far out a bot looks for a patch of hostile ground. A dynamic object is only ever a problem
+// while the bot is standing in it, and the widest one this table names is five yards across, so
+// this is a sweep for the thing underfoot rather than a survey of the room. Fifteen so that a
+// cloud dropped a step away is already known about by the time the bot drifts into it.
+static constexpr float PB_GROUND_HAZARD_SCAN = 15.0f;
+// How much further out of the patch than its own edge the bot aims for. The cloud does not move,
+// but the bot's spline overshoots and stops a little short by turns, and a step that ends on the
+// boundary is a step that spent a tick and is still being damaged.
+static constexpr float PB_GROUND_HAZARD_MARGIN = 3.0f;
+// The longest step out worth taking. Short, because the thing being escaped is small and the
+// fight is still going on: a bot that walks twenty yards out of a five yard cloud has left the
+// fight to avoid a tick of damage.
+static constexpr float PB_GROUND_HAZARD_MAX_TRAVEL = 14.0f;
+// The longest a walk out may be the whole of a tick, for the same reason PB_BREAK_SIGHT_HOLD_MS
+// exists: a walk that cannot finish has to release the bot rather than freeze it.
+static constexpr uint32 PB_GROUND_HAZARD_HOLD_MS = 2500;
+
 // How long after the pull rule declines a route a gap closer stays off the table. The rule is asked
 // again on every recomputed path, so a bot that is still being held keeps refreshing this, and one
 // that has genuinely been let through stops. Long enough to outlast the gap between two of those
@@ -4889,6 +4906,142 @@ Unit* PartyBotAI::FindCastToBreakSightFrom() const
     return nullptr;
 }
 
+// The patch of hostile ground this bot is standing in.
+//
+// A persistent area aura is the one hazard in a dungeon that is invisible to everything else in
+// this file. It is a DynamicObject sitting on the floor with a radius and a periodic effect, and
+// from the bot's side there is no attacker, no threat entry, no cast to interrupt and nothing for
+// a positioning rule written against a creature to hold on to. Health simply goes down.
+//
+// Maraudon is what made that matter. Noxious Cloud is five yards across and deals a hundred and
+// fifty nature damage a second for twenty seconds -- three thousand health against a level forty
+// seven caster's sixteen hundred -- and Noxious Slime casts it as it dies, which is to say
+// directly underneath whoever just killed it.
+//
+// Named by the instance table rather than inferred, because the shape alone does not tell the two
+// cases apart: a damaging area aura on the floor is also the party's own Blizzard, every
+// Consecration and every totem pulse, and a bot that walks out of its own mage's ground effect is
+// worse than one that stands in a cloud.
+DynamicObject* PartyBotAI::FindGroundHazardUnderfoot() const
+{
+    if (!m_tactics || m_tactics->groundHazardSpellIds.empty())
+        return nullptr;
+
+    std::list<WorldObject*> found;
+    MaNGOS::AllWorldObjectsInRange check(me, PB_GROUND_HAZARD_SCAN);
+    MaNGOS::WorldObjectListSearcher<MaNGOS::AllWorldObjectsInRange> searcher(found, check);
+    Cell::VisitAllObjects(me, searcher, PB_GROUND_HAZARD_SCAN);
+
+    DungeonTactics const* pTactics = m_tactics;
+
+    DynamicObject* pWorst = nullptr;
+    float worstDepth = 0.0f;
+
+    for (WorldObject* pObject : found)
+    {
+        if (!pObject || pObject->GetTypeId() != TYPEID_DYNAMICOBJECT)
+            continue;
+
+        DynamicObject* pDynObj = static_cast<DynamicObject*>(pObject);
+        if (!pTactics->IsGroundHazard(pDynObj->GetSpellId()))
+            continue;
+
+        // Only what would actually hurt this bot. The same spell id can belong to a patch laid
+        // down by something friendly in principle, and the object knows which it is.
+        if (!pDynObj->IsHostileTo(me))
+            continue;
+
+        float const radius = pDynObj->GetRadius();
+        if (radius <= 0.0f)
+            continue;
+
+        float const dx = me->GetPositionX() - pDynObj->GetPositionX();
+        float const dy = me->GetPositionY() - pDynObj->GetPositionY();
+        float const distance = sqrt(dx * dx + dy * dy);
+        if (distance > radius)
+            continue;
+
+        // Deepest first when there are two, which is the case that happens in a Creeping Sludge
+        // pack: the one the bot is furthest inside is the one the shortest step is measured
+        // against, and stepping out of the shallow one would usually leave it in the other.
+        float const depth = radius - distance;
+        if (!pWorst || depth > worstDepth)
+        {
+            pWorst = pDynObj;
+            worstDepth = depth;
+        }
+    }
+
+    return pWorst;
+}
+
+// Step out of it.
+//
+// Deliberately unconditional on role, which is the opposite of what TakeCoverFromCast decides a
+// few lines below and for a reason that does not carry over. A dodge trades melee uptime for a
+// cast avoided, and for a melee bot that trade is a loss. This trades a couple of yards of
+// walking for a hundred and fifty damage a second that nothing in the group can out-heal, and
+// there is no role for which standing in it is the better answer.
+//
+// Reports true while the walk is under way so the rest of the tick is left alone, and ages the
+// walk out rather than trusting it: a bot shoved or rooted halfway out has to be released back to
+// fighting rather than left holding a point move that will never arrive.
+bool PartyBotAI::StepOutOfGroundHazard()
+{
+    if (!m_tactics || m_tactics->groundHazardSpellIds.empty())
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+
+    if (m_groundHazardSince &&
+        WorldTimer::getMSTimeDiff(m_groundHazardSince, now) < PB_GROUND_HAZARD_HOLD_MS &&
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return true;
+
+    m_groundHazardSince = 0;
+
+    DynamicObject* pHazard = FindGroundHazardUnderfoot();
+    if (!pHazard)
+        return false;
+
+    // Rooted, stunned or otherwise unable to walk, which in this instance is a real possibility
+    // rather than a formality: Constrictor Vine's Entangling Roots and Barbed Lasher's Thorn
+    // Volley are both in the packs the clouds are dropped in. Nothing to do about it, and saying
+    // so rather than issuing a move that is silently discarded keeps the tick for the rotation.
+    if (!me->IsAlive() || me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) ||
+        me->IsTaxiFlying() || me->HasUnitState(UNIT_STATE_ROOT))
+        return false;
+
+    float const clear = pHazard->GetRadius() + PB_GROUND_HAZARD_MARGIN;
+
+    float x, y, z;
+    if (!FindSpotClearOfPoint(pHazard->GetPositionX(), pHazard->GetPositionY(), clear,
+                              PB_GROUND_HAZARD_MAX_TRAVEL, x, y, z))
+    {
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] cloudstuck bot='%s' is standing in spell %u and found nowhere "
+                     "to step (radius %.1fy)",
+                     me->GetName(), pHazard->GetSpellId(), pHazard->GetRadius());
+        }
+        return false;
+    }
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] cloudstep bot='%s' role=%s stepped %.1fy out of spell %u",
+                 me->GetName(), GetRoleName(m_role), me->GetDistance(x, y, z),
+                 pHazard->GetSpellId());
+    }
+
+    me->InterruptNonMeleeSpells(false);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+    m_groundHazardSince = now;
+    return true;
+}
+
 // Walk out of sight of a cast rather than eat it.
 //
 // This is what a player does to Archmage Arugal, and the reason it works is that the sight check on
@@ -6830,6 +6983,20 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
 void PartyBotAI::UpdateOutOfCombatAI()
 {
+    // Before everything, and out of combat as much as in it. A Noxious Slime casts its cloud as
+    // it dies, so the patch this exists for is most often laid down at the exact moment the
+    // fight ends -- under the party, which is then standing in it eating and drinking while a
+    // rule that only ran in combat would never be asked.
+    if (StepOutOfGroundHazard())
+        return;
+
+    // A feigned hunter is out of combat by definition, so this is where the second half of the
+    // trap sequence lands. It has to come before everything below, all of which would read the
+    // hunter as idle and send it off to buff, drink or walk back to the group while the fight it
+    // just stepped out of is still running.
+    if (TryFreezingTrapSequence())
+        return;
+
     if (!IsInDuel())
     {
         if (m_resurrectionSpell)

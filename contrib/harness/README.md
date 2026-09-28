@@ -276,6 +276,7 @@ Run from the repo root on the server host. Times are for the dev box.
 | `test_corpse_runs_live.py` | A bot dies inside each of the 26 instances and gets back in unaided | ~4 min. `--only`, `--raids`, `--dungeons`, `--workers`, `--trace` |
 | `test_raid_wipe_recovery.py` | Each raid, filled to its player cap, wipes with nobody left standing and walks back | ~11 min. `--only`, `--size` |
 | `test_wipe_recovery.py` | The single-group version of the same thing | |
+| `test_maraudon.py` | Maraudon's eight fixed bosses in turn, plus the ground hazard, each asserting the tactic it exists to exercise | `--only`, `--level`, `--keep` |
 | `test_combat_resurrection.py` | A bot killed mid-fight is raised before the fight ends, by a druid or by its own Ankh | ~5 min. `--only rebirth\|reincarnation` |
 | `test_threat_throttling.py` | Damage dealers let the tank open, then hold below the pull threshold while it keeps the target | ~5 min. `--size`, `--duration` |
 | `test_spell_population.py` | The bot spell struct is filled, class by class | `--only`, `--empty` |

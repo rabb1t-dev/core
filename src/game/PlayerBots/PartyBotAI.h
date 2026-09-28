@@ -163,6 +163,14 @@ public:
     // the rest of the tick is left alone until it is done.
     bool TakeCoverFromCast();
 
+    // The patch of hostile ground this bot is standing in, or null. Named by the instance table
+    // rather than judged from the spell, because "damaging area aura on the floor" also describes
+    // the party's own Blizzard and every totem pulse.
+    DynamicObject* FindGroundHazardUnderfoot() const;
+    // Walk out of it. True whenever the bot is on its way out or has just set off, so the rest of
+    // the tick is left alone until it is clear.
+    bool StepOutOfGroundHazard();
+
     bool StepAwayFromHeldAttacker();
     bool SafeMoveTo(float x, float y, float z);
     bool DragFightAwayFromNeighbours();
@@ -338,6 +346,9 @@ public:
     // rather than trusted, so a walk that cannot finish -- shoved, rooted, or sent at a spot the
     // mesh changed its mind about -- releases the bot back to fighting on its own.
     uint32 m_breakSightSince = 0;
+    // When the walk out of a cloud was started, for the same reason m_breakSightSince exists: a
+    // point move in flight is not on its own evidence that this is the move in flight.
+    uint32 m_groundHazardSince = 0;
     // What the bot last could not see, and for how many ticks running. A bot standing behind rock
     // is the single most common wasted tick in a cave instance, and the count is what tells a
     // corner that will clear itself apart from one that will not.
