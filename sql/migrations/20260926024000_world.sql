@@ -1,0 +1,36 @@
+INSERT INTO `migrations` VALUES ('20260926024000');
+
+-- Gahz'rilla is immune to interrupts, and both of his casts are written to be interruptible.
+--
+-- Same defect already found on Antu'sul, same silent shape. His mechanic_immune_mask is
+-- 41945168, whose bit 25 is MECHANIC_INTERRUPT (26). Kick and Shield Bash carry EffectMechanic 26
+-- on their interrupt effect, so Unit::IsImmuneToSpellEffect drops that effect and keeps the rest:
+-- the ability lands, deals its damage, returns SPELL_CAST_OK and reads as a successful interrupt,
+-- and the cast finishes anyway. Nothing in the log says the interrupt did not happen.
+--
+-- What makes it worth clearing here rather than leaving as flavour is that interrupting is the
+-- only counter his two casts have, and both of them declare themselves interruptible:
+--
+--   Freeze Solid (11836) -- 2.5s cast (castingTimeIndex 19), frost, applies a stun plus periodic
+--   damage to a random target, repeating every 5 to 15 seconds. preventionType 1
+--   (SPELL_PREVENTION_TYPE_SILENCE), interruptFlags 15.
+--
+--   Icicle (11131) -- 1.5s cast (castingTimeIndex 16), 349 frost damage plus a slow, every 7 to
+--   20 seconds. Same preventionType 1 and interruptFlags 15.
+--
+-- Cast time indices calibrated off spells with known durations on this data: index 16 is shared
+-- by Polymorph, Flash Heal, Mind Blast, Fear and rank one Frostbolt and Fireball, all 1.5s; index
+-- 19 is shared by rank one Chain Lightning and the 2.5s ranks of Smite, Lightning Bolt and
+-- Fireball.
+--
+-- A spell actually meant to be uninterruptible says so at the spell level, the way Whitemane's
+-- Deep Sleep does, rather than relying on a creature-wide mechanic immunity that also silently
+-- swallows the report. Gahz'rilla's do not.
+--
+-- His Slam stays untouched -- it is instant (castingTimeIndex 1) and nothing could interrupt it
+-- regardless. The bot side answer to the Slam is the ranged standoff and the pool-floor anchor in
+-- DungeonTactics, not an interrupt.
+--
+-- Clears bit 25 only, leaving every other immunity he has intact:
+-- 41945168 - 33554432 = 8390736.
+UPDATE `creature_template` SET `mechanic_immune_mask` = 8390736 WHERE `entry` = 7273;

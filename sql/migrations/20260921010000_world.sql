@@ -1,0 +1,41 @@
+INSERT INTO `migrations` VALUES ('20260921010000');
+
+-- Antu'sul's heals are meant to be interrupted, and on this data they cannot be.
+--
+-- His mechanic_immune_mask is 646659935, whose bit 25 is MECHANIC_INTERRUPT (26). On the spell
+-- rows this core loads, Kick carries EffectMechanic 26 on its interrupt effect and Shield Bash
+-- carries it on its own, so Unit::IsImmuneToSpellEffect drops the interrupt effect and keeps the
+-- rest of the ability. The result is silent: the Kick lands, deals its damage, returns
+-- SPELL_CAST_OK and logs as a successful interrupt, and the heal completes anyway. One capture
+-- has four interrupts across two Healing Waves -- Kick at 900ms and Shield Bash at 299ms on the
+-- first, Kick at 799ms and Shield Bash at 298ms on the second -- all four logged as successes,
+-- both heals landing in full. Read as timing it looks like the group was fractionally too slow
+-- twice; it was never timing.
+--
+-- What the change rests on:
+--
+--   Healing Wave of Antu'sul (11895) and Flash Heal (10915) both carry preventionType 1
+--   (SPELL_PREVENTION_TYPE_SILENCE) and interruptFlags 15. That is the spell data saying these
+--   casts are meant to be interruptible. A spell genuinely intended to be unkickable says so at
+--   the spell level instead, the way Whitemane's Deep Sleep (9256) and Scarlet Resurrection
+--   (9232) do with preventionType 0, where no creature flag is needed at all.
+--
+--   The other Zul'Farrak casters that heal -- Zum'rah, Sezz'ziz, Velratha, Nekrum, Theka --
+--   carry the 613* mask family with bit 25 clear, and are interrupted in play.
+--
+--   Antu'sul's 646659935 and Chief Ukorz Sandscalp's 646659931 differ only in their low bits,
+--   and Ukorz is a melee boss for whom the interrupt bit costs nothing either way.
+--
+--   And the encounter does not work without it. Healing Wave of Antu'sul is worth about
+--   seventeen percent of his health bar on a twelve second repeat below thirty percent, which
+--   outruns what a level appropriate group can deal. Uninterruptible, the fight has no solution.
+--
+-- What it does not rest on, and an earlier version of this comment wrongly did: the claim that
+-- the mask is bulk-applied slop wherever it appears. It is not. High Inquisitor Whitemane's Heal
+-- (12039) is also preventionType 1, and her mask bit is what makes it unkickable -- deliberately,
+-- and correctly. So this bit does real work elsewhere and is left alone elsewhere. This is a
+-- judgement about one creature, not about the column.
+--
+-- Clears bit 25 for Antu'sul only, leaving every other immunity he has untouched:
+-- 646659935 - 33554432 = 613105503.
+UPDATE `creature_template` SET `mechanic_immune_mask` = 613105503 WHERE `entry` = 8127;

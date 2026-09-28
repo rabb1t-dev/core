@@ -421,9 +421,103 @@ enum PbInterruptPriority : uint32
     // in preference to a heal or a crowd control.
     PB_INTERRUPT_BUFF = 1,
     PB_INTERRUPT_DAMAGE = 2,
-    PB_INTERRUPT_HEAL = 3,
-    PB_INTERRUPT_CONTROL = 4,
+    // A heal small enough that taking it away is not worth a cooldown the caster's own bigger heal
+    // is about to need. Antu'sul is the case that named this tier: below sixty percent he casts
+    // Flash Heal for about five hundred every seventeen seconds, and below thirty he casts Healing
+    // Wave of Antu'sul for about two thousand four hundred every twelve, on a separate timer. Both
+    // scored HEAL, so a group with two interrupts spent them both on the Flash Heals and the Wave
+    // -- a third of his health bar, on a twelve second repeat -- landed unopposed every time.
+    //
+    // Judged against the caster's own maximum health rather than against a flat number, because
+    // the question is what fraction of the fight the heal undoes, and that is the only form of it
+    // that carries from one dungeon to the next.
+    PB_INTERRUPT_MINOR_HEAL = 3,
+    PB_INTERRUPT_HEAL = 4,
+    PB_INTERRUPT_CONTROL = 5,
 };
+
+// The share of a caster's own health bar a heal has to return before it outranks everything else a
+// cooldown could be spent on. Below it the heal is real but small, and the hold in
+// SelectInterruptTarget keeps the interrupt back for whatever bigger heal the mob is known to own.
+float const PB_INTERRUPT_BIG_HEAL_SHARE = 0.15f;
+
+// How far off a caster can be and still be worth keeping the energy or rage to stop.
+float const PB_INTERRUPT_WATCH_RADIUS = 30.0f;
+
+// How close to the intended target a held mob has to be before an ability that picks its own extra
+// targets is worth withholding. Generous on purpose: the cost of holding one Multi-Shot is a
+// fraction of one global cooldown, and the cost of waking the crowd control is the whole of it.
+float const PB_AOE_CC_SAFETY_RADIUS = 15.0f;
+
+// The band Charge works in. Read as plain numbers rather than out of the spell, because the
+// minimum is not stored on it: a spell's range index carries the maximum, and Charge's eight yard
+// floor is enforced in the cast handler.
+// The cooldown past which a crowd control is a once-per-fight resource rather than a rotational
+// one, and so is worth keeping for the target the instance names.
+// The share of a healer's mana below which absorbs stop being worth buying, and every remaining
+// point goes into healing that has already been needed rather than damage that might not arrive.
+float const PB_SHIELD_MANA_FLOOR = 40.0f;
+
+uint32 const PB_CC_LONG_COOLDOWN_MS = 60000;
+
+// How far to look for the boss that summoned an add, when deciding whether the add is the one
+// worth spending that cooldown on. Generous: the summon can land anywhere in the room.
+float const PB_CC_SUMMONER_SEARCH_RADIUS = 100.0f;
+
+// How long the whole feign-and-trap sequence gets before it is abandoned. Two casts and a global
+// cooldown, with room for one missed tick -- long enough to complete, far too short to be mistaken
+// for the hunter sitting out the fight.
+// How long a Feign Death is allowed to stay on. Nothing else takes it off, so these are not
+// tuning knobs, they are the only thing between a threat dump and a hunter lying down for the
+// rest of the fight.
+uint32 const PB_FEIGN_THREAT_DUMP_MS = 1500;
+uint32 const PB_FEIGN_PANIC_MS = 6000;
+
+uint32 const PB_TRAP_ATTEMPT_BUDGET_MS = 4000;
+
+// And how long the hunter leaves it alone afterwards, whether the trap went down or not. Stops a
+// sequence that cannot complete from being retried every tick, which is the other shape the old
+// livelock could have taken.
+uint32 const PB_TRAP_RETRY_MS = 30000;
+
+// How close the add has to be to walk onto a trap laid at the hunter's feet.
+float const PB_TRAP_SUMMON_RADIUS = 15.0f;
+
+// The health below which a mob's big heal is assumed to be live, and so worth keeping a global
+// cooldown free for. Bosses switch their heals on somewhere in this region -- Antu'sul's Healing
+// Wave at thirty percent, his Flash Heal at sixty -- and above it the group's job is damage.
+// The health band the interrupt reserve engages in now lives in DungeonTactics, per creature,
+// as healsBelowPercent. It was a constant here and its value was Antu'sul's Flash Heal threshold,
+// which is a fact about one boss's script and was being applied to every creature in the game.
+
+// A tank this low stops holding its global for anything. Its survival abilities sit below the
+// reserve in the rotation, and a tank that dies waiting to interrupt has lost the fight outright.
+// And the tank stops reserving only when its own life is the more pressing question.
+//
+// Generic on purpose: a tank below a third of its health has a problem the group's damage does
+// not solve, whatever it is fighting. The number was moved down from fifty after a tank sat at
+// fifty three percent through a heal it was holding an ability for, but it is not read from any
+// one encounter -- the question of when a tank should stop helping and start surviving does not
+// depend on which boss is in front of it.
+float const PB_TANK_RESERVE_HEALTH_FLOOR = 35.0f;
+
+// The health below which a hunter gives up attack power for dodge. Low, because Aspect of the
+// Monkey contributes no damage whatsoever and the tank is supposed to be the reason the hunter
+// is not being hit.
+float const PB_HUNTER_MONKEY_HEALTH = 35.0f;
+
+// The mana share above which a caster should be casting rather than wanding. A wand is the empty
+// bar option; anything above this and the bot owns a spell that is strictly better.
+float const PB_WAND_MANA_FLOOR = 20.0f;
+
+// The bar above which a healer has nothing better to do with a tick than shoot, and the health
+// below which it is worth three hundred mana to stop being hit. Both exist because the same
+// healer, in the same fight, did each of these things at exactly the wrong moment.
+float const PB_HEALER_WAND_MANA_CEILING = 90.0f;
+float const PB_HEALER_SELF_SHIELD_HEALTH = 70.0f;
+
+float const PB_CHARGE_MIN_RANGE = 8.0f;
+float const PB_CHARGE_MAX_RANGE = 25.0f;
 
 // The tauren racial. Granted at character creation rather than trained, so it is not in any class
 // spell list and has to be named.
@@ -2465,16 +2559,65 @@ SpellCastResult PartyBotAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellE
 // Only against something actually known to cast crowd control, so this is not a permanent tax on
 // every warrior in the game - and only while the interrupt is off cooldown, since there is nothing
 // to save for while it is not.
+// Whether anything the group is fighting is worth keeping an interrupt for.
+//
+// This used to ask only about the bot's own victim, and on any fight with more than one creature
+// in it that is the wrong question. Antu'sul heals himself three separate ways; his adds cast
+// nothing at all. A rogue sent to kill a Servant therefore held no reserve, spent every point of
+// energy on Sinister Strike, and stood at six energy while the boss healed -- the combat log
+// reads "Kick:power" four times in two seconds, which is a bot that knows exactly what it should
+// be doing and cannot pay for it.
+//
+// Cached for a second because CanTryToCastSpell asks constantly, and the answer cannot
+// meaningfully change faster than that.
+bool PartyBotAI::IsAnythingNearbyWorthInterrupting() const
+{
+    time_t const now = time(nullptr);
+    if (m_lastInterruptWatchCheck == now)
+        return m_interruptWatchWorth;
+
+    m_lastInterruptWatchCheck = now;
+    m_interruptWatchWorth = false;
+
+    if (Unit const* pVictim = me->GetVictim())
+    {
+        if (GetWorstKnownCastPriority(pVictim) >= PB_INTERRUPT_HEAL)
+        {
+            m_interruptWatchWorth = true;
+            return true;
+        }
+    }
+
+    // Anything else in the fight that casts, within the range an interrupt could reach it from.
+    // Deliberately generous: walking two yards to Kick a heal is worth holding the energy for,
+    // and the alternative is what happened here.
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, PB_INTERRUPT_WATCH_RADIUS, nearby);
+
+    for (Unit* pUnit : nearby)
+    {
+        if (!pUnit->IsInCombat())
+            continue;
+
+        if (GetWorstKnownCastPriority(pUnit) >= PB_INTERRUPT_HEAL)
+        {
+            m_interruptWatchWorth = true;
+            break;
+        }
+    }
+
+    return m_interruptWatchWorth;
+}
+
 uint32 PartyBotAI::GetPowerReservedForInterrupt(Powers powerType, SpellEntry const* pSpellEntry) const
 {
     if (powerType != POWER_RAGE && powerType != POWER_ENERGY)
         return 0;
 
-    Unit const* pVictim = me->GetVictim();
-    if (!pVictim || IsInDuel())
+    if (IsInDuel())
         return 0;
 
-    if (GetWorstKnownCastPriority(pVictim) < PB_INTERRUPT_CONTROL)
+    if (!IsAnythingNearbyWorthInterrupting())
         return 0;
 
     std::vector<SpellEntry const*> interrupts;
@@ -3292,7 +3435,7 @@ void PartyBotAI::GetInterruptSpells(std::vector<SpellEntry const*>& out) const
 //
 // Separated from the live-cast version so the same ranking can be applied to a spell a creature
 // merely knows, which is what lets a bot decide in advance what to save its interrupt for.
-static uint32 ScoreSpellForInterrupt(SpellEntry const* pSpellEntry)
+static uint32 ScoreSpellForInterrupt(SpellEntry const* pSpellEntry, Unit const* pCaster = nullptr)
 {
     if (!pSpellEntry)
         return PB_INTERRUPT_NONE;
@@ -3330,7 +3473,31 @@ static uint32 ScoreSpellForInterrupt(SpellEntry const* pSpellEntry)
             return PB_INTERRUPT_CONTROL;
 
     if (pSpellEntry->IsHealSpell())
-        return PB_INTERRUPT_HEAL;
+    {
+        // How much of its own bar the caster gets back. Without a caster to measure against there
+        // is no scale to judge it on, so the heal keeps the higher tier: an unknown heal is
+        // treated as worth stopping, which is the safe direction to be wrong in.
+        if (!pCaster || !pCaster->GetMaxHealth())
+            return PB_INTERRUPT_HEAL;
+
+        int32 healed = 0;
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            if (pSpellEntry->Effect[i] != SPELL_EFFECT_HEAL &&
+                pSpellEntry->Effect[i] != SPELL_EFFECT_HEAL_MAX_HEALTH)
+                continue;
+
+            // A heal to full is the whole bar by definition, whatever its base points say.
+            if (pSpellEntry->Effect[i] == SPELL_EFFECT_HEAL_MAX_HEALTH)
+                return PB_INTERRUPT_HEAL;
+
+            healed += pSpellEntry->CalculateSimpleValue(SpellEffectIndex(i)) +
+                      int32(pSpellEntry->EffectDieSides[i]) / 2;
+        }
+
+        float const share = float(healed) / float(pCaster->GetMaxHealth());
+        return share >= PB_INTERRUPT_BIG_HEAL_SHARE ? PB_INTERRUPT_HEAL : PB_INTERRUPT_MINOR_HEAL;
+    }
 
     // Anything else with a cast time long enough to take away. Summons rank with damage: both are
     // work the group has to undo afterwards.
@@ -3423,13 +3590,13 @@ uint32 PartyBotAI::GetWorstKnownCastPriority(Unit const* pEnemy) const
 
     uint32 worst = PB_INTERRUPT_NONE;
 
-    auto consider = [&worst](uint32 spellId)
+    auto consider = [&worst, pEnemy](uint32 spellId)
     {
         SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(spellId);
         if (!IsInterruptibleCast(pSpellEntry))
             return;
 
-        worst = std::max(worst, ScoreSpellForInterrupt(pSpellEntry));
+        worst = std::max(worst, ScoreSpellForInterrupt(pSpellEntry, pEnemy));
     };
 
     // The assigned spell list, which is how most casters are given their abilities.
@@ -3479,7 +3646,7 @@ uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
     if (!pSpellEntry)
         return PB_INTERRUPT_NONE;
 
-    return ScoreSpellForInterrupt(pSpellEntry);
+    return ScoreSpellForInterrupt(pSpellEntry, pCaster);
 }
 
 // Whether this spell takes a cast away outright, rather than by happening to stun.
@@ -3553,12 +3720,17 @@ Unit* PartyBotAI::SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint3
         // Bolt constantly and Druid's Slumber occasionally, so spending Kick on the first bolt
         // leaves nothing for the sleep, and the sleep is the entire reason to carry an interrupt.
         //
-        // Only damage is ever held. A heal is worth taking on sight even from a mob that also
-        // sleeps: Healing Touch returns most of a Druid of the Fang's health bar, an interrupt is
-        // back inside ten seconds, and holding one indefinitely against a sleep that may never be
-        // cast while a full heal lands in front of you is worse play than not holding at all.
+        // A heal that is worth the cooldown is never held. Healing Touch returns most of a Druid
+        // of the Fang's health bar, an interrupt is back inside ten seconds, and holding one
+        // indefinitely against a sleep that may never be cast while a full heal lands in front of
+        // you is worse play than not holding at all.
+        //
+        // A minor heal is held, and that is the one thing above damage that is. It is the same
+        // reasoning as the damage case, only applied to a mob whose book holds two heals rather
+        // than a bolt and a sleep: spending the cooldown on the small one means it is down when
+        // the large one comes, and the large one is the reason the group carries an interrupt.
         if (!mayPreempt &&
-            priority <= PB_INTERRUPT_DAMAGE &&
+            priority <= PB_INTERRUPT_MINOR_HEAL &&
             priority < GetWorstKnownCastPriority(pEnemy))
             return;
 
@@ -3651,6 +3823,12 @@ bool PartyBotAI::InterruptHostileCasters()
             if (!CanTryToCastSpell(pCaster, pInterruptSpell))
                 continue;
 
+            // And whether it would do anything if it landed. Spending a ten second Kick on a mob
+            // immune to the effect is worse than not having the ability: it reads in the log as
+            // an interrupt, so the failure looks like timing.
+            if (!CanInterruptWith(pInterruptSpell, pCaster))
+                continue;
+
             // Read before the cast, because interrupting it is what makes it unreadable
             // afterwards. The channel is checked as well as the cast, since either can be the one
             // being taken away.
@@ -3662,6 +3840,15 @@ bool PartyBotAI::InterruptHostileCasters()
 
             uint32 const priority = GetInterruptPriority(pCaster);
 
+            // How much of their cast was still to run when we reached for this. The whole question
+            // the log could not answer: three Antu'sul interrupts all reported stopping a Healing
+            // Wave and the boss gained a full Wave's health one second after each of them, which
+            // is what interrupting the last fraction of a cast looks like from outside. A logged
+            // interrupt only ever meant our own ability went off.
+            int32 remainingMs = -1;
+            if (Spell const* pTheirSpell = pCaster->GetCurrentSpell(CURRENT_GENERIC_SPELL))
+                remainingMs = pTheirSpell->GetCastedTime();
+
             if (DoCastSpell(pCaster, pInterruptSpell) != SPELL_CAST_OK)
                 continue;
 
@@ -3671,11 +3858,12 @@ bool PartyBotAI::InterruptHostileCasters()
             {
                 sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                          "[BotCombat] interrupt bot='%s' role=%s lvl=%u stopped '%s' (lvl %u) "
-                         "casting '%s' with '%s' priority=%u",
+                         "casting '%s' with '%s' priority=%u castleft=%dms stillcasting=%u",
                          me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
                          pCaster->GetName(), pCaster->GetLevel(),
                          pInterrupted ? pInterrupted->SpellName[0].c_str() : "something",
-                         pInterruptSpell->SpellName[0].c_str(), priority);
+                         pInterruptSpell->SpellName[0].c_str(), priority, remainingMs,
+                         pCaster->IsNonMeleeSpellCasted(false, false, true) ? 1 : 0);
             }
 
             return true;
@@ -3738,7 +3926,12 @@ bool PartyBotAI::InterruptHostileCasters()
 
             std::string detail;
 
-            if (priority <= PB_INTERRUPT_DAMAGE && priority < worstKnown)
+            // The same threshold SelectInterruptTarget holds on, and it has to stay the same. When
+            // the minor heal tier went in, the rule moved and this copy did not, so every held
+            // Flash Heal was reported as "Kick:refused, Kidney Shot:refused" -- a per-ability
+            // reason computed for a cast the bot had deliberately declined and never attempted.
+            // One run read as thirty two failed interrupts and was thirty two correct decisions.
+            if (priority <= PB_INTERRUPT_MINOR_HEAL && priority < worstKnown)
             {
                 detail = "held for something worse";
             }
@@ -3760,7 +3953,12 @@ bool PartyBotAI::InterruptHostileCasters()
                     detail += pCandidate->SpellName[0];
                     detail += ":";
 
-                    if (!me->IsSpellReady(pCandidate))
+                    // First, because it outranks every other reason and is the only one that is
+                    // permanent. Everything below describes an interrupt that would have worked
+                    // if it had been available; this one describes an interrupt that would not.
+                    if (!CanInterruptWith(pCandidate, pWanted))
+                        detail += "immune";
+                    else if (!me->IsSpellReady(pCandidate))
                         detail += "cooldown";
                     else if (me->GetPower(Powers(pCandidate->powerType)) <
                              Spell::CalculatePowerCost(pCandidate, me))
@@ -3770,6 +3968,15 @@ bool PartyBotAI::InterruptHostileCasters()
                                  : !me->IsWithinDist(pWanted, Spells::GetSpellMaxRange(
                                        sSpellRangeStore.LookupEntry(pCandidate->rangeIndex))))
                         detail += "range";
+                    // The global cooldown, which "refused" was hiding and which wants a completely
+                    // different fix from the rest: an interrupt lost to a cooldown is a coverage
+                    // problem, one lost to range is a positioning problem, and one lost to the
+                    // global is the bot's own rotation having spent the tick on filler with a heal
+                    // already in progress.
+                    else if (!me->IsSpellReady(pCandidate, nullptr) || me->HasGCD(pCandidate))
+                        detail += "gcd";
+                    else if (!me->IsWithinLOSInMap(pWanted))
+                        detail += "los";
                     else
                         detail += "refused";
                 }
