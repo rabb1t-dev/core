@@ -337,12 +337,182 @@ manager re-reads its schedule and puts it back, and both Ahn'Qiraj instances the
 an entrance that refuses them, which reads as a broken route. `test_corpse_runs_live.py` runs a
 daemon thread that re-stops it every 20 seconds and restores it afterwards.
 
+**The world restarts itself for honor maintenance.** `HonorMaintenancer::CheckMaintenanceDay` logs
+"Server needs to be restarted to perform honor rank calculations" and then calls
+`ShutdownServ(900, SHUTDOWN_MASK_RESTART, RESTART_EXIT_CODE)` -- a fifteen minute countdown nothing
+driving the server is told about, on a config (`AutoHonorRestart`) that defaults to on. It cost a
+whole Zul'Farrak run: the instance and the party vanished mid-encounter, and from outside that is
+identical to a stuck fight, so the suite waited out its full timeout on creatures that no longer
+existed and reported a wave three failure. The only trace is in journald, because the restart
+truncates `Server.log` without archiving it and takes the bot tick log with it.
+
+It is off on the dev server now, and the maintenance had nothing to do anyway -- it reports
+`Alliance: 0, Horde: 0, Inactive: 0`. Any suite that runs for more than a few minutes should still
+read `server info` at both ends and void its own result if the uptime went *down*, which is the
+only cheap way to tell "the encounter failed" from "the world went away".
+
 **Restarting mangosd needs an explicit wait.** A socket in `TIME_WAIT` does not appear in the listen
 table, so starting into one leaves mangosd running with **no SOAP at all** — indistinguishable from
 a healthy server until every command times out. Use `~/bin/vmangos-restart`, which waits for the
 process to exit and for the port to rebind before returning.
 
+**A hand-started world is invisible to `systemctl`.** `vmangos-mangosd.service` can read
+`inactive (dead)` while a mangosd started from the build tree keeps serving on PPID 1. `systemctl
+stop` is then a no-op that still exits zero, and a restart script that trusts it walks past the
+stop into the install and fails with `cp: Text file busy` -- overwriting the binary that is still
+running. It cost a deploy on 2026-09-27, where the unit had been dead since the 26th and the world
+had been up for two days regardless. `vmangos-restart` now asks systemd first and `pgrep -f
+"[s]erver/bin/mangosd"` second, and SIGTERMs whatever the unit did not own, which is the signal
+mangosd's own shutdown handler is on. Check `systemctl is-active vmangos-mangosd` against
+`pgrep -af '[s]erver/bin/mangosd'` before believing either one.
+
+**A refused route reports a shortfall of zero.** `.harness path` answers an unreachable
+destination with `type=NOPATH` and the straight line it drew instead -- two points, the full
+distance as `length`, and `shortfall=0.0`. So a survey that reads the shortfall and not the type
+scores every blocked bearing as a clean route. Measured into Noxxion's pool in Maraudon, eight
+bearings at thirty yards: five are NOPATH and all five report 0.0, while the three that work
+report 0.1. Read `type` as flag names, reject `NOPATH|NOT_USING_PATH|INCOMPLETE|SHORTCUT`, and
+treat the shortfall as a second check rather than the first.
+
+**Standing within sight of a boss is not standing within reach of one.** The Maraudon suite's
+first version staged thirty yards back along -x and settled for the boss being in `.harness
+enemy` range. At Noxxion that is the wall of his pool: every bot could see him, every bot was
+ordered onto him, and the tank logged `victim='Noxxion' vdist=28.6 moving=1 dmg=0` at an
+unchanging position for the whole four hundred and twenty second timeout. From outside that is
+identical to bots refusing to fight. Ask the mesh for a route from the candidate before staging
+on it.
+
+**The revision string is generated from git, not from the source that was compiled.** A tree
+updated by rsync without its `.git` builds the new code and still reports the old commit in
+`server info`, because `revision_data.h` comes from `git describe`. Confirm a deploy by asking for
+something the new build has -- a command that did not exist before, a new field on a line -- not by
+reading the revision back.
+
 **Two workers, two worlds.** A restart takes the world down for a minute, which is fatal to a suite
 that runs for five. `~/bin/server2` is a second world on SOAP 7879 with its own characters database,
 sharing the world data. Note that `account_access` is keyed by realm, so a GM account on realm 1 is
 an ordinary account on realm 2 until its rows are mirrored.
+
+## Testing a dungeon end to end
+
+Every dungeon is going to get this treatment, so the shape below is worth reusing rather than
+rediscovering. Each rule under it was paid for once already, in Shadowfang Keep, and cost a build
+and a run each time.
+
+The shape that works is a **sequence of named stages**, one per encounter or pack, each returning
+either `None` or a sentence saying what went wrong. A suite that only reports "the bots did not kill
+the boss" cannot distinguish a stuck door from a stuck corridor from a lost fight, and those want
+different fixes. Name the stage in the failure and the next step is obvious.
+
+```
+form party -> teleport in -> [clear pack -> rest] * n -> boss -> rest -> traverse -> ...
+```
+
+### Read the encounter out of the database before writing the test
+
+The world database is the authority on what the fight actually is on this server, and it disagrees
+with every guide often enough to matter. For each boss, before writing anything:
+
+- `creature_template` for `spell_list_id`, `ai_name`, `level_min/max`.
+- `creature_spells` for what it casts, and **`castFlags`** — `CF_ONLY_IN_MELEE` (0x40) and
+  `CF_NOT_IN_MELEE` (0x80) on the same spell mean two different timers, which is a tactic. Arugal's
+  Void Bolt is five to seven seconds with somebody in melee and **one second** without.
+- `spell_template.castingTimeIndex` against `SpellCastTimes.dbc`, because "long cast" is the whole
+  premise of any interrupt or line-of-sight tactic and half of them turn out to be instant.
+  Index 1 is 0ms, 5 is 2000ms, 14 is 3000ms.
+- `creature_ai_events` for the summons and the phases, and `spell_target_position` for any teleport.
+  Arugal has three fixed Shadow Ports and that single fact invalidates every plan to hold him
+  anywhere.
+
+### Never enumerate creature entries by hand
+
+`.harness enemy <char> 0 <range>` lists **every** hostile creature in range with its entry and name.
+Each line also carries the creature's own `x y z`, which is what a standoff assertion has to be
+measured against -- `dist` is the distance to the harness lead, and the lead stands wherever the
+stage left it.
+Use it. The alternative is a hand-written list of entries, and the dungeon will always have one more
+than the list: Nandos calls three worgs of three entries, a Lupine Horror summons Lupine Delusions
+of a fourth, and the room holds Wolfguard Worgs of a fifth. A stage that clears the entries it knows
+about then waits out its timeout on the ones it does not, with the party standing around out of
+combat, which looks exactly like bots refusing to fight.
+
+### Scope every search to the pack, not to the instance
+
+The default 300 yard search is almost always wrong. Entries are reused across a whole instance —
+eight Sons of Arugal are spawned in Shadowfang and only three are in Arugal's room — so a wide
+search finds mobs two floors away and orders the party onto all of them at once. That produced a
+four bot party at level 26 attacking nine Bleak Worgs simultaneously and reading the resulting wipe
+as a bot failure. Twenty five to thirty yards is a pack.
+
+### Pull one mob at a time, and rest between pulls
+
+Ordering the party onto everything of an entry at once is not how the game is played and not what
+the bot code is written for. Pull the nearest, fight it, rest, repeat.
+
+Resting matters as much as the pulls. Bots eat and drink on their own out of combat but only if
+given the time, and a suite that walks from a boss straight into its adds on no mana loses fights
+the party wins rested. Wait on the actual numbers — worst health and worst mana across the party,
+with a timeout — not on a fixed sleep.
+
+### Re-issue the attack order every poll; never latch it
+
+The single most misleading bug so far. Issuing `partybot attackstart` once and then only watching
+the target's health means that if the party disengages for any reason — the mob evades and resets,
+the target dies and aggro scatters, a summon steals it — nothing ever re-orders them, and the suite
+burns its whole timeout watching a party stand still. `victim='none'` in the tick log with mana
+climbing is the signature: that is a party at rest, not a party losing.
+
+### Verify state changes, do not assume them
+
+An encounter that opens a door is only half tested by the boss dying. A door's open or shut is
+instance state held in memory, so it cannot be read from the world database — `.harness gobject
+<char> <entry> <range>` reports `statename=open|shut`. Check it is shut in a fresh instance before
+the boss and open after, or the test cannot tell a working script from a lucky teleport.
+
+### Make the party walk, and check that it arrived
+
+`go xyz` teleports the leader and the bots follow by teleporting too, which tests nothing about
+navigation. To test a corridor, move the leader in ten to fifteen yard legs and after each leg
+assert that every bot is near the leader, naming the ones that are not and where they are. That is
+what catches `pullblock` refusals and stuck geometry, which is the failure the bots are most prone
+to in a keep.
+
+### Measure the room before writing a tactic for it
+
+Two commands exist for this and both answer questions no amount of reasoning will:
+
+- `.harness ground <char> <x0> <y0> <x1> <y1> <step> [probeZ]` reads the floor over a rectangle.
+  **Teleporting a character about and reading its position back does not work** — the position
+  correction looks for ground near the height it was handed, so a character dropped onto a raised
+  walkway stays on the walkway and the sunken floor two yards away never appears, and a character
+  dropped into thin air simply floats there and reports the height you asked for. Probe from just
+  above the floor you care about; probing from high up finds the ceiling.
+- `.harness cover <char> <wx> <wy> <wz> [dynlos]` reports where, from where the character stands,
+  it could get out of sight of a caster at that point, plus whether the character can see it at all.
+  Dynamic line of sight is **off** by default on purpose: a closed door reads as cover that will not
+  be there during the fight, and measuring Arugal's doorway with his lair shut made every spot on
+  the far side look safe.
+
+### A verdict has to be witnessed
+
+A mob absent from the grid is **unknown**, never dead. Require `alive=0` on a creature that is still
+there; report an absent one as its own outcome. Two suites have reported clean kills for raids that
+achieved nothing because absence was read as death.
+
+### Expect the harness itself to be the bug first
+
+Roughly two thirds of the failures in the Shadowfang run were in the test, not the server: search
+radii, latched orders, missing rests, a walk started while the previous fight was still going. Before
+concluding the bots cannot do something, check the tick log for what they were actually doing. It is
+cheap and it has been right more often than the hypothesis was.
+
+Other things that bite:
+
+- **`character level` takes the character out of the world briefly**, so a `revive` immediately after
+  it fails with `Player not found`. Tolerate it and re-login rather than racing it.
+- **The group holds its old bots.** `partybot removeall` runs in the leader's session; a run that
+  starts before the previous run's bots are gone silently forms a short party. Assert the party size
+  after forming and fail loudly.
+- **A fresh instance is not free.** Walk the leader out, `instance unbind all`, then back in;
+  otherwise the boss is dead and the door is already open from the last attempt. `.harness respawn`
+  resets creatures in place and is about a minute faster when the instance itself can be reused.
