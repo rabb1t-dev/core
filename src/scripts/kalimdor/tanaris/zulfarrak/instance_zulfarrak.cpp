@@ -88,6 +88,26 @@ float Spawnsway[2][3] =
     {1887.53f, 1263.0f, 41.0f}
 };
 
+// How the trolls are let up the stairs.
+//
+// The event only reads as a gauntlet if the group holding the landing is fighting a handful at a
+// time. Three numbers decide that and all three were wrong.
+//
+// The group size was a ramp with no ceiling: two, then three, then four, climbing by one every ten
+// seconds for as long as the wave lasted. A wave of twenty three was therefore fully dispatched
+// inside fifty seconds and the last group of it was seven abreast, which is not "a few at a time"
+// by the time it reaches the top.
+//
+// The ceiling is the one that actually decides the fight, and there was none: nothing counted what
+// was already up there. A group that is falling behind got sent more, and more again, which is the
+// definition of unwinnable. Holding the released-and-still-alive count at six means falling behind
+// slows the event down rather than speeding it up. The wave still ends only when all of it is
+// dead, so this changes the pacing and not the amount of work.
+uint32 const PYRAMID_RELEASE_INTERVAL = 10000;
+uint32 const PYRAMID_RELEASE_MIN = 2;
+uint32 const PYRAMID_RELEASE_MAX = 4;
+uint32 const PYRAMID_MAX_RELEASED_ALIVE = 6;
+
 struct instance_zulfarrak : public ScriptedInstance
 {
 public:
@@ -269,7 +289,7 @@ public:
                 SetData(EVENT_PYRAMID, PYRAMID_WAVE_1);
                 major_wave_Timer = 120000;
                 minor_wave_Timer = 0;
-                addGroupSize = 2;
+                addGroupSize = PYRAMID_RELEASE_MIN;
                 break;
             case PYRAMID_WAVE_1:
                 if (IsWaveAllDead())
@@ -279,8 +299,8 @@ public:
                 }
                 else if (minor_wave_Timer < diff)
                 {
-                    SendAddsUpStairs(addGroupSize++);
-                    minor_wave_Timer = 10000;
+                    ReleaseNextGroup();
+                    minor_wave_Timer = PYRAMID_RELEASE_INTERVAL;
                 }
                 else
                     minor_wave_Timer -= diff;
@@ -292,7 +312,7 @@ public:
                     SpawnPyramidWave(2);
                     SetData(EVENT_PYRAMID, PYRAMID_WAVE_2);
                     minor_wave_Timer = 0;
-                    addGroupSize = 2;
+                    addGroupSize = PYRAMID_RELEASE_MIN;
                 }
                 else
                     major_wave_Timer -= diff;
@@ -306,8 +326,8 @@ public:
                 }
                 else if (minor_wave_Timer < diff)
                 {
-                    SendAddsUpStairs(addGroupSize++);
-                    minor_wave_Timer = 10000;
+                    ReleaseNextGroup();
+                    minor_wave_Timer = PYRAMID_RELEASE_INTERVAL;
                 }
                 else
                     minor_wave_Timer -= diff;
@@ -357,15 +377,54 @@ public:
 
     void SpawnPyramidWave(uint32 wave)
     {
+        // A wave starts from an empty pool.
+        //
+        // Both lists were appended to and never cleared, which was merely untidy while every
+        // earlier entry was reliably dead by the time the next wave spawned -- and not untidy at
+        // all once anything could put a live troll from an earlier spawn in them. IsWaveAllDead
+        // walks both, so one stale live guid holds the wave open for ever and the release carries
+        // on running underneath it. Clearing here is safe by construction: wave two is spawned
+        // from PYRAMID_PRE_WAVE_2 and wave three from the all-dead branch of PYRAMID_WAVE_2, so
+        // in both cases everything in the lists has already been established as dead.
+        addsAtBase.clear();
+        movedadds.clear();
+
         for (const auto& pyramidSpawn : pyramidSpawns)
         {
-            if (pyramidSpawn[0] == (float)wave)
-            {
-                Creature* ts = instance->SummonCreature(pyramidSpawn[1], pyramidSpawn[2], pyramidSpawn[3], 8.87f, 0.0f);
-                //ts->GetMotionMaster()->MoveRandom(10);
+            if (pyramidSpawn[0] != (float)wave)
+                continue;
+
+            // Null checked. SummonCreature answers an unknown template or a placement it cannot
+            // make with null, and this dereferenced it.
+            if (Creature* ts = instance->SummonCreature(pyramidSpawn[1], pyramidSpawn[2],
+                                                        pyramidSpawn[3], 8.87f, 0.0f))
                 addsAtBase.push_back(ts->GetGUID());
-            }
         }
+    }
+
+    // How many of the trolls already sent up the stairs are still alive to be fought.
+    //
+    // Counted rather than tracked, because the alternative is a counter that has to be decremented
+    // from a death hook the summons do not have. An entry the map no longer knows about is not
+    // alive, which is the same reading IsWaveAllDead takes of it.
+    uint32 CountReleasedAlive()
+    {
+        uint32 alive = 0;
+        for (const auto& guid : movedadds)
+            if (Creature* add = instance->GetCreature(guid))
+                if (add->IsAlive())
+                    ++alive;
+
+        return alive;
+    }
+
+    // One tick of the release: send the next group up, then widen the group for the tick after.
+    void ReleaseNextGroup()
+    {
+        SendAddsUpStairs(addGroupSize);
+
+        if (addGroupSize < PYRAMID_RELEASE_MAX)
+            ++addGroupSize;
     }
 
     bool IsWaveAllDead()
@@ -391,6 +450,17 @@ public:
 
     void SendAddsUpStairs(uint32 count)
     {
+        // Never more than a handful loose on the landing at once. See PYRAMID_MAX_RELEASED_ALIVE:
+        // this is what stops a group that is losing from being handed the rest of the pyramid,
+        // and it is why the event now waits for the group rather than the other way round.
+        uint32 const alreadyUp = CountReleasedAlive();
+        if (alreadyUp >= PYRAMID_MAX_RELEASED_ALIVE)
+            return;
+
+        uint32 const room = PYRAMID_MAX_RELEASED_ALIVE - alreadyUp;
+        if (count > room)
+            count = room;
+
         //pop a add from list, send him up the stairs...
         for (uint32 addCount = 0; addCount < count && !addsAtBase.empty(); addCount++)
         {

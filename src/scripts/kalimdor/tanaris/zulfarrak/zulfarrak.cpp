@@ -209,6 +209,25 @@ bool OnGossipHello_go_troll_cage(Player* pPlayer, GameObject* pGo)
 {
     if (InstanceData* pInstance = pGo->GetInstanceData())
     {
+        // Once, at the start, and never again. This guard is the whole reason the event is
+        // survivable.
+        //
+        // There are five cages and every one of them runs this handler, which used to drive the
+        // phase back to PYRAMID_CAGES_OPEN unconditionally and re-issue MovePoint(1) to all five
+        // freed NPCs -- Weegli included. A MovePoint to a spot he is already standing on still
+        // finalises, and Finalize calls MovementInform, so his handler saw CAGES_OPEN with id 1
+        // again and set PYRAMID_ARRIVED_AT_STAIR again. The instance answers that by summoning
+        // wave one. Five cages therefore queued up to a hundred and fifteen trolls at the foot of
+        // the stairs instead of twenty three, in a pool IsWaveAllDead can never empty, so the
+        // release never stopped and the wave never ended. Clicking a cage again mid-fight did it
+        // once more.
+        //
+        // Nothing is lost by refusing the later cages: the first one frees all five of the crew
+        // below, because this handler was always written to init the whole group rather than
+        // whichever NPC was in the cage that was opened.
+        if (pInstance->GetData(EVENT_PYRAMID) != PYRAMID_NOT_STARTED)
+            return false;
+
         pInstance->SetData(EVENT_PYRAMID, PYRAMID_CAGES_OPEN);
         //set bly & co to aggressive & start moving to top of stairs
         initBlyCrewMember(pInstance, ENTRY_BLY, 1887.17f, 1263.72f, 41.484f);
