@@ -3783,6 +3783,24 @@ bool PartyBotAI::InterruptHostileCasters()
         }
     }
 
+    // Anything fighting an ally this instance asked the group to keep alive.
+    //
+    // The escort is not a group member, so none of the tests above can see it, and in a fight
+    // built around one the mobs spend most of their time on it rather than on the party. Left out,
+    // the group treats every such mob as somebody else's business the instant it turns to face the
+    // NPC it was summoned to kill -- which is the moment the group most needs to stay on it.
+    std::vector<Creature*> escorts;
+    FindGuardedEscorts(escorts);
+    for (Creature const* pEscort : escorts)
+    {
+        if (pEnemy->GetVictim() == pEscort)
+            return true;
+
+        for (const auto pAttacker : pEscort->GetAttackers())
+            if (pAttacker == pEnemy)
+                return true;
+    }
+
     return false;
 }
 
@@ -3902,30 +3920,122 @@ bool PartyBotAI::PeelForTheHealer()
 
 // The escort this instance asks the group to keep alive, if one is standing near enough to be the
 // group's problem.
+// Every allied NPC of this instance's that is alive and near enough to be the group's problem.
+//
+// Plural because Zul'Farrak's are: Bly frees four others with him and all five fight beside the
+// group for the pyramid event. Belnistrasz was one, which is why this started as one, and a list
+// of one behaves exactly as the single entry did.
+void PartyBotAI::FindGuardedEscorts(std::vector<Creature*>& out) const
+{
+    if (!m_tactics || m_tactics->escortNpcEntries.empty())
+        return;
+
+    for (uint32 entry : m_tactics->escortNpcEntries)
+    {
+        if (Creature* pEscort = me->FindNearestCreature(entry, m_tactics->escortGuardRadius))
+        {
+            if (!pEscort->IsAlive())
+                continue;
+
+            // An ally only for as long as it is one, which in Zul'Farrak is not for ever.
+            //
+            // Bly's crew are the group's escort for the whole pyramid event and then the group's
+            // next fight: when the last troll dies the gossip turns all five hostile, and the
+            // table cannot express "these five, until they turn" because the moment is a script
+            // event rather than a fact about the creatures. Asked of the faction instead, which is
+            // exactly what the script changes.
+            //
+            // Without this the healer keeps topping up Bly while he kills it, and the escort
+            // defence at the bottom of SelectPartyAttackTarget goes looking for whatever is
+            // attacking him -- which is the party.
+            if (me->IsHostileTo(pEscort))
+                continue;
+
+            out.push_back(pEscort);
+        }
+    }
+}
+
 Creature* PartyBotAI::FindGuardedEscort() const
 {
-    if (!m_tactics || !m_tactics->escortNpcEntry)
-        return nullptr;
+    std::vector<Creature*> escorts;
+    FindGuardedEscorts(escorts);
+    return escorts.empty() ? nullptr : escorts.front();
+}
 
-    return me->FindNearestCreature(m_tactics->escortNpcEntry, m_tactics->escortGuardRadius);
+// The heal selectors in CombatBotBaseAI ask for this by name; see the declaration there for why it
+// is a hook rather than a direct reach into the tactics table.
+//
+// The worst off of them, not the nearest. With one escort the two were the same question; with
+// five they are not, and answering "nearest" would have a healer topping up Bly at ninety percent
+// while Weegli -- who is the only thing that opens the end door -- dies behind him.
+Unit* PartyBotAI::GetGuardedEscort() const
+{
+    std::vector<Creature*> escorts;
+    FindGuardedEscorts(escorts);
+
+    // Worst off, with the table's ordering worth a few points of health.
+    //
+    // Straight "lowest health wins" is what this did, and on a five NPC escort it concentrates
+    // everything on whoever happens to be tanking. One measured Zul'Farrak run: forty six escort
+    // heals, twenty nine of them on Oro Eyegouge, two on Weegli Blastfuse -- and those two were
+    // Greater Heals at fourteen and nineteen percent, because the selector had not looked at him
+    // until he was nearly dead. All five died, and Weegli is the only one that opens the end
+    // door, so the instance could not be finished either.
+    //
+    // The bonus is small on purpose. It breaks a near-tie towards the escort the encounter cannot
+    // do without; it does not let a scratched Weegli outrank an Oro who is actually dying, which
+    // would be the same failure with a different name.
+    Creature* pWorst = nullptr;
+    float bestScore = 0.0f;
+    for (Creature* pEscort : escorts)
+    {
+        if (pEscort->GetHealth() >= pEscort->GetMaxHealth())
+            continue;
+
+        float score = pEscort->GetHealthPercent();
+        if (m_tactics)
+        {
+            uint32 const rank = m_tactics->GetEscortRank(pEscort->GetEntry());
+            if (rank == 1)
+                score -= CB_ESCORT_FIRST_RANK_BONUS;
+            else if (rank == 2)
+                score -= CB_ESCORT_SECOND_RANK_BONUS;
+        }
+
+        if (!pWorst || score < bestScore)
+        {
+            bestScore = score;
+            pWorst = pEscort;
+        }
+    }
+
+    // Nothing hurt, so hand back whichever is there: the caller still has its own ceiling to
+    // apply, and a full health escort fails it the same way a full health party member does.
+    return pWorst ? pWorst : (escorts.empty() ? nullptr : escorts.front());
 }
 
 Unit* PartyBotAI::SelectEscortAttackTarget() const
 {
-    Creature* pEscort = FindGuardedEscort();
-    if (!pEscort || !pEscort->IsAlive() || !pEscort->IsInCombat())
-        return nullptr;
+    std::vector<Creature*> escorts;
+    FindGuardedEscorts(escorts);
 
-    // Only what is actually on him. A bot's threat rules are built entirely around the group, and
-    // an escort NPC is not a group member, so without this the party stands and watches the thing
-    // it came to protect get eaten by adds that never touched a player.
-    for (const auto pAttacker : pEscort->GetAttackers())
-        if (IsValidHostileTarget(pAttacker) && me->IsWithinDist(pAttacker, 50.0f))
-            return pAttacker;
+    for (Creature* pEscort : escorts)
+    {
+        if (!pEscort->IsInCombat())
+            continue;
 
-    if (Unit* pVictim = pEscort->GetVictim())
-        if (IsValidHostileTarget(pVictim) && me->IsWithinDist(pVictim, 50.0f))
-            return pVictim;
+        // Only what is actually on him. A bot's threat rules are built entirely around the group,
+        // and an escort NPC is not a group member, so without this the party stands and watches
+        // the thing it came to protect get eaten by adds that never touched a player.
+        for (const auto pAttacker : pEscort->GetAttackers())
+            if (IsValidHostileTarget(pAttacker) && me->IsWithinDist(pAttacker, 50.0f))
+                return pAttacker;
+
+        if (Unit* pVictim = pEscort->GetVictim())
+            if (IsValidHostileTarget(pVictim) && me->IsWithinDist(pVictim, 50.0f))
+                return pVictim;
+    }
 
     return nullptr;
 }
@@ -5845,6 +5955,20 @@ Unit* PartyBotAI::SelectHealTargetOutOfReach() const
 
         worst = pMember->GetHealthPercent();
         pTarget = pMember;
+    }
+
+    // And the escort, for the same reason as the group members above: a healer that cannot reach
+    // the thing the run depends on has a problem it can solve by walking. This is the difference
+    // between a healer that tried and failed and one that never tried, and on the events these
+    // appear in the escort is usually the furthest forward thing in the room.
+    if (Unit* pEscort = GetGuardedEscort())
+    {
+        if (pEscort->GetHealthPercent() < worst &&
+            me->IsValidHelpfulTarget(pEscort) &&
+            !(me->IsWithinDist(pEscort, reach) && me->IsWithinLOSInMap(pEscort)))
+        {
+            pTarget = pEscort;
+        }
     }
 
     return pTarget;

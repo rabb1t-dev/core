@@ -2542,6 +2542,32 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
         }
     }
 
+    // The escort, which is in the room and not in the group, so nothing above can see it.
+    //
+    // Ranked alongside the group rather than ahead of it, because a healer that drops a dying tank
+    // to top up an escort at eighty percent loses the fight and then the escort with it. The bonus
+    // decides the ties; a player genuinely further down still wins.
+    //
+    // Rationing does not exclude it. IsRationingHealsForTank exists to stop the last of a healer's
+    // mana going anywhere but the one unit holding the fight together, and on an escort event that
+    // unit is the escort.
+    if (Unit* pEscort = GetGuardedEscort())
+    {
+        float const escortPercent = std::min(groupHealPercent, healPercent + CB_HEAL_ESCORT_CEILING_BONUS);
+
+        if (pEscort->IsAlive() &&
+            pEscort->GetHealth() + GetIncomingHeals(pEscort) < pEscort->GetMaxHealth() &&
+            IsValidHealTarget(pEscort, escortPercent))
+        {
+            float const score = pEscort->GetHealthPercent() - CB_HEAL_ESCORT_PRIORITY_BONUS;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                pTarget = pEscort;
+            }
+        }
+    }
+
     return pTarget;
 }
 
@@ -2576,6 +2602,17 @@ Unit* CombatBotBaseAI::SelectPeriodicHealTarget(float selfHealPercent, float gro
                     return pMember;
             }
         }
+    }
+
+    // A heal over time is worth more on an escort than on anybody else in the room: it is standing
+    // still, it is taking steady damage from adds rather than spikes, and every tick of it lands
+    // while the healer is doing something about the adds themselves.
+    if (Unit* pEscort = GetGuardedEscort())
+    {
+        if (pEscort->IsAlive() &&
+            IsValidHealTarget(pEscort, std::min(groupHealPercent, healPercent + CB_HEAL_ESCORT_CEILING_BONUS)) &&
+           !pEscort->HasAuraType(SPELL_AURA_PERIODIC_HEAL))
+            return pEscort;
     }
 
     return nullptr;

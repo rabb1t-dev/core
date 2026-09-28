@@ -186,6 +186,19 @@ static constexpr uint32 CB_HEAL_PRECAST_COMMIT_WINDOW_MS = 500;
 // run dungeons at: enough to break the tie, not enough to ignore somebody genuinely dying.
 static constexpr float CB_HEAL_TANK_PRIORITY_BONUS = 15.0f;
 
+// The same, for an escort the instance has asked the group to keep alive, and more of it than a
+// tank gets. A tank at forty percent is a fight going badly and the group has answers to it; an
+// escort at forty percent is the run ending, because nobody can taunt for it, it does not heal
+// itself, and in several of these events it is forbidden from defending itself at all. Belnistrasz
+// spends four minutes channelling with SetCombatMovement(false) and an AttackStart that returns
+// without doing anything, taking four waves of adds on a health pool of a level 36 caster.
+//
+// The ceiling bonus is what gets a heal started on him at all: a rotation that only heals below
+// sixty percent will not touch an escort losing a quarter of its bar a wave until it is nearly
+// gone, by which point the cast does not land in time.
+static constexpr float CB_HEAL_ESCORT_PRIORITY_BONUS = 25.0f;
+static constexpr float CB_HEAL_ESCORT_CEILING_BONUS = 15.0f;
+
 class CombatBotBaseAI : public PlayerBotAI
 {
 public:
@@ -253,6 +266,14 @@ public:
     Unit* SelectAttackerDifferentFrom(Unit const* pExcept) const;
     Unit* SelectHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
     Unit* SelectPeriodicHealTarget(float selfHealPercent = 100.0f, float groupHealPercent = 100.0f) const;
+
+    // The escort this instance asks the group to keep alive, when one is near enough to be the
+    // group's problem. Null for every bot that is not a party bot on a map with an escort tactic.
+    //
+    // Asked for here rather than reached for directly because the heal selectors live in this
+    // class, shared with the battleground bots, and the tactics table is a party bot's business.
+    // The selectors need only one thing from it: a unit that is not in the group and has to live.
+    virtual Unit* GetGuardedEscort() const { return nullptr; }
     // Whether another group member is already putting this buff on this subgroup, and the order
     // this bot should walk the subgroups in. Together they stop every buffer in a raid choosing
     // the same target on the same tick, which at a raid buff's mana cost is most of a bar.
