@@ -346,6 +346,26 @@ class Harness:
             out[int(row["guid"])] = row
         return out
 
+    def dynobjs(self, character, spell=0, range_yards=100.0):
+        """Every dynamic object near this character, keyed by guid.
+
+        The only way to see a persistent area aura from outside. `inside` is the list of party
+        member names standing in it right now, which is the field a ground-hazard test asserts
+        on; it is an empty list rather than "-" when nobody is.
+        """
+        text = self.run(
+            f"harness dynobj {character} {spell:d} {range_yards:.0f}")
+        out = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("dynobj "):
+                continue
+            row = _pairs(line)
+            names = row.get("inside", "-")
+            row["inside"] = [] if names in ("-", "") else names.split(",")
+            out[int(row["guid"])] = row
+        return out
+
     def respawn(self, character, entry, range_yards=300.0):
         """Put every creature of an entry near this character back as it spawned.
 

@@ -14,6 +14,13 @@ those two apart.
 SOAP binds to loopback, so **the driver runs on the server host**, not on the machine you are
 editing from. Over SSH that means the script goes to the box, not the other way round.
 
+The server host is the Raspberry Pi at `ssh rabb1t@10.0.1.7`, and has been since the move off
+the WSL2 desktop. It is the only one: the old box at `ssh vmangos` still has the tree and the
+databases as they were on the day of the move, but its services are disabled and starting them
+would give you a second world with a stale copy of everyone's characters. The Pi's firewall
+refuses to originate connections into the LAN, so a script running there cannot reach back to
+your workstation -- copy files *to* it, never pull from it.
+
 Three things have to be true:
 
 - `Harness.Enable = 1` in `mangosd.conf`. It defaults to **off** and every command checks it,
@@ -123,6 +130,24 @@ Summoned targets are worse than untidy: one left in combat with an unkillable ha
 never resets, and the next run's bots assist against it rather than against the mob that run
 summoned. Call it before summoning, not after, so a suite that crashed still leaves a clean field
 for the next one.
+
+### `.harness dynobj <character> [spell] [range]`
+
+Every dynamic object near this character: a summary line, then one `dynobj` line each of
+`guid spell radius duration hostile dist x y z inside`.
+
+The one hazard in a dungeon that no other command here can see. A persistent area aura is a
+DynamicObject on the floor with a radius and a periodic effect -- there is no creature for
+`.harness enemy` to list, no gameobject for `.harness gobject` to report, no threat entry and no
+cast. From outside, a party standing in Maraudon's Noxious Cloud and a party standing in clean air
+differ only by their health going down.
+
+`inside` is the field to assert on: the party members whose feet are within the radius right now,
+comma separated, or `-`. Everything else on the line is context for reading a failure.
+
+`hostile` is asked of the object rather than inferred from the spell, because the same spell id can
+belong to a patch laid down by either side and a test that counted the party's own Blizzard as a
+hazard would fail on a mage. Spell zero means every dynamic object.
 
 ### `.harness spells <character>`
 

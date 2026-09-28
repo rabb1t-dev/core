@@ -38,6 +38,11 @@
 #include "Maps/PathFinder.h"
 #include "Maps/MoveMap.h"
 #include "MotionMaster.h"
+#include "GameObject.h"
+#include "DynamicObject.h"
+#include "Maps/GridNotifiers.h"
+#include "Maps/GridNotifiersImpl.h"
+#include "Maps/CellImpl.h"
 
 #include <map>
 #include <string>
@@ -359,6 +364,64 @@ bool ChatHandler::HandleHarnessPathCommand(char* args)
     for (size_t i = 0; i < points.size(); ++i)
         PSendSysMessage("point i=%u x=%.2f y=%.2f z=%.2f",
             uint32(i), points[i].x, points[i].y, points[i].z);
+
+    return true;
+}
+
+// .harness gobject <character> <entry> [range]
+// Every gameobject of an entry near a character, with its state.
+//
+// Doors are the reason. An encounter that opens one is only half tested by the boss dying: the
+// group still has to get through, and a door's open or shut is instance state held in memory, so it
+// cannot be read out of the world database and there is otherwise no way for a scripted run to tell
+// whether killing the boss did what the instance script says it does.
+bool ChatHandler::HandleHarnessGObjectCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry) || !entry)
+    {
+        SendSysMessage("Syntax: .harness gobject <character> <entry> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 0.0f;
+    if (!ExtractFloat(&args, range) || range <= 0.0f)
+        range = 100.0f;
+
+    std::list<GameObject*> found;
+    pTarget->GetGameObjectListWithEntryInGrid(found, entry, range);
+
+    if (found.empty())
+    {
+        PSendSysMessage("gobject none entry=%u range=%.0f", entry, range);
+        return true;
+    }
+
+    for (GameObject* pGo : found)
+    {
+        if (!pGo)
+            continue;
+
+        // Reported as the number as well as the word, since the words are few and the callers
+        // that care are scripts.
+        uint32 const state = uint32(pGo->GetGoState());
+        char const* stateName = state == GO_STATE_ACTIVE ? "open"
+                              : state == GO_STATE_READY ? "shut"
+                              : "alternative";
+
+        PSendSysMessage("gobject guid=%u entry=%u state=%u statename=%s dist=%.1f x=%.2f y=%.2f z=%.2f name=%s",
+            pGo->GetGUIDLow(), pGo->GetEntry(), state, stateName,
+            pTarget->GetDistance(pGo), pGo->GetPositionX(), pGo->GetPositionY(),
+            pGo->GetPositionZ(), pGo->GetName());
+    }
 
     return true;
 }
@@ -768,6 +831,81 @@ bool ChatHandler::HandleHarnessSelectCommand(char* args)
 // yards apart; the nearest-only reading followed the first one to its death, switched silently
 // to the second at full health, and called a clean kill a raid that had achieved nothing. The
 // guid on every line is what lets the caller follow the creature it actually pulled.
+// Talk to an NPC and pick one of its gossip options, which is the only way to start some
+// encounters at all.
+//
+// Zul'Farrak's last fight is the case it was written for. Sergeant Bly and his four turn on the
+// group through a gossip option, and that option is what sends Weegli Blastfuse away to blow the
+// end door rather than fight -- so a test that starts the fight by swinging at them faces five
+// elites where the encounter intends four, and never exercises the one NPC that opens the way to
+// Chief Ukorz. There is no other route to it: gossip arrives as a client packet naming a menu the
+// server built, and a command over SOAP has no menu and no client.
+//
+// Hello is run first and its result reported rather than skipped, because the hello handler is
+// where the gating lives -- Bly offers the fight only once the pyramid event is finished. Calling
+// select alone would start the fight from any state and the test would be lying about what it
+// proved. `options` is what hello actually offered; a test should assert on it.
+bool ChatHandler::HandleHarnessGossipCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    if (!ExtractUInt32(&args, entry) || !entry)
+    {
+        SendSysMessage("Syntax: .harness gossip <character> <entry> [range] [option]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 30.0f;
+    ExtractFloat(&args, range);
+
+    uint32 option = 0;
+    ExtractUInt32(&args, option);
+
+    Creature* pCreature = pTarget->FindNearestCreature(entry, range, true);
+    if (!pCreature)
+    {
+        PSendSysMessage("gossip none entry=%u range=%.0f", entry, range);
+        return true;
+    }
+
+    pTarget->PlayerTalkClass->ClearMenus();
+
+    bool const helloHandled = sScriptMgr.OnGossipHello(pTarget, pCreature);
+    uint32 const offered = pTarget->PlayerTalkClass->GetGossipMenu().MenuItemCount();
+
+    // Nothing offered means the encounter is not ready for this, which is an answer and not an
+    // error: the caller asked what the NPC would say and this is what it said.
+    if (option >= offered)
+    {
+        PSendSysMessage("gossip guid=%u entry=%u hello=%u options=%u selected=none name=%s",
+            pCreature->GetGUIDLow(), entry, helloHandled ? 1 : 0, offered,
+            pCreature->GetName());
+        pTarget->PlayerTalkClass->CloseGossip();
+        return true;
+    }
+
+    // Read back through the same accessors the real opcode handler uses, rather than off the
+    // menu item struct, so a harness selection and a client selection cannot disagree about what
+    // an option means.
+    uint32 const sender = pTarget->PlayerTalkClass->GossipOptionSender(option);
+    uint32 const action = pTarget->PlayerTalkClass->GossipOptionAction(option);
+
+    bool const selected = sScriptMgr.OnGossipSelect(pTarget, pCreature, sender, action, nullptr);
+
+    PSendSysMessage("gossip guid=%u entry=%u hello=%u options=%u selected=%u sender=%u action=%u name=%s",
+        pCreature->GetGUIDLow(), entry, helloHandled ? 1 : 0, offered,
+        selected ? 1 : 0, sender, action, pCreature->GetName());
+
+    return true;
+}
+
 bool ChatHandler::HandleHarnessEnemyCommand(char* args)
 {
     Player* pTarget = GetHarnessTarget(&args);
@@ -780,7 +918,7 @@ bool ChatHandler::HandleHarnessEnemyCommand(char* args)
     uint32 entry = 0;
     if (!ExtractUInt32(&args, entry))
     {
-        SendSysMessage("Syntax: .harness enemy <character> <entry> [range]");
+        SendSysMessage("Syntax: .harness enemy <character> <entry|0 for any> [range]");
         SetSentErrorMessage(true);
         return false;
     }
@@ -789,7 +927,44 @@ bool ChatHandler::HandleHarnessEnemyCommand(char* args)
     ExtractFloat(&args, range);
 
     std::list<Creature*> creatures;
-    pTarget->GetCreatureListWithEntryInGrid(creatures, entry, range);
+
+    // Entry zero means every hostile creature, which is what clearing a room actually needs.
+    //
+    // Naming an entry means knowing it, and a dungeon does not oblige. Wolf Master Nandos calls
+    // three worgs of three entries; a Lupine Horror summons Lupine Delusions of a fourth; the room
+    // holds Wolfguard Worgs of a fifth. A script that lists the entries it expects clears the ones
+    // it listed and then waits out its timeout on the ones it did not, with the party standing
+    // around out of combat, which reads exactly like bots that will not fight.
+    if (!entry)
+    {
+        // "Unfriendly" is wider than "worth fighting", so the list is filtered.
+        // AnyUnfriendlyUnitInObjectRangeCheck answers on faction alone, and asked from a harness
+        // lead it returned the party's own shaman totems and a Black Rat along with the trash. A
+        // clearing script then dutifully ordered the party onto Strength of Earth Totem II, five
+        // times, and called it a pack.
+        std::list<Unit*> hostiles;
+        pTarget->GetEnemyListInRadiusAround(pTarget, range, hostiles);
+
+        for (Unit* pHostile : hostiles)
+        {
+            Creature* pCreature = pHostile ? pHostile->ToCreature() : nullptr;
+            if (!pCreature)
+                continue;
+
+            // Somebody's, and so not the room's: totems, pets and guardians belong to whoever
+            // summoned them and are never what a clear is for.
+            if (pCreature->IsTotem() || pCreature->GetCharmerOrOwnerGuid())
+                continue;
+
+            CreatureInfo const* pInfo = pCreature->GetCreatureInfo();
+            if (pInfo && pInfo->type == CREATURE_TYPE_CRITTER)
+                continue;
+
+            creatures.push_back(pCreature);
+        }
+    }
+    else
+        pTarget->GetCreatureListWithEntryInGrid(creatures, entry, range);
 
     PSendSysMessage("enemies entry=%u range=%.0f count=%u", entry, range,
         uint32(creatures.size()));
@@ -798,16 +973,130 @@ bool ChatHandler::HandleHarnessEnemyCommand(char* args)
     {
         Unit const* pVictim = pCreature->GetVictim();
 
-        PSendSysMessage("enemy guid=%u alive=%u health=%u maxhealth=%u percent=%.1f "
-                        "incombat=%u combat=%u dist=%.1f attackers=%u victim=%s",
+        // Entry on the line, because a caller that asked for "any" does not know it and cannot
+        // select or look up a creature without it. One line rather than two: the parser keys on
+        // guid, so a second line for the same creature overwrites the first.
+        //
+        // Name last, since only the final key on a line may contain spaces. That costs the victim
+        // its surname, which no caller reads.
+        // Position as well as distance, because the two answer different questions and only
+        // `dist` was here. `dist` is measured from the harness lead, who stands wherever the
+        // stage left it; a standoff is measured from the creature. A Maraudon run that checked
+        // whether its casters were outside Dust Field had nothing to measure against without
+        // this, and the leader's own distance is not it.
+        PSendSysMessage("enemy guid=%u entry=%u alive=%u health=%u maxhealth=%u percent=%.1f "
+                        "incombat=%u combat=%u dist=%.1f attackers=%u x=%.2f y=%.2f z=%.2f "
+                        "victim=%s name=%s",
             pCreature->GetGUIDLow(),
+            pCreature->GetEntry(),
             pCreature->IsAlive() ? 1 : 0,
             pCreature->GetHealth(), pCreature->GetMaxHealth(), pCreature->GetHealthPercent(),
             pCreature->IsInCombat() ? 1 : 0,
             uint32(pCreature->IsInCombat() ? pCreature->GetCombatTime(false) : 0),
             pTarget->GetDistance(pCreature),
             uint32(pCreature->GetAttackers().size()),
-            pVictim ? pVictim->GetName() : "-");
+            pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ(),
+            pVictim ? pVictim->GetName() : "-",
+            pCreature->GetName());
+    }
+
+    return true;
+}
+
+// .harness dynobj <character> [spell] [range]
+// Every dynamic object near this character, and which of the group is standing in one.
+//
+// The only hazard in a dungeon that is invisible from every other command here. A persistent area
+// aura is a DynamicObject on the floor with a radius and a periodic effect: there is no creature
+// to list with `.harness enemy`, no gameobject to read with `.harness gobject`, no threat entry
+// and no cast. From outside, a party standing in Maraudon's Noxious Cloud and a party standing in
+// clean air differ only by their health going down, and a rule written to walk them out of it has
+// no way to be shown working.
+//
+// So the useful field is `inside`, not the object list: it names the party members whose feet are
+// within the radius right now, which is the thing a test asserts on. Reported as names on the last
+// key of the line, comma separated and without spaces, because a value containing spaces has to be
+// last and there can only be one of those.
+//
+// Spell zero means every dynamic object, which is what a sweep wants; naming one is for a test
+// that already knows which patch it is asking about.
+bool ChatHandler::HandleHarnessDynObjCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 spellId = 0;
+    ExtractUInt32(&args, spellId);
+
+    float range = 100.0f;
+    ExtractFloat(&args, range);
+
+    std::list<WorldObject*> found;
+    MaNGOS::AllWorldObjectsInRange check(pTarget, range);
+    MaNGOS::WorldObjectListSearcher<MaNGOS::AllWorldObjectsInRange> searcher(found, check);
+    Cell::VisitAllObjects(pTarget, searcher, range);
+
+    std::vector<DynamicObject*> objects;
+    for (WorldObject* pObject : found)
+    {
+        if (!pObject || pObject->GetTypeId() != TYPEID_DYNAMICOBJECT)
+            continue;
+
+        DynamicObject* pDynObj = static_cast<DynamicObject*>(pObject);
+        if (spellId && pDynObj->GetSpellId() != spellId)
+            continue;
+
+        objects.push_back(pDynObj);
+    }
+
+    PSendSysMessage("dynobjs spell=%u range=%.0f count=%u", spellId, range,
+        uint32(objects.size()));
+
+    // The group as the caller understands it, so a bot that is not in the party is not reported
+    // as standing in something. A lone leader with no group still reports itself.
+    std::vector<Player*> members;
+    if (Group* pGroup = pTarget->GetGroup())
+    {
+        for (GroupReference* itr = pGroup->GetFirstMember(); itr; itr = itr->next())
+            if (Player* pMember = itr->getSource())
+                if (pMember->IsInWorld() && pMember->GetMapId() == pTarget->GetMapId())
+                    members.push_back(pMember);
+    }
+    else
+        members.push_back(pTarget);
+
+    for (DynamicObject* pDynObj : objects)
+    {
+        std::string inside;
+        for (Player* pMember : members)
+        {
+            float const dx = pMember->GetPositionX() - pDynObj->GetPositionX();
+            float const dy = pMember->GetPositionY() - pDynObj->GetPositionY();
+            if ((dx * dx + dy * dy) > (pDynObj->GetRadius() * pDynObj->GetRadius()))
+                continue;
+
+            if (!inside.empty())
+                inside += ",";
+            inside += pMember->GetName();
+        }
+
+        // Hostility asked of the object rather than inferred from the spell, because the same
+        // spell id can belong to a patch laid down by either side, and a test that counted the
+        // party's own Blizzard as a hazard would fail on a mage.
+        PSendSysMessage("dynobj guid=%u spell=%u radius=%.1f duration=%u hostile=%u dist=%.1f "
+                        "x=%.2f y=%.2f z=%.2f inside=%s",
+            pDynObj->GetGUIDLow(),
+            pDynObj->GetSpellId(),
+            pDynObj->GetRadius(),
+            pDynObj->GetDuration(),
+            pDynObj->IsHostileTo(pTarget) ? 1 : 0,
+            pTarget->GetDistance(pDynObj),
+            pDynObj->GetPositionX(), pDynObj->GetPositionY(), pDynObj->GetPositionZ(),
+            inside.empty() ? "-" : inside.c_str());
     }
 
     return true;
