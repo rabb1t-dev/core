@@ -135,6 +135,8 @@ public:
     uint32 minor_wave_Timer;
     uint32 addGroupSize;
     uint32 waypoint;
+    uint32 zumrahCleanupTimer;
+    bool zumrahAddsPending;
 
     void Initialize() override
     {
@@ -148,6 +150,8 @@ public:
         minor_wave_Timer = 0;
         addGroupSize = 0;
         waypoint = 0;
+        zumrahCleanupTimer = 0;
+        zumrahAddsPending = false;
 
         UkorzGUID = 0;
         ZumrahGUID = 0;
@@ -260,17 +264,28 @@ public:
                 break;
             case EVENT_ZUMRAH:
                 ZumrahEncounter = data;
+                // Arm the add sweep from the pull, so it only ever runs on a fight that started.
+                if (data == IN_PROGRESS)
+                    zumrahAddsPending = true;
                 break;
             case EVENT_ANTUSUL:
                 AntusulEncounter = data;
                 break;
         };
 
-        if (type == EVENT_END_DOOR && data == DONE)
+        // Every encounter that can be finished, not just the door.
+        //
+        // Only the door was ever written down, so Antu'sul and Zum'rah lived in memory alone and
+        // came back NOT_STARTED after any restart. For Antu'sul that re-arms his area trigger,
+        // and his trigger is the pull: it summons four broodlings and puts them in combat with
+        // the whole zone. A group that had already killed him could walk back through his room
+        // after a restart and be attacked by an encounter that no longer exists.
+        if ((type == EVENT_END_DOOR || type == EVENT_ANTUSUL || type == EVENT_ZUMRAH) &&
+            data == DONE)
         {
             OUT_SAVE_INST_DATA;
             std::ostringstream saveStream;
-            saveStream << EndDoorEncounter;
+            saveStream << EndDoorEncounter << " " << AntusulEncounter << " " << ZumrahEncounter;
             strInstData = saveStream.str();
             SaveToDB();
             OUT_SAVE_INST_DATA_COMPLETE;
@@ -279,6 +294,43 @@ public:
 
     void Update(uint32 diff) override
     {
+        // The backstop for Zum'rah's leftovers.
+        //
+        // The Ward already clears itself and its skeletons once he is dead or out of combat, and
+        // that covers the ordinary wipe. It cannot cover the case where the group does the right
+        // thing: kill every Ward, then wipe to Zum'rah anyway. There is then no Ward left to run
+        // that cleanup, and the skeletons -- guardians of a spawner that no longer exists -- are
+        // left standing with nothing in the encounter referring to them.
+        //
+        // Anchored on Zum'rah rather than searched for by area, because both entries only ever
+        // exist near him, and asked on a timer rather than every tick since it is a sweep.
+        // Gated on the encounter actually having been pulled, because the graves can be looted
+        // before anyone engages him and those adds belong to whoever opened the grave, not to the
+        // fight. Without the gate this sweep would delete them the moment they appeared.
+        if (zumrahCleanupTimer <= diff)
+        {
+            zumrahCleanupTimer = 2000;
+
+            if (zumrahAddsPending)
+            {
+                if (Creature* pZumrah = instance->GetCreature(ZumrahGUID))
+                {
+                    // Dead means the fight was won, alive and out of combat means it was wiped or
+                    // run from. Neither should leave anything he raised standing for the next try.
+                    if (!pZumrah->IsAlive() || !pZumrah->IsInCombat())
+                    {
+                        pZumrah->DespawnNearCreaturesByEntry(ENTRY_WARD_OF_ZUMRAH, 200.0f);
+                        pZumrah->DespawnNearCreaturesByEntry(ENTRY_SKELETON_OF_ZUMRAH, 200.0f);
+                        pZumrah->DespawnNearCreaturesByEntry(ENTRY_ZULFARRAK_ZOMBIE, 200.0f);
+                        pZumrah->DespawnNearCreaturesByEntry(ENTRY_ZULFARRAK_DEAD_HERO, 200.0f);
+                        zumrahAddsPending = false;
+                    }
+                }
+            }
+        }
+        else
+            zumrahCleanupTimer -= diff;
+
         switch (PyramidPhase)
         {
             case PYRAMID_NOT_STARTED:
@@ -492,9 +544,21 @@ public:
 
         OUT_LOAD_INST_DATA(chrIn);
         std::istringstream loadStream(chrIn);
-        loadStream >> EndDoorEncounter;
+
+        // Reads short on saves written before the other two encounters were recorded, which
+        // leaves them at the NOT_STARTED the constructor set. That is the right answer for old
+        // data: it says nothing about them either way.
+        loadStream >> EndDoorEncounter >> AntusulEncounter >> ZumrahEncounter;
+
+        // Anything mid-fight when the server went down is not progress. Only a kill survives a
+        // restart, so a wipe still leaves the encounter there to be retried.
         if (EndDoorEncounter != DONE)
             EndDoorEncounter = NOT_STARTED;
+        if (AntusulEncounter != DONE)
+            AntusulEncounter = NOT_STARTED;
+        if (ZumrahEncounter != DONE)
+            ZumrahEncounter = NOT_STARTED;
+
         OUT_LOAD_INST_DATA_COMPLETE;
     }
 };

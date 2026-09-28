@@ -508,8 +508,73 @@ enum
     ZOMBIE = 7286,
     DEAD_HERO = 7276,
     ZOMBIE_CHANCE = 65,
-    DEAD_HERO_CHANCE = 10
+    DEAD_HERO_CHANCE = 10,
+
+    SPELL_AWAKEN_ZULFARRAK_ZOMBIE = 10731
 };
+
+// Zum'rah's grave raising, which without this does not happen at all.
+//
+// EventAI 727103 runs on a timer in combat -- one to five seconds in, then every eighteen --
+// and casts 10731, "Awaken Zul'Farrak Zombie", at grave entry 128403. The spell is built the way
+// it should be: two ACTIVATE_OBJECT effects carrying GameObjectActions::Disturb and ::Despawn, so
+// he disturbs a grave to raise what is in it and then despawns that grave so it cannot be raised
+// a second time.
+//
+// It just never does anything. Disturb routes to GameObject::Use, the graves are chests, and the
+// chest branch of Use opens with
+//
+//     if (user->GetTypeId() != TYPEID_PLAYER)
+//         return;
+//
+// Zum'rah is a creature, so the call returns on that line every eighteen seconds for the whole
+// fight. The signature mechanic of the boss the graves exist for is dead, and has been.
+//
+// EffectActivateObject offers the object's AI the activation before it falls through to Use, so
+// that is where this goes. One roll per grave, same sixty five and ten as a player looting one,
+// which also keeps the level forty five to forty six Dead Hero at the one-in-ten it was written
+// to be rather than something guaranteed.
+//
+// The add is deliberately given no despawn timer. An add that removes itself is one the group can
+// back away from and wait out instead of killing, which is not a fight; clearing them when the
+// encounter resets is the instance's job. See instance_zulfarrak::Update.
+struct shallow_grave_zumrahAI : public GameObjectAI
+{
+    shallow_grave_zumrahAI(GameObject* pGo) : GameObjectAI(pGo) {}
+
+    bool OnActivateBySpell(SpellCaster* /*pCaster*/, uint32 uiSpellId, uint32 uiAction) override
+    {
+        if (uiSpellId != SPELL_AWAKEN_ZULFARRAK_ZOMBIE)
+            return false;
+
+        // Only the disturb is ours. The second effect despawns the grave, and that is correct
+        // behaviour worth keeping -- it is what stops one grave being raised over and over.
+        if (uiAction != uint32(GameObjectActions::Disturb))
+            return false;
+
+        uint32 const roll = urand(0, 100);
+        uint32 uiEntry = 0;
+
+        if (roll < ZOMBIE_CHANCE)
+            uiEntry = ZOMBIE;
+        else if ((roll - ZOMBIE_CHANCE) < DEAD_HERO_CHANCE)
+            uiEntry = DEAD_HERO;
+
+        // A quarter of the time the grave is empty, exactly as it is for a player who loots one.
+        if (uiEntry)
+            me->SummonCreature(uiEntry, me->GetPositionX(), me->GetPositionY(),
+                               me->GetPositionZ(), 0, TEMPSUMMON_DEAD_DESPAWN, 0);
+
+        // Handled, so EffectActivateObject does not go on to fire the linked trap and add the
+        // guaranteed pair on top of the one rolled above.
+        return true;
+    }
+};
+
+GameObjectAI* GetAI_go_shallow_grave(GameObject* pGo)
+{
+    return new shallow_grave_zumrahAI(pGo);
+}
 
 bool OnGossipHello_go_shallow_grave(Player* pPlayer, GameObject* pGo)
 {
@@ -544,6 +609,41 @@ bool OnGossipHello_go_table_theka(Player* pPlayer, GameObject* pGo)
 ## ward_zumrah
 ######*/
 
+enum
+{
+    NPC_ZUMRAH_OWNER        = 7271,
+    NPC_WARD_OF_ZUMRAH      = 7785,
+    NPC_SKELETON_OF_ZUMRAH  = 7786,
+
+    SPELL_SUMMON_SKELETON   = 11088,
+
+    // Unchanged. Five seconds is a ScriptDev2-era number rather than anything read out of game
+    // data, so there is nothing to restore it to; it is left alone because the measured problem
+    // was the number of spawners, not the rate of any one of them.
+    //
+    // Zum'rah raises the Ward with spell 11086, SPELL_EFFECT_SUMMON_TOTEM, which resolves to
+    // TOTEM_SLOT_NONE. Spell::EffectSummonTotem only unsummons the standing totem when the slot
+    // is below MAX_TOTEM_SLOT, and 255 is not, so nothing ever replaced the previous Ward.
+    //
+    // Bounded, though, and worth being exact about rather than calling it runaway growth: both
+    // summons carry durationIndex 18, which is the twenty second row that Magma Totem, Scorpid
+    // Sting and Sweeping Strikes share. A Ward therefore expires on its own after twenty
+    // seconds while the spell list re-casts it every fifteen to thirty two, so the overlap is
+    // one extra spawner for a few seconds at a time rather than one more per minute. That still
+    // doubles the spawn rate whenever it happens, and removing it costs nothing, which is the
+    // whole case for the rule below.
+    WARD_SKELETON_INTERVAL  = 5000,
+
+    // A failed cast used to leave the timer below the tick length, so it retried on every
+    // single update until it succeeded. Backing off by a second instead keeps one blocked cast
+    // from becoming a burst the moment whatever blocked it clears.
+    WARD_SKELETON_RETRY     = 1000,
+};
+
+// Far enough to cover the whole pit, since each Ward is summoned wherever Zum'rah happens to be
+// standing rather than at a fixed point.
+static float const WARD_CLEANUP_RADIUS = 100.0f;
+
 struct ward_zumrahAI : public ScriptedAI
 {
     ward_zumrahAI(Creature* pCreature) : ScriptedAI(pCreature)
@@ -552,21 +652,64 @@ struct ward_zumrahAI : public ScriptedAI
     }
 
     uint32 m_uiSkeletonTimer;
+    bool m_bDisplacedOlderWards;
 
     void Reset() override
     {
-        m_uiSkeletonTimer = 5000;
+        m_uiSkeletonTimer = WARD_SKELETON_INTERVAL;
+        m_bDisplacedOlderWards = false;
         m_creature->SetDefaultMovementType(IDLE_MOTION_TYPE);
+    }
+
+    void DespawnSkeletons() const
+    {
+        std::list<Creature*> skeletons;
+        m_creature->GetCreatureListWithEntryInGrid(skeletons, NPC_SKELETON_OF_ZUMRAH,
+                                                  WARD_CLEANUP_RADIUS);
+        for (Creature* pSkeleton : skeletons)
+            pSkeleton->DisappearAndDie();
     }
 
     void UpdateAI(uint32 const uiDiff) override
     {
-        m_creature->SetDefaultMovementType(IDLE_MOTION_TYPE);
-
-        if (m_uiSkeletonTimer < uiDiff)
+        // One spawner at a time. Done here rather than in Reset because Reset runs from the
+        // constructor, before this Ward is in the world and able to see the others.
+        if (!m_bDisplacedOlderWards)
         {
-            if (DoCastSpellIfCan(m_creature, 11088, true) == CAST_OK)
-                m_uiSkeletonTimer = 5000;
+            m_bDisplacedOlderWards = true;
+
+            std::list<Creature*> wards;
+            m_creature->GetCreatureListWithEntryInGrid(wards, NPC_WARD_OF_ZUMRAH,
+                                                       WARD_CLEANUP_RADIUS);
+            for (Creature* pWard : wards)
+                if (pWard != m_creature)
+                    pWard->DisappearAndDie();
+        }
+
+        // The fight has ended, by kill or by wipe. Nothing in this encounter is tied to Zum'rah's
+        // own reset: the Ward is a totem in no slot and the skeletons are guardians of the Ward
+        // rather than of him, so his evade does not touch either.
+        //
+        // They do clear themselves eventually, on the twenty second duration, so this is about
+        // how long "eventually" is. A Ward that was raised a moment before the wipe keeps
+        // spawning for its remaining life, and the last skeleton it raises then lives twenty
+        // seconds beyond that -- so the pit can still be occupied for the better part of a
+        // minute, which is exactly the window a group spends running back from the graveyard.
+        // Ending it on the reset is what makes the second attempt the same fight as the first.
+        Creature* pZumrah = m_creature->FindNearestCreature(NPC_ZUMRAH_OWNER, 200.0f, false);
+        if (!pZumrah || !pZumrah->IsAlive() || !pZumrah->IsInCombat())
+        {
+            DespawnSkeletons();
+            m_creature->DisappearAndDie();
+            return;
+        }
+
+        if (m_uiSkeletonTimer <= uiDiff)
+        {
+            if (DoCastSpellIfCan(m_creature, SPELL_SUMMON_SKELETON, true) == CAST_OK)
+                m_uiSkeletonTimer = WARD_SKELETON_INTERVAL;
+            else
+                m_uiSkeletonTimer = WARD_SKELETON_RETRY;
         }
         else
             m_uiSkeletonTimer -= uiDiff;
@@ -625,6 +768,12 @@ enum
 
 bool OnTrigger_at_antusul(Player* pPlayer, AreaTriggerEntry const *at)
 {
+    // A corpse does not pull a boss. Running back through this room as a ghost re-armed the whole
+    // event -- four broodlings, all of them SetInCombatWithZone -- waiting for the player to
+    // resurrect into it. The same goes for anyone the fight has already killed while it runs.
+    if (!pPlayer->IsAlive())
+        return false;
+
     Creature* pAntusul = pPlayer->FindNearestCreature(NPC_ANTUSUL, 100.0f);
 
     if (!pAntusul || !pAntusul->IsAlive() || pAntusul->IsInCombat())
@@ -683,6 +832,7 @@ void AddSC_zulfarrak()
     newscript = new Script;
     newscript->Name = "go_shallow_grave";
     newscript->pGOOpen = &OnGossipHello_go_shallow_grave;
+    newscript->GOGetAI = &GetAI_go_shallow_grave;
     newscript->RegisterSelf();
 
     newscript = new Script;

@@ -1,0 +1,41 @@
+INSERT INTO `migrations` VALUES ('20260926013000');
+
+-- Zul'Farrak's shallow graves: Zum'rah cannot use them, and players get too much from them.
+--
+-- Two separate faults, both on gameobject entry 128403, the thirty one graves ringing Zum'rah's
+-- pit. The nine 128308 graves further out are a different entry and are correct already.
+--
+-- First: Zum'rah's own mechanic never fires. EventAI 727103 runs in combat every eighteen seconds
+-- and casts 10731, "Awaken Zul'Farrak Zombie", which spell_script_target aims at 128403. The
+-- spell is correctly built -- ACTIVATE_OBJECT with GameObjectActions::Disturb and ::Despawn, so he
+-- raises a grave and then removes it from the pool. But Disturb routes to GameObject::Use, 128403
+-- is a chest (type 3), and the chest branch of Use begins by returning if the user is not a
+-- player. Zum'rah is a creature, so every one of those casts has always been a no-op. The boss
+-- the graves were placed for has never raised anything out of them.
+--
+-- That is fixed in script rather than data: go_shallow_grave gains a GameObjectAI whose
+-- OnActivateBySpell catches the disturb before EffectActivateObject falls through to Use, and
+-- rolls one add the same way a player looting a grave does. Binding 128403 to that script is the
+-- first statement below. 128308 already points at it and is unaffected -- Zum'rah does not target
+-- it, and the AI only acts on spell 10731.
+--
+-- Second: the graves hand out far more than they should. 128403 has no script_name, so the
+-- weighted roll in go_shallow_grave has never applied to it, and neither has that roll's
+-- GetUseCount gate. All it carries is linkedTrapId 128972, and that trap's spell 10247 holds two
+-- SUMMON_WILD effects which both fire unconditionally: one Zul'Farrak Zombie (7286) and one
+-- Zul'Farrak Dead Hero (7276), every time, on a permanent duration index that EffectSummonWild
+-- resolves to TEMPSUMMON_DEAD_DESPAWN.
+--
+-- So opening one of those graves gives a guaranteed pair including a level forty five to forty six
+-- elite that the roll hands out one time in ten, they never expire, the same grave can be opened
+-- again for another pair, and because nothing despawns them they outlive a wipe -- which is how a
+-- group ends up unable to re-engage Zum'rah at all, blocked by what the previous attempt left
+-- standing. Neither 7286 nor 7276 has a single static spawn in the instance, so every one of them
+-- seen in there came through this path.
+--
+-- Clearing the linked trap leaves the script roll as the only summon on a player-opened grave,
+-- which is what 128308 has always done, and leaves Zum'rah's own raising to the AI above. Adds
+-- still have to be killed rather than waited out; clearing them on a reset is handled in
+-- instance_zulfarrak, gated on the encounter having actually been pulled.
+UPDATE `gameobject_template` SET `script_name` = 'go_shallow_grave' WHERE `entry` = 128403;
+UPDATE `gameobject_template` SET `data7` = 0 WHERE `entry` = 128403;
