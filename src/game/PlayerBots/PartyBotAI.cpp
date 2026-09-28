@@ -479,6 +479,11 @@ static constexpr float PB_BLIND_MAX_TARGET_DISTANCE = 40.0f;
 // for what it might wake and the route is not, so the shorter the move the smaller the exposure.
 static constexpr float PB_BLIND_STEP_MAX_TRAVEL = 12.0f;
 
+// How far a healer will walk to get sight of somebody it is already in range of. Short, because
+// this is meant to be the sidestep that clears a doorframe: a healer that walks further than this
+// to see one member has left the spot from which it could see the rest of them.
+static constexpr float PB_HEAL_SIGHT_STEP_TRAVEL = 10.0f;
+
 // How far below the tank's own level a creature has to be before peeling it off the healer is not
 // worth a taunt. Generous, because a low level mob in a dungeon is still usually part of a pull;
 // what this excludes is the ambient wildlife.
@@ -5233,6 +5238,45 @@ bool PartyBotAI::RecoverLineOfSight()
     }
 
     float const standoff = std::max(GetTacticalStandoff(pTarget), PB_BLIND_STEP_MIN_DISTANCE);
+
+    // Look for a spot with a view before looking for a spot that is nearer.
+    //
+    // Walking down the line is the crude answer and it is the one that was here: it clears a
+    // corner reliably, and it clears it by spending the bot's standoff, which is the only thing
+    // keeping a clothie out of the fight. Most of the time the obstruction is a pillar or a
+    // doorframe and two steps sideways clears it at no cost at all, so that is worth asking
+    // first. The step-in below is what happens when the answer is no.
+    //
+    // Capped at the range the bot is already shooting from, so this is a sideways move and never
+    // a retreat out of range.
+    {
+        float x, y, z;
+        if (FindFiringPosition(pTarget, standoff, distance, PB_BLIND_STEP_MAX_TRAVEL, x, y, z))
+        {
+            m_lastBlindStep = now;
+
+            if (!me->IsStopped())
+                me->StopMoving();
+            me->GetMotionMaster()->Clear(false, true);
+            // Idle before anything conditional: see the identical guard below, and the dead
+            // world thread that taught it.
+            me->GetMotionMaster()->MoveIdle();
+            me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] sightstep bot='%s' role=%s could not see '%s' for %u casts, "
+                         "stepping aside to (%.1f %.1f) at %.1fy rather than closing",
+                         me->GetName(), GetRoleName(GetRole()), pTarget->GetName(), m_blindTicks,
+                         x, y, me->GetDistance(pTarget));
+            }
+
+            m_blindTicks = 0;
+            return true;
+        }
+    }
+
     if (distance <= standoff)
         return false;
 
@@ -6459,7 +6503,41 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
             if (pOutOfReach)
             {
-                if (pFollowing != pOutOfReach)
+                // In range and out of sight is a different problem from out of range, and the
+                // follow below solves only the second of them. It closes to a fixed distance on
+                // a random bearing, which for a member standing behind a pillar is as likely to
+                // pick the blind side as the clear one -- and having arrived, the healer is in
+                // range, still cannot see, and stops moving because the follow is satisfied.
+                //
+                // So ask for sight directly when sight is what is missing. No standoff: the
+                // whole point is that a healer stands wherever it has to in order to see the
+                // person it is keeping alive.
+                float const reach = GetMaxHealSpellRange();
+                bool stepped = false;
+
+                if (me->IsWithinDist(pOutOfReach, reach) && !me->IsWithinLOSInMap(pOutOfReach))
+                {
+                    float x, y, z;
+                    if (FindFiringPosition(pOutOfReach, 0.0f, reach, PB_HEAL_SIGHT_STEP_TRAVEL,
+                                           x, y, z))
+                    {
+                        me->GetMotionMaster()->Clear(false, true);
+                        me->GetMotionMaster()->MoveIdle();
+                        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+                        stepped = true;
+
+                        if (IsCombatLogged())
+                        {
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                     "[BotCombat] healsight bot='%s' stepped to (%.1f %.1f) to see "
+                                     "'%s', which was in range at %.1fy and behind something",
+                                     me->GetName(), x, y, pOutOfReach->GetName(),
+                                     me->GetDistance(pOutOfReach));
+                        }
+                    }
+                }
+
+                if (!stepped && pFollowing != pOutOfReach)
                     me->GetMotionMaster()->MoveFollow(pOutOfReach, PB_HEAL_REPOSITION_DIST,
                                                       frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
             }

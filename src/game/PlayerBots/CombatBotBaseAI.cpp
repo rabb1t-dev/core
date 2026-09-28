@@ -5062,6 +5062,26 @@ static constexpr float CB_DETOUR_ARRIVE_TOLERANCE = 2.0f;
 // stands, so the first answer found is the shortest move; bearings taken from directly away from the
 // caster and alternating either side of it, so the search is ordered the way a player looks, which
 // is behind them first and past the boss last.
+// How far to step looking for sight of a target, nearest first. Tighter and shorter than the
+// cover search above: breaking line of sight is worth walking for, finding it is worth a step,
+// and a ranged bot that walks twenty yards to see something has walked into the room.
+static constexpr float CB_FIRING_RADII[] = { 4.0f, 8.0f, 12.0f, 16.0f };
+static constexpr uint32 CB_FIRING_BEARINGS = 16;
+
+// Never closer than this to what is being shot at, whatever the search turns up. Without a
+// floor the nearest spot with a clear view of something behind a corner is usually inside its
+// melee radius, and a healer that walks there to see the tank is standing in the fight.
+static constexpr float CB_FIRING_MIN_RANGE = 8.0f;
+
+// How far past the anchor ring a creature may be before the melee stop holding it and chase
+// normally. A large creature and a bot standing on the edge of the ring are most of this between
+// them, so it is the distance at which the boss is unambiguously somewhere else.
+static constexpr float CB_ANCHOR_SLACK = 8.0f;
+
+// The same reasoning as CB_BREAK_SIGHT_MAX_STEP: a spot a storey up is in plain view of
+// everything and is not a place a bot can walk to in the time it has.
+static constexpr float CB_FIRING_MAX_STEP = 3.0f;
+
 static constexpr float CB_BREAK_SIGHT_RADII[] = { 6.0f, 10.0f, 14.0f, 18.0f, 22.0f };
 static constexpr uint32 CB_BREAK_SIGHT_BEARINGS = 16;
 
@@ -5315,6 +5335,256 @@ bool CombatBotBaseAI::FindBreakSightSpot(Unit const* pWatcher, float maxDistance
                     continue;
 
                 if (WouldPathPullExtraEnemies(x, y, z))
+                    continue;
+
+                if (!CanWalkTo(x, y, z))
+                    continue;
+
+                outX = x;
+                outY = y;
+                outZ = z;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Whether a spot can see a unit. The bot is not standing there yet, so its own position is no
+// use and the ray has to be cast from the candidate.
+bool CombatBotBaseAI::PositionSeesTarget(float x, float y, float z, Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    return me->IsWithinLOSAtPosition(x, y, z + me->GetCollisionHeight(),
+                                     pTarget->GetPositionX(), pTarget->GetPositionY(),
+                                     pTarget->GetPositionZ(), true,
+                                     pTarget->GetCollisionHeight());
+}
+
+// Somewhere the target can be seen from.
+//
+// This is the missing half of the pair. FindBreakSightSpot answers "where can I hide", and a
+// ranged bot spends far more of a fight wanting the opposite: it has walked into range of
+// something it cannot see, and the only rule it had was to keep walking at it until it could --
+// which is the rule that walks a healer into the pack it was standing clear of.
+//
+// Searched outward from where the bot already stands rather than around the target, because the
+// cheapest correct answer is nearly always a couple of steps sideways to clear a pillar, and a
+// search centred on the target finds the far side of the room first.
+//
+// Ordered by what each test costs. Range is subtraction. The standoff keeps the answer from
+// being "walk into melee", which is the failure the straight-line rule had. Height keeps it off
+// ledges and stairwells, which are in plain sight of everything and reachable from nothing.
+// Sight is one vmap ray. The aggro sweep walks a list already in hand. The mesh route is last
+// and is paid only for spots already known to be worth having.
+bool CombatBotBaseAI::FindFiringPosition(Unit const* pTarget, float minRange, float maxRange,
+                                         float maxTravel,
+                                         float& outX, float& outY, float& outZ) const
+{
+    if (!pTarget || maxTravel <= 0.0f)
+        return false;
+
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+
+    // The floor is the caller's, because the two users of this want opposite things from it. A
+    // bot looking for a shot at something wants to stay out of its reach; a healer looking for
+    // sight of the tank wants to stand next to it if that is what it takes.
+    float const standoff = minRange;
+
+    // Towards the target first, since a bot blocked by a corner is usually a step or two from
+    // clearing it and stepping that way loses no ground.
+    float const towardAngle = me->GetAngle(pTarget);
+    float const bearingStep = 2.0f * M_PI_F / float(CB_FIRING_BEARINGS);
+
+    for (float radius : CB_FIRING_RADII)
+    {
+        if (radius > maxTravel)
+            break;
+
+        for (uint32 step = 0; step <= CB_FIRING_BEARINGS / 2; ++step)
+        {
+            for (float sign : { 1.0f, -1.0f })
+            {
+                if (sign < 0.0f && (step == 0 || step == CB_FIRING_BEARINGS / 2))
+                    continue;
+
+                float const angle = towardAngle + sign * float(step) * bearingStep;
+                float const x = startX + cos(angle) * radius;
+                float const y = startY + sin(angle) * radius;
+                float z = me->GetPositionZ();
+
+                me->UpdateAllowedPositionZ(x, y, z);
+
+                float const range = Geometry::GetDistance3D(x, y, z,
+                    pTarget->GetPositionX(), pTarget->GetPositionY(), pTarget->GetPositionZ());
+
+                if (range > maxRange || range < standoff)
+                    continue;
+
+                if (fabs(z - me->GetPositionZ()) > CB_FIRING_MAX_STEP)
+                    continue;
+
+                if (WouldLeaveHeldGround(x, y, z))
+                    continue;
+
+                if (!PositionSeesTarget(x, y, z, pTarget))
+                    continue;
+
+                if (PathWouldAggroUnengaged(x, y, z))
+                    continue;
+
+                if (!CanWalkTo(x, y, z))
+                    continue;
+
+                outX = x;
+                outY = y;
+                outZ = z;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Step out of what the bot is already standing inside.
+//
+// Every other rule in this file is a refusal: asked to move somewhere that would wake something,
+// the bot declines and stays put. That covers the bot walking into trouble and nothing at all of
+// trouble walking into the bot, which in a dungeon is half of it -- a patrol arrives beside a
+// resting group, the leader parks the party in a doorway, a mob the group killed respawns. In
+// every one of those the bot is inside an aggro radius, no rule objects because no rule is being
+// asked, and the pull happens on the creature's schedule rather than the group's.
+//
+// Searched outward from where the bot stands, bearings from directly away from the offender, so the
+// first answer is the shortest step that works. The candidate has to be clear of everything
+// unengaged rather than merely clear of the one that prompted the search: retreating out of one
+// camp into the next one is not a retreat.
+bool CombatBotBaseAI::FindSpotClearOfUnengaged(Unit const* pAwayFrom, float maxTravel,
+                                               float& outX, float& outY, float& outZ) const
+{
+    if (!pAwayFrom || maxTravel <= 0.0f)
+        return false;
+
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+
+    float const awayAngle = pAwayFrom->GetAngle(me);
+    float const bearingStep = 2.0f * M_PI_F / float(CB_BREAK_SIGHT_BEARINGS);
+
+    for (float radius : CB_BREAK_SIGHT_RADII)
+    {
+        if (radius > maxTravel)
+            break;
+
+        for (uint32 step = 0; step <= CB_BREAK_SIGHT_BEARINGS / 2; ++step)
+        {
+            for (float sign : { 1.0f, -1.0f })
+            {
+                if (sign < 0.0f && (step == 0 || step == CB_BREAK_SIGHT_BEARINGS / 2))
+                    continue;
+
+                float const angle = awayAngle + sign * float(step) * bearingStep;
+                float const x = startX + cos(angle) * radius;
+                float const y = startY + sin(angle) * radius;
+                float z = me->GetPositionZ();
+
+                me->UpdateAllowedPositionZ(x, y, z);
+
+                // Not up or down a storey, for the reason CB_BREAK_SIGHT_MAX_STEP gives: a spot a
+                // ledge below is in plain view of everything down there and is not somewhere a
+                // bot can get back from.
+                if (fabs(z - me->GetPositionZ()) > CB_BREAK_SIGHT_MAX_STEP)
+                    continue;
+
+                // Ground the bot has been told to hold is not ground it walks off to be safe.
+                if (WouldLeaveHeldGround(x, y, z))
+                    continue;
+
+                // The geometric form, and the whole route rather than the destination. Under
+                // orders the discretionary form approves of everything, which would make the
+                // first candidate win and the first candidate is barely a step.
+                if (PathWouldAggroUnengaged(x, y, z))
+                    continue;
+
+                if (!CanWalkTo(x, y, z))
+                    continue;
+
+                outX = x;
+                outY = y;
+                outZ = z;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// The same search, measured from a patch of ground instead of a creature.
+//
+// Splitting the radii is deliberate: this reuses the break-sight ladder, because what it is
+// escaping is the same size as what that ladder was cut for -- a five yard cloud is cleared by
+// the first rung and a twenty yard field by the last, and anything that needed further than
+// twenty two yards would be a fact about the room rather than about the patch.
+//
+// The one extra condition over the creature form is clearRadius: a candidate has to be outside
+// the hazard as well as reachable, which is the entire point and is not something the bearing
+// alone guarantees on sloped ground.
+bool CombatBotBaseAI::FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
+                                           float& outX, float& outY, float& outZ,
+                                           float keepWithin) const
+{
+    if (maxTravel <= 0.0f)
+        return false;
+
+    float const startX = me->GetPositionX();
+    float const startY = me->GetPositionY();
+
+    float const awayAngle = atan2(startY - py, startX - px);
+    float const bearingStep = 2.0f * M_PI_F / float(CB_BREAK_SIGHT_BEARINGS);
+
+    for (float radius : CB_BREAK_SIGHT_RADII)
+    {
+        if (radius > maxTravel)
+            break;
+
+        for (uint32 step = 0; step <= CB_BREAK_SIGHT_BEARINGS / 2; ++step)
+        {
+            for (float sign : { 1.0f, -1.0f })
+            {
+                if (sign < 0.0f && (step == 0 || step == CB_BREAK_SIGHT_BEARINGS / 2))
+                    continue;
+
+                float const angle = awayAngle + sign * float(step) * bearingStep;
+                float const x = startX + cos(angle) * radius;
+                float const y = startY + sin(angle) * radius;
+                float z = me->GetPositionZ();
+
+                me->UpdateAllowedPositionZ(x, y, z);
+
+                // Out of the patch, which the bearing does not guarantee on its own once the
+                // ladder starts sweeping sideways.
+                float const dx = x - px;
+                float const dy = y - py;
+                float const fromPoint = dx * dx + dy * dy;
+                if (fromPoint <= (clearRadius * clearRadius))
+                    continue;
+
+                if (keepWithin > 0.0f && fromPoint > (keepWithin * keepWithin))
+                    continue;
+
+                if (fabs(z - me->GetPositionZ()) > CB_BREAK_SIGHT_MAX_STEP)
+                    continue;
+
+                if (WouldLeaveHeldGround(x, y, z))
+                    continue;
+
+                if (PathWouldAggroUnengaged(x, y, z))
                     continue;
 
                 if (!CanWalkTo(x, y, z))
@@ -5650,6 +5920,19 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         // the longest candidate on the list breaks out of the loop before the body ever runs, and
         // the seed is then the whole answer.
         float chaseDistance = std::max(CB_CASTER_CHASE_DISTANCES[0], minimumDistance);
+
+        // A station that cannot see the target is not a station, it is a place to stand while
+        // every cast fails. Nothing here asked: the distance was picked for safety alone, the
+        // bot settled behind whatever was between it and the mob, and the blind handler then
+        // spent several ticks doing nothing before walking it down the line into the room.
+        //
+        // Two passes rather than one test, because safety and sight can disagree and safety has
+        // to win: an unseen target costs this bot its damage, and a woken pack costs the group
+        // the fight. So the first distance that is both is taken, and the first that is merely
+        // safe is kept in case none of them is both.
+        bool foundVisible = false;
+        float safeDistance = chaseDistance;
+        bool foundSafe = false;
 
         for (float candidate : CB_CASTER_CHASE_DISTANCES)
         {
