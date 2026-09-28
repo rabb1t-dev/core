@@ -30,6 +30,7 @@
 #include "SpellAuraDefines.h"
 #include "UpdateFields.h"
 #include "ThreatManager.h"
+#include <vector>
 #include "HostileRefManager.h"
 #include "FollowerReference.h"
 #include "FollowerRefManager.h"
@@ -1104,8 +1105,26 @@ class Unit : public SpellCaster
         // it is not already fighting. The rule and the search are separate so that a caller judging
         // a whole path can gather candidates once and test every point against them cheaply.
         static float const AGGRO_POSITION_SEARCH_RADIUS;
+        // Whether waking this creature would mean a new fight at all, with no question of where
+        // anybody is standing. Split out because two different things can wake it - walking into
+        // its aggro radius, and landing an area effect on it - and only the first is about
+        // distance. Everything that is not a pull for any position is also not a pull for any
+        // spell, so both callers want exactly this list of exemptions.
+        bool IsUnengagedPullCandidate(Creature const* pCreature) const;
         bool WouldPositionAggroCreature(Creature const* pCreature, float x, float y, float z, float margin) const;
-        Creature* FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const;
+        // ignoredEntries, when given, are creature entries this caller has already decided it wants
+        // to walk up to, so they are not counted as something it would rather not wake.
+        Creature* FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin,
+                                                        std::vector<uint32> const* ignoredEntries = nullptr) const;
+        // The same question asked of a spell rather than of a step: anything unengaged standing
+        // inside this radius of that point, which an area effect centred there would hit and so
+        // pull. Distance alone, because a spell reaches what is in its radius whether or not the
+        // creature was looking; line of sight from the centre still applies, since an area effect
+        // does not go through walls either.
+        Creature* FindUnengagedCreatureInRadius(float x, float y, float z, float radius,
+                                                std::vector<uint32> const* ignoredEntries = nullptr,
+                                                Unit const* pExempt = nullptr,
+                                                ObjectGuid exemptGuid = ObjectGuid()) const;
         Unit* SelectNearestTarget(float dist) const;
         Unit* SelectRandomUnfriendlyTarget(Unit const* except = nullptr, float radius = ATTACK_DISTANCE, bool inFront = false, bool isValidAttackTarget = false, bool notPvpEnabling = false) const;
         Unit* SelectRandomFriendlyTarget(Unit const* except = nullptr, float radius = ATTACK_DISTANCE, bool inCombat = false) const;

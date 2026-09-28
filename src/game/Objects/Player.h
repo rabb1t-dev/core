@@ -2009,6 +2009,12 @@ class Player final: public Unit
         // Throttle for the refusal log, which is asked on every recomputed path and would otherwise
         // write hundreds of identical lines a second while a bot holds still.
         bool ShouldLogPullBlock() const;
+        // Whether the rule above has just declined this player a route. Recorded because the AI has
+        // no other way to tell "cannot reach it yet" from "must not reach it": both read as a victim
+        // out of melee range, and answering the second with a gap closer is how a held bot turns
+        // into the puller. Asked by the rotations, set by the movement generators.
+        void NotePullRouteRefused();
+        bool WasPullRouteRefusedRecently(uint32 withinMs) const;
 
         void BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) const override;
         void DestroyForPlayer(Player const* target) const override;
@@ -2431,6 +2437,7 @@ class Player final: public Unit
         bool   m_avoidAggroPulls = false;
         ObjectGuid m_attackOrderGuid;
         mutable time_t m_lastPullBlockLog = 0;
+        uint32 m_lastPullRouteRefusal = 0;
 
         void ResetInstance(InstanceResetMethod method, BoundInstancesMap::iterator& itr);
     public:

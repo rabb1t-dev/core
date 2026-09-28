@@ -21922,6 +21922,22 @@ bool Player::ShouldLogPullBlock() const
     return true;
 }
 
+void Player::NotePullRouteRefused()
+{
+    // Zero is the "never" value, so a clock that happens to land on it borrows the next millisecond
+    // rather than reading as a bot that has never been refused anything.
+    uint32 const now = WorldTimer::getMSTime();
+    m_lastPullRouteRefusal = now ? now : 1;
+}
+
+bool Player::WasPullRouteRefusedRecently(uint32 withinMs) const
+{
+    if (!m_lastPullRouteRefusal)
+        return false;
+
+    return WorldTimer::getMSTimeDiff(m_lastPullRouteRefusal, WorldTimer::getMSTime()) < withinMs;
+}
+
 void Player::SetSession(WorldSession* s)
 {
     m_session = s;

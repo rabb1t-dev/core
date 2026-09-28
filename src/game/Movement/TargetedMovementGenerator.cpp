@@ -24,6 +24,7 @@
 #include "Map.h"
 #include "World.h"
 #include "MoveSplineInit.h"
+#include "PlayerBots/CombatBotBaseAI.h"
 #include "MoveSpline.h"
 #include "Anticheat.h"
 #include "Transport.h"
@@ -48,7 +49,8 @@ static constexpr float PULL_CHECK_MARGIN = 3.0f;
 // Applies to nothing that has not asked for it. Real players never reach these generators for their
 // own movement, so the Player instantiation is bots and charmed units, and the flag narrows it again
 // to the party bots that want the rule.
-static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
+static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path,
+                                float& outX, float& outY, float& outZ)
 {
     Player const* pPlayer = owner.ToPlayer();
     if (!pPlayer || !pPlayer->AvoidsAggroPulls())
@@ -71,11 +73,38 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
     if (enemies.empty())
         return nullptr;
 
+    // Things the instance has told this bot to go and kill are not obstacles on the way anywhere.
+    //
+    // The same rule already applies to the combat approach, but it lived inside the search that
+    // path picks its candidates from, and this function walks the enemy list itself -- so a route
+    // could still be refused for a creature the bot was actively supposed to destroy. A shaman
+    // healer was logged frozen at twenty three percent health, declining to follow the group
+    // because the route ran within six yards of an Earthgrab Totem that was on its own kill list.
+    std::vector<uint32> const* pIgnoredEntries = nullptr;
+    if (CombatBotBaseAI* pBotAI = dynamic_cast<CombatBotBaseAI*>(const_cast<Player*>(pPlayer)->AI()))
+        pIgnoredEntries = pBotAI->GetApproachAnywayEntries();
+
     for (Unit* pEnemy : enemies)
     {
         Creature* pCreature = pEnemy->ToCreature();
         if (!pCreature)
             continue;
+
+        if (pIgnoredEntries)
+        {
+            bool ignored = false;
+            for (uint32 entry : *pIgnoredEntries)
+            {
+                if (pCreature->GetEntry() == entry)
+                {
+                    ignored = true;
+                    break;
+                }
+            }
+
+            if (ignored)
+                continue;
+        }
 
         // A route only risks a pull where it takes the bot nearer to this creature than it already
         // stands. Judged against the aggro band alone, a bot that has come to rest inside the band
@@ -93,7 +122,12 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path)
                 continue;
 
             if (owner.WouldPositionAggroCreature(pCreature, point.x, point.y, point.z, PULL_CHECK_MARGIN))
+            {
+                outX = point.x;
+                outY = point.y;
+                outZ = point.z;
                 return pCreature;
+            }
         }
     }
 
@@ -110,22 +144,41 @@ static float const FOLLOW_PULL_RULE_LEASH = 40.0f;
 
 static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, char const* movement)
 {
-    Creature* pCreature = FindPullOnPath(owner, path);
+    // Where on the route the objection was, filled in by FindPullOnPath. Without it the diagnostic
+    // reports how far the creature is from the bot, which is the one distance the decision does not
+    // turn on, and a refusal naming something fifty yards away with a nineteen yard radius reads as
+    // a bug in the rule when it may equally be a route that does not go where it looks.
+    float pullX = 0.0f;
+    float pullY = 0.0f;
+    float pullZ = 0.0f;
+    Creature* pCreature = FindPullOnPath(owner, path, pullX, pullY, pullZ);
     if (!pCreature)
         return false;
 
     if (Player* pPlayer = owner.ToPlayer())
     {
+        // Noted for the rotations, not for the log. A bot held here looks exactly like a bot that
+        // has not caught up yet -- a victim out of melee range in both cases -- and a rotation that
+        // cannot tell them apart answers the refusal with a gap closer. The rogue did: it Sprinted
+        // at a target the rule was keeping it away from, arrived, opened, and pulled the pack while
+        // the tank was still standing at the anchor holding a refused route of its own.
+        pPlayer->NotePullRouteRefused();
+
         // Which movement was refused matters more than the refusal. A chase declined leaves a bot
         // idle in a fight it should be in; a follow declined leaves it behind on the way to one,
         // and the two want different answers. The old line named neither.
         if (pPlayer->ShouldLogPullBlock())
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                      "[BotCombat] pullblock bot='%s' lvl=%u refused a %s route past '%s' (lvl %u, aggro "
-                     "%.1fy, %.1fy away) on map %u and is holding position",
+                     "%.1fy, %.1fy away, at %.1f %.1f %.1f) on map %u: waypoint (%.1f %.1f %.1f) is "
+                     "%.1fy from it, route %.1fy over %u points, and is holding position",
                      pPlayer->GetName(), pPlayer->GetLevel(), movement, pCreature->GetName(),
                      pCreature->GetLevel(), pCreature->GetAttackDistance(&owner),
-                     pCreature->GetDistance(&owner), pPlayer->GetMapId());
+                     pCreature->GetDistance(&owner),
+                     pCreature->GetPositionX(), pCreature->GetPositionY(), pCreature->GetPositionZ(),
+                     pPlayer->GetMapId(), pullX, pullY, pullZ,
+                     pCreature->GetDistance(pullX, pullY, pullZ),
+                     path.Length(), uint32(path.getPath().size()));
     }
 
     if (!owner.movespline->Finalized())

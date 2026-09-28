@@ -5084,6 +5084,13 @@ static constexpr float CB_BREAK_SIGHT_MAX_STEP = 5.0f;
 // Rounded up to the generator's outer figure before the random radius is taken off it, because the
 // mob visits the whole band and not one point in it.
 static constexpr float CB_FEAR_FLEE_RADIUS = 43.0f;
+// What an area effect is assumed to reach when its spell data does not say. Spells that pick their
+// own extra targets - Multi-Shot, the chain spells, Cleave - carry a chain count rather than a
+// radius, so there is no figure to read, and ten yards is both the radius the great majority of
+// real area effects use and comfortably more than any of those three actually splash. Erring long
+// costs a little damage; erring short costs the pull this whole class of check exists to prevent.
+static constexpr float CB_SPELL_SPLASH_FALLBACK_RADIUS = 10.0f;
+
 // Seconds between pull-rejection lines. A bot holding a bad station asks this once per tick for as
 // long as the fight lasts, and the answer does not change often enough to be worth reading twice.
 static constexpr time_t CB_PULL_LOG_INTERVAL = 5;
@@ -5103,14 +5110,23 @@ static constexpr size_t CB_CASTER_CHASE_COUNT =
 // a second thing to get wrong. What is left here is the bot's own use of it: the discretionary
 // choices this class makes before any movement is issued, where declining costs nothing but a worse
 // position. The generators catch what these cannot, which is the route taken to get there.
+bool CombatBotBaseAI::PositionWouldAggroUnengaged(float x, float y, float z, float extraMargin) const
+{
+    return me->FindUnengagedCreatureAggroedByPosition(x, y, z,
+        CB_PULL_CHECK_MARGIN + extraMargin, GetApproachAnywayEntries()) != nullptr;
+}
+
 bool CombatBotBaseAI::WouldPositionPullExtraEnemies(float x, float y, float z, float extraMargin) const
 {
     // Under orders, so this stops being a discretionary choice. See Player::GetAttackOrders.
+    //
+    // Only the refusal steps aside, not the knowledge. Callers that can steer rather than stop
+    // ask PositionWouldAggroUnengaged instead and get a straight answer either way.
     if (me->HasAttackOrders())
         return false;
 
     Creature* pCreature = me->FindUnengagedCreatureAggroedByPosition(x, y, z,
-        CB_PULL_CHECK_MARGIN + extraMargin);
+        CB_PULL_CHECK_MARGIN + extraMargin, GetApproachAnywayEntries());
     if (!pCreature)
         return false;
 
@@ -5162,6 +5178,11 @@ bool CombatBotBaseAI::WouldPathPullExtraEnemies(float x, float y, float z) const
     if (me->HasAttackOrders())
         return false;
 
+    return PathWouldAggroUnengaged(x, y, z);
+}
+
+bool CombatBotBaseAI::PathWouldAggroUnengaged(float x, float y, float z) const
+{
     float const startX = me->GetPositionX();
     float const startY = me->GetPositionY();
     float const startZ = me->GetPositionZ();
@@ -5172,14 +5193,14 @@ bool CombatBotBaseAI::WouldPathPullExtraEnemies(float x, float y, float z) const
 
     float const distance = sqrt(dx * dx + dy * dy);
     if (distance < CB_PATH_SAMPLE_STEP)
-        return WouldPositionPullExtraEnemies(x, y, z);
+        return PositionWouldAggroUnengaged(x, y, z);
 
     uint32 const steps = std::min(uint32(distance / CB_PATH_SAMPLE_STEP) + 1, CB_PATH_MAX_SAMPLES);
 
     for (uint32 i = 1; i <= steps; ++i)
     {
         float const t = float(i) / float(steps);
-        if (WouldPositionPullExtraEnemies(startX + dx * t, startY + dy * t, startZ + dz * t))
+        if (PositionWouldAggroUnengaged(startX + dx * t, startY + dy * t, startZ + dz * t))
             return true;
     }
 
@@ -5365,6 +5386,78 @@ bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
     return false;
 }
 
+bool CombatBotBaseAI::WouldSpellPullExtraEnemies(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!pSpellEntry || !pTarget || pSpellEntry->IsPositiveSpell())
+        return false;
+
+    // Only spells that touch more than what they are aimed at. A single target spell cannot pull
+    // anything the bot has not already chosen to fight, and asking this of every nuke in every
+    // rotation would be a cell visit per cast.
+    bool reachesPastTheTarget = pSpellEntry->IsAreaOfEffectSpell();
+
+    // Chain spells are not flagged as area effects and behave like them for this purpose: the
+    // extra targets are chosen by the spell out of whatever is standing near the first one, so the
+    // bot has no say in what it hits. Multi-Shot is the case that taught this - a hunter opening
+    // with it on the edge of a camp pulls the camp, and every movement rule the bot has approved
+    // of where it was standing.
+    if (!reachesPastTheTarget)
+    {
+        for (uint32 chainTargets : pSpellEntry->EffectChainTarget)
+        {
+            if (chainTargets > 1)
+            {
+                reachesPastTheTarget = true;
+                break;
+            }
+        }
+    }
+
+    if (!reachesPastTheTarget)
+        return false;
+
+    // The widest of the three effects, not the first one with a figure. Effects on one spell can
+    // carry different radii, and what matters is the furthest the spell reaches.
+    float radius = 0.0f;
+    for (uint32 radiusIndex : pSpellEntry->EffectRadiusIndex)
+    {
+        if (!radiusIndex)
+            continue;
+
+        radius = std::max(radius, Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(radiusIndex)));
+    }
+
+    if (radius <= 0.0f)
+        radius = CB_SPELL_SPLASH_FALLBACK_RADIUS;
+
+    float const centreX = pTarget->GetPositionX();
+    float const centreY = pTarget->GetPositionY();
+    float const centreZ = pTarget->GetPositionZ();
+
+    Creature* pCreature = me->FindUnengagedCreatureInRadius(centreX, centreY, centreZ, radius,
+        GetApproachAnywayEntries(), pTarget, me->GetAttackOrders());
+    if (!pCreature)
+        return false;
+
+    if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+    {
+        time_t const now = time(nullptr);
+        if (!m_lastSpellPullLog || (now - m_lastSpellPullLog) >= CB_PULL_LOG_INTERVAL)
+        {
+            m_lastSpellPullLog = now;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] spellblock bot='%s' role=%s lvl=%u held '%s' (radius %.1fy on "
+                     "'%s'): '%s' (lvl %u) is %.1fy from the middle of it and in no fight",
+                     me->GetName(), GetRoleName(GetRole()), me->GetLevel(),
+                     pSpellEntry->SpellName[0].c_str(), radius, pTarget->GetName(),
+                     pCreature->GetName(), pCreature->GetLevel(),
+                     pCreature->GetDistance(centreX, centreY, centreZ));
+        }
+    }
+
+    return true;
+}
+
 bool CombatBotBaseAI::WouldFearPullExtraEnemies() const
 {
     std::list<Unit*> enemies;
@@ -5399,6 +5492,24 @@ bool CombatBotBaseAI::WouldFearPullExtraEnemies() const
     }
 
     return false;
+}
+
+// Whether this bot is closer than the tank to something nobody has pulled yet.
+//
+// The geometric half of the pull order, kept apart from the waiting so that the two callers can
+// answer it differently. A chase waits, with a timeout, because standing still is recoverable and
+// a bad pull may not be. A gap closer simply declines: refusing to Sprint costs a second of travel
+// and can never strand anybody, so it needs no escape hatch.
+bool CombatBotBaseAI::IsAheadOfTankOnPull(Unit const* pVictim) const
+{
+    if (m_role == ROLE_TANK || !pVictim || pVictim->IsInCombat())
+        return false;
+
+    Player* pTank = GetGroupMainTank();
+    if (!pTank || pTank == me || !pTank->IsAlive() || pTank->GetMapId() != me->GetMapId())
+        return false;
+
+    return me->GetDistance(pVictim) < pTank->GetDistance(pVictim) + CB_TANK_LEAD_MARGIN;
 }
 
 void CombatBotBaseAI::BeginChasing(Unit* pVictim) const

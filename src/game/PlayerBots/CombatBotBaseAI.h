@@ -321,11 +321,38 @@ public:
     // lives on this class, and answered here as "no opinion" so that a battleground bot, which
     // has no dungeon to have tactics for, is unaffected.
     virtual float GetTacticalStandoff(Unit const* /*pTarget*/) const { return 0.0f; }
+
+    // Whether the bot is standing on ground its instance says to hold, and this destination would
+    // take it off. False everywhere there is no such ground, which is almost everywhere.
+    //
+    // A hook for the same reason GetTacticalStandoff is one: the tactics table is a party bot's
+    // business and these movement helpers are shared with the battleground bots.
+    virtual bool WouldLeaveHeldGround(float /*x*/, float /*y*/, float /*z*/) const { return false; }
+
+    // Creature entries this bot will close on even though waking them is a pull, because the
+    // instance it is standing in says they have to die. Nothing by default; see PartyBotAI.
+    virtual std::vector<uint32> const* GetApproachAnywayEntries() const { return nullptr; }
+
+    // Where melee fight this particular creature, when its instance says the spot matters.
+    // False for everything without an entry, which leaves the chase to decide as it always has.
+    virtual bool GetFightAnchor(Unit const* /*pVictim*/, float& /*x*/, float& /*y*/, float& /*z*/,
+                                float& /*radius*/) const { return false; }
     bool WouldPositionPullExtraEnemies(float x, float y, float z, float extraMargin = 0.0f) const;
 
     // The route, not just where it ends. A destination clear of every aggro radius is no use if
     // getting there crosses one, which is how a bot walks through a pack to stand safely past it.
     bool WouldPathPullExtraEnemies(float x, float y, float z) const;
+
+    // The same two questions with the policy taken out: purely whether the geometry wakes
+    // something, with no regard for whether the bot is under orders.
+    //
+    // The pair above answer "should I decline this move", and under orders the answer is always
+    // no, because declining an ordered move is refusing the order while appearing to accept it.
+    // These answer "would this route pull", which is still worth knowing under orders -- not to
+    // refuse with, but to steer with. A bot told to kill something should still walk around the
+    // camp between it and the target rather than through it.
+    bool PositionWouldAggroUnengaged(float x, float y, float z, float extraMargin = 0.0f) const;
+    bool PathWouldAggroUnengaged(float x, float y, float z) const;
 
     // A way to somewhere that the direct line cannot reach safely: the same destination approached
     // off a bearing, the way a player steers a few degrees wide of a camp rather than stopping.
@@ -343,9 +370,67 @@ public:
     bool FindBreakSightSpot(Unit const* pWatcher, float maxDistance,
                             float& outX, float& outY, float& outZ) const;
 
+    // Somewhere this target can be seen from, which is the mirror of the search above and the
+    // thing a ranged bot actually wants. Within maxRange of the target and no further than
+    // maxTravel from where the bot stands, reachable, in sight of the target, and not across
+    // anything else's aggro radius. Purely geometric, like its mirror: whether to move is the
+    // caller's decision.
+    bool FindFiringPosition(Unit const* pTarget, float minRange, float maxRange, float maxTravel,
+                            float& outX, float& outY, float& outZ) const;
+
+    // Whether this spot can see that unit, asked from a position the bot is not standing in yet.
+    bool PositionSeesTarget(float x, float y, float z, Unit const* pTarget) const;
+
+    // Somewhere clear of every unengaged creature's aggro radius, reachable, and no further than
+    // maxTravel from where the bot stands. Bearings taken from directly away from pAwayFrom, which
+    // is the creature the caller is standing too close to, so the first answer found is the
+    // shortest retreat rather than a walk round it. Purely geometric: whether to move is the
+    // caller's decision.
+    bool FindSpotClearOfUnengaged(Unit const* pAwayFrom, float maxTravel,
+                                  float& outX, float& outY, float& outZ) const;
+
+    // The same search against a patch of ground rather than a creature: somewhere at least
+    // clearRadius from (px, py), reachable, no further than maxTravel, and clear of everything
+    // unengaged. Bearings from directly away from the point, so the first answer is the shortest
+    // step out.
+    //
+    // A separate entry point rather than a Unit overload because the thing being escaped here has
+    // no Unit to pass. A persistent area aura is a DynamicObject on the floor, and the creature
+    // that laid it down is usually either somewhere else by now or dead -- Maraudon's Noxious
+    // Slime casts its cloud as it dies, so the only thing left to measure from is the patch
+    // itself.
+    // `keepWithin`, when non-zero, also caps how far from the point the answer may be. A bot
+    // stepping out of a five yard cloud does not care; a caster walking out to a twenty five yard
+    // standoff does, because its own spells reach thirty and a spot at forty is a spot where it
+    // has stopped fighting.
+    bool FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
+                              float& outX, float& outY, float& outZ,
+                              float keepWithin = 0.0f) const;
+
+    // Whether landing this spell would drag something in that nobody is fighting.
+    //
+    // The movement rules cannot see this one. They ask where the bot's feet are, and an area
+    // effect pulls what stands inside the spell's radius whatever the bot is standing in - so a
+    // tank's Consecration wakes the next pack from a position every other rule approves of.
+    bool WouldSpellPullExtraEnemies(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
+
     bool WouldFearPullExtraEnemies() const;
     bool SummonShamanTotems();
     bool IsBreakableCrowdControlInRange(float radius, Unit const* pAround = nullptr) const;
+
+    // How much further from the target than the tank a bot has to be before it stops waiting. A
+    // body length or so: enough that two bots walking in together do not both read as ahead, small
+    // enough that it never holds a bot that is genuinely behind.
+    static constexpr float CB_TANK_LEAD_MARGIN = 3.0f;
+
+    // And how long it is willing to wait before going anyway.
+    static constexpr uint32 CB_TANK_LEAD_MAX_HOLD_MS = 10000;
+
+    // When this bot started waiting for the tank to get ahead of it, or zero when it is not.
+    // Mutable because BeginChasing is const and every caller expects it to stay that way.
+    mutable uint32 m_tankLeadHoldSince = 0;
+
+    bool IsAheadOfTankOnPull(Unit const* pVictim) const;
 
     // Who a totem dropped right now would actually reach.
     struct TotemAudience
@@ -839,6 +924,7 @@ public:
     // why its fear never went off.
     mutable time_t m_lastPullLog = 0;
     mutable time_t m_lastFearLog = 0;
+    mutable time_t m_lastSpellPullLog = 0;
     // When each ally was last dispelled by this bot. Bounded by party size, and written from a
     // const selector, hence mutable.
     mutable std::map<ObjectGuid, time_t> m_lastDispel;

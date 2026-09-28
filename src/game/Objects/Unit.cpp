@@ -9746,7 +9746,7 @@ void Unit::GetEnemyListInRadiusAround(Unit const* pTarget, float radius, std::li
 // level difference between it and this unit, and the eighteen or so yards an even level pull suggests
 // is far short of the truth for a group levelling through a dungeon above its level, which is exactly
 // when the extra pack is fatal.
-bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float y, float z, float margin) const
+bool Unit::IsUnengagedPullCandidate(Creature const* pCreature) const
 {
     if (!pCreature || !pCreature->IsAlive())
         return false;
@@ -9778,6 +9778,14 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
     if (pCreature->GetLevel() <= MaNGOS::XP::GetGrayLevel(GetLevel()))
         return false;
 
+    return true;
+}
+
+bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float y, float z, float margin) const
+{
+    if (!IsUnengagedPullCandidate(pCreature))
+        return false;
+
     float const aggroRadius = pCreature->GetAttackDistance(this);
     if (aggroRadius <= 0.0f)
         return false;
@@ -9806,7 +9814,8 @@ bool Unit::WouldPositionAggroCreature(Creature const* pCreature, float x, float 
 // being judged plus the widest radius the unit could end up sitting inside once it arrives.
 float const Unit::AGGRO_POSITION_SEARCH_RADIUS = 60.0f;
 
-Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin) const
+Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z, float margin,
+                                                       std::vector<uint32> const* ignoredEntries) const
 {
     std::list<Unit*> enemies;
     GetEnemyListInRadiusAround(this, AGGRO_POSITION_SEARCH_RADIUS, enemies);
@@ -9814,8 +9823,94 @@ Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z
     for (Unit* pEnemy : enemies)
     {
         Creature* pCreature = pEnemy->ToCreature();
+        if (!pCreature)
+            continue;
+
+        // Something the caller has already resolved to kill is not an obstacle on the way to
+        // killing it. Without this the rule eats its own tail on anything stationary: a totem or
+        // a ward never enters combat by itself, so it stays unengaged forever, so every position
+        // near it is refused forever, so nothing ever reaches it. The exemption one level down
+        // covers only the current victim, and a bot cannot make a totem its victim without first
+        // walking to the totem.
+        if (ignoredEntries && !ignoredEntries->empty())
+        {
+            bool ignored = false;
+            for (uint32 entry : *ignoredEntries)
+            {
+                if (pCreature->GetEntry() == entry)
+                {
+                    ignored = true;
+                    break;
+                }
+            }
+
+            if (ignored)
+                continue;
+        }
+
         if (WouldPositionAggroCreature(pCreature, x, y, z, margin))
             return pCreature;
+    }
+
+    return nullptr;
+}
+
+// Anything unengaged an area effect centred here would land on.
+//
+// The position rule above cannot answer this. It asks whether a creature would notice the bot
+// walking past, which is a question about the creature's own aggro radius and about the bot's
+// feet; an area effect pulls whatever falls inside the spell's radius whether the creature was
+// paying attention or not, and the bot can be standing a long way from the middle of it. So the
+// distance test is the spell's radius rather than the creature's, and there is no margin: the
+// radius is the spell's own and is not a judgement call.
+//
+// pExempt is what the caster is deliberately aiming at and exemptGuid is whatever it has been
+// ordered onto, neither of which is an extra pull even when it has not been touched yet. Without
+// the first, every opening area effect refuses itself.
+Creature* Unit::FindUnengagedCreatureInRadius(float x, float y, float z, float radius,
+                                              std::vector<uint32> const* ignoredEntries,
+                                              Unit const* pExempt, ObjectGuid exemptGuid) const
+{
+    std::list<Unit*> enemies;
+    GetEnemyListInRadiusAround(this, AGGRO_POSITION_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (pEnemy == pExempt || (!exemptGuid.IsEmpty() && pEnemy->GetObjectGuid() == exemptGuid))
+            continue;
+
+        Creature* pCreature = pEnemy->ToCreature();
+        if (!pCreature)
+            continue;
+
+        if (ignoredEntries && !ignoredEntries->empty())
+        {
+            bool ignored = false;
+            for (uint32 entry : *ignoredEntries)
+            {
+                if (pCreature->GetEntry() == entry)
+                {
+                    ignored = true;
+                    break;
+                }
+            }
+
+            if (ignored)
+                continue;
+        }
+
+        if (!IsUnengagedPullCandidate(pCreature))
+            continue;
+
+        if (pCreature->GetDistance(x, y, z) >= radius)
+            continue;
+
+        // An area effect does not go through a wall, and neither does the rule about it. Last,
+        // because it is a vmap raycast and every test above is arithmetic.
+        if (!pCreature->IsWithinLOS(x, y, z))
+            continue;
+
+        return pCreature;
     }
 
     return nullptr;

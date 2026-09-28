@@ -37,10 +37,15 @@
 #include "Packets/Loot.h"
 #include "Geometry.h"
 #include "Maps/PathFinder.h"
+#include "Maps/GridNotifiers.h"
+#include "Maps/GridNotifiersImpl.h"
+#include "Maps/CellImpl.h"
+#include "DynamicObject.h"
 #include "Utilities/Random.h"
 
 #include <random>
 #include <unordered_map>
+#include <algorithm>
 
 enum PartyBotSpells
 {
@@ -2473,6 +2478,20 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     // spell may still fit underneath it. PickRankForThreat answers both questions at once and
     // gives back nothing only when no rank fits; DoCastSpell asks it again to find out which.
     if (!pSpellEntry->IsPositiveSpell() && pTarget && !PickRankForThreat(pTarget, pSpellEntry))
+        return false;
+
+    // Nothing that reaches past its target may touch something nobody is fighting. Every role,
+    // including the tank: a tank standing where every movement rule approves of still wakes the
+    // next pack with a Consecration, and it is the one bot whose mistake the group cannot walk
+    // away from.
+    //
+    // Placed here, in front of the threat rule below rather than inside it, because the two ask
+    // different questions and the older one cannot answer this. It walks the enemies around the
+    // target comparing threat, and its loop begins `pEnemy->GetVictim() && ...` - so a creature
+    // that is in no fight has no victim, fails that condition, and is skipped. The rule that was
+    // supposed to stop area effects pulling was structurally incapable of seeing anything
+    // unpulled, which is the only thing that can be pulled.
+    if (!IsInDuel() && WouldSpellPullExtraEnemies(pTarget, pSpellEntry))
         return false;
 
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
