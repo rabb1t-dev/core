@@ -413,6 +413,11 @@ public:
     ObjectGuid m_gatherPeelTarget;
     ObjectGuid m_gatherReturnTarget;
     time_t m_gatherSwitchTime = 0;
+    // The last add a peel was abandoned on, and when. A body peel that timed out will time out
+    // again for the same reason, and without this the warrior re-took it on the very next tick:
+    // out to the add, wait, walk back, repeat, which is what a turn-and-run looks like on screen.
+    ObjectGuid m_gatherGaveUpGuid;
+    time_t m_gatherGaveUpTime = 0;
     time_t m_lastCombatMove = 0;
     time_t m_lastFacingCheck = 0;
     // Where the last drag away from a neighbouring camp was aimed, kept only so the next drag can

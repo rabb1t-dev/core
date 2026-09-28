@@ -585,7 +585,30 @@ static constexpr time_t PB_GATHER_SWITCH_INTERVAL = 5;
 // swing or two, so this is not the usual way back - it is the backstop for the add that dies to
 // somebody else, walks out of reach, or otherwise never gets around to attacking the warrior.
 static constexpr time_t PB_GATHER_PEEL_MAX_SECONDS = 8;
+// How long a warrior leaves an add alone after a peel on it was abandoned. A body peel that ran
+// out of time ran out for a structural reason -- the add is a caster and stays at range, it is
+// rooted, it is behind something -- and none of those clear within a tick, so re-taking it
+// immediately is what produced the shuttling. Measured in Zul'Farrak: a tank took a Sandfury
+// Shadowcaster off the healer from 7.2y, walked out, waited the full eight seconds without the
+// add ever turning, walked back, and re-took the same Shadowcaster in the same second it arrived.
+// Comfortably longer than the walk itself, so an add worth a second attempt still gets one.
+static constexpr time_t PB_GATHER_PEEL_RETRY_INTERVAL = 20;
 static constexpr float PB_GATHER_RETURN_DISTANCE = 12.0f;
+
+// Stepping out of an aggro radius the bot is already standing inside.
+//
+// The margin is small on purpose. This is not asking whether the bot is comfortably clear, it is
+// asking whether it is inside the band at all, and every yard added here is a yard of ground the
+// group gives up in a corridor for a creature that was never going to notice. The interval is what
+// keeps this from becoming a shuffle: one step, then the follow or the chase gets its say, and if
+// the bot is still inside a band two seconds later it steps again.
+//
+// The travel cap is generous by comparison with the other repositioning steps, because unlike them
+// this one has a floor under how far it has to go: a spot half way out of a seventeen yard radius
+// is not out of it, so a short cap means the search finds nothing and the bot stays where it is.
+static constexpr float PB_NEIGHBOUR_STEP_MARGIN = 2.0f;
+static constexpr time_t PB_NEIGHBOUR_STEP_INTERVAL = 2;
+static constexpr float PB_NEIGHBOUR_STEP_MAX_TRAVEL = 22.0f;
 
 // Backing a fight away from a neighbouring camp.
 //
@@ -697,10 +720,22 @@ static constexpr time_t PB_PEEL_REPEAT_INTERVAL = 8;
 // so each of those left the group an interrupt short for the next ten seconds, which is where the
 // sleeps that got through came from.
 //
-// Comfortably longer than the resolution delay and shorter than any interrupt cooldown, so it
-// cannot suppress a genuine second cast: the school lockout an interrupt applies is longer than
-// this by itself.
-static constexpr uint32 PB_INTERRUPT_SHARE_WINDOW_MS = 1500;
+// Long enough to cover the resolution delay and nothing beyond it, because past that point the
+// window is no longer absorbing a duplicate -- it is hiding a failure.
+//
+// It was a second and a half, on the reasoning that "the school lockout an interrupt applies is
+// longer than this by itself". That is only true of an interrupt that landed. Kick and Shield Bash
+// are melee class abilities and roll the attack table: a level forty two rogue kicking a level
+// forty eight boss whiffs better than one time in seven. Three Antu'sul attempts in a row have the
+// rogue Kick a Healing Wave of Antu'sul with eight hundred milliseconds left, the boss gain a full
+// Wave one second later, and the tank -- holding a ready Shield Bash the whole time -- never take
+// its own attempt, because the window from the Kick outlasted the cast the Kick had failed to
+// stop. One miss ended the attempt.
+//
+// Four hundred milliseconds is one or two ticks at the rate bots evaluate, which still catches the
+// case this exists for: two bots reaching the same conclusion inside the same batch. What it no
+// longer does is spend the rest of the cast bar waiting on an ability that already missed.
+static constexpr uint32 PB_INTERRUPT_SHARE_WINDOW_MS = 400;
 
 // Which creatures the group has just spent an interrupt on. Shared across bots because that is the
 // whole point: the question is not what this bot has done but what the group has already paid for.
@@ -4676,6 +4711,24 @@ bool PartyBotAI::IsEngagedWithGroup(Unit const* pEnemy) const
         }
     }
 
+    // Anything fighting an ally this instance asked the group to keep alive.
+    //
+    // The escort is not a group member, so none of the tests above can see it, and in a fight
+    // built around one the mobs spend most of their time on it rather than on the party. Left out,
+    // the group treats every such mob as somebody else's business the instant it turns to face the
+    // NPC it was summoned to kill -- which is the moment the group most needs to stay on it.
+    std::vector<Creature*> escorts;
+    FindGuardedEscorts(escorts);
+    for (Creature const* pEscort : escorts)
+    {
+        if (pEnemy->GetVictim() == pEscort)
+            return true;
+
+        for (const auto pAttacker : pEscort->GetAttackers())
+            if (pAttacker == pEnemy)
+                return true;
+    }
+
     return false;
 }
 
@@ -5416,13 +5469,14 @@ Unit* PartyBotAI::SelectPeelTarget() const
                 if (pCreature->GetCreatureType() == CREATURE_TYPE_CRITTER)
                     continue;
 
-            // And not what the dungeon table says to leave alone. This is the chokepoint for the
-            // whole peel: what is not collected here is not fetched, not shouted at and not
-            // switched to, so one filter covers all three.
-            if (IsIgnoredByParty(pAttacker))
+            if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
                 continue;
 
-            if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
+            // Nor for what the group has been told to leave alone. A Broodling was still worth a
+            // Taunt to this path at 00:42:02 -- the cooldown gone, and the tank turned away from
+            // the boss for it -- because the peel collection filter sits in GatherLooseEnemies
+            // and this is a different road to the same mistake.
+            if (IsIgnoredByParty(pAttacker))
                 continue;
 
             // One peel per target per cooldown. A mob taunted a moment ago is already running at
@@ -5446,6 +5500,24 @@ Unit* PartyBotAI::SelectPeelTarget() const
     }
 
     return pBest;
+}
+
+// Whether a taunt could be put on this target right now.
+//
+// Asked so that the tank's two ways of peeling stop competing. They were tried in the wrong order
+// and by the wrong measure: the body peel ran first, and it decided whether to walk without ever
+// asking whether the cheap tool was available. The same CanTryToCastSpell the taunt itself uses,
+// so the answer cannot disagree with what happens a moment later.
+bool PartyBotAI::HasTauntReadyFor(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    for (const auto& pSpellEntry : m_spellListTaunt)
+        if (CanTryToCastSpell(pTarget, pSpellEntry))
+            return true;
+
+    return false;
 }
 
 bool PartyBotAI::PeelForTheHealer()
@@ -6174,6 +6246,15 @@ bool PartyBotAI::GatherLooseEnemies()
 
         Unit* pReturn = me->GetMap()->GetUnit(m_gatherReturnTarget);
 
+        // An abandoned peel is remembered, a successful one is not. See
+        // PB_GATHER_PEEL_RETRY_INTERVAL: the whole cost of this behaviour is the walk there and
+        // the walk back, and paying it twice for the same add inside a second is the failure.
+        if (!secured)
+        {
+            m_gatherGaveUpGuid = m_gatherPeelTarget;
+            m_gatherGaveUpTime = time(nullptr);
+        }
+
         m_gatherPeelTarget.Clear();
         m_gatherReturnTarget.Clear();
 
@@ -6322,14 +6403,39 @@ bool PartyBotAI::GatherLooseEnemies()
                 continue;
 
             // Not yet in the fight, and inside the blast. That is a pull, not a peel.
-            if (!IsEngagedWithGroup(pEnemy))
+            //
+            // Except for what the fight itself put there. A totem never enters combat, so
+            // IsEngagedWithGroup is permanently false for one and a boss that drops them at the
+            // tank's feet switches this shout off for the whole encounter: Antu'sul plants an
+            // Earthgrab Totem on an eleven second timer, and one attempt has the tank logging
+            // "held its shout" roughly forty times across eighty seconds while landing two. There
+            // is no second pack to be pulled by hitting a totem whose summoner is already
+            // swinging at us, so the tactics table's exemption list -- the same one that lets a
+            // bot walk up to one of these at all -- applies here too.
+            if (!IsEngagedWithGroup(pEnemy) && !IsApproachAnywayTarget(pEnemy))
             {
                 wouldPull = true;
                 break;
             }
 
-            if (me->IsWithinDist(pEnemy, PB_GATHER_SHOUT_RADIUS))
-                ++inRadius;
+            if (!me->IsWithinDist(pEnemy, PB_GATHER_SHOUT_RADIUS))
+                continue;
+
+            // Only the ones it would actually be telling something new.
+            //
+            // The rotation's own use of this shout checks the debuff before recasting; this path
+            // never did, so a tank holding a pack that was already shouted at re-shouted it every
+            // couple of seconds for as long as the pack lived. Logged three times in four seconds
+            // against the same targets -- thirty rage, which at ten rage a Sunder Armor is two
+            // Sunders of threat the tank then did not have, in a fight it was losing on threat.
+            //
+            // The debuff lasts thirty seconds and the rage is the tank's whole threat budget, so
+            // an enemy already carrying it is not worth counting towards the decision to spend it.
+            if (m_spells.warrior.pDemoralizingShout &&
+                pEnemy->HasAura(m_spells.warrior.pDemoralizingShout->Id))
+                continue;
+
+            ++inRadius;
         }
 
         if (wouldPull && IsCombatLogged())
@@ -6363,9 +6469,16 @@ bool PartyBotAI::GatherLooseEnemies()
     Unit* pNearest = nullptr;
     float bestDistance = 0.0f;
 
+    time_t const now = time(nullptr);
+
     for (Unit* pLoose : loose)
     {
         if (pLoose->GetDistance(anchorX, anchorY, anchorZ) > PB_GATHER_MAX_STRAY)
+            continue;
+
+        // Not the one the last peel was given up on. See PB_GATHER_PEEL_RETRY_INTERVAL.
+        if (pLoose->GetObjectGuid() == m_gatherGaveUpGuid &&
+            (now - m_gatherGaveUpTime) < PB_GATHER_PEEL_RETRY_INTERVAL)
             continue;
 
         float const distance = me->GetDistance(pLoose);
