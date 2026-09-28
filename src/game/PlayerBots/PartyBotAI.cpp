@@ -245,6 +245,23 @@ static constexpr uint32 PB_FORMATION_TIGHTEN_TRIES = 3;
 // to hold at once: a full bar while the tank sits at eighty percent means the next few seconds
 // belong to healing, and a group at full health with a third of a bar left means the mana does.
 static constexpr float PB_FILLER_MANA_PERCENT = 80.0f;
+
+// How much mana a buffer keeps back for the fight rather than spending on the buffs themselves.
+//
+// Group buffs are charged per target and the good ranks are not cheap: Power Word: Fortitude rank
+// five is seven hundred and forty four mana, so a level forty two priest buffing five people
+// spends more than its whole pool on one spell. Logged doing exactly that -- 3739 mana down to 762
+// in six seconds, five casts, and the last of them landed on a player at a third health who wanted
+// a heal instead.
+//
+// Stopping here does not skip the buff. Out of combat the bot drinks back to full and finishes on
+// the next pass, so the only thing given up is doing it all in one breath.
+static constexpr float PB_BUFF_MANA_FLOOR = 55.0f;
+
+// How far a pet is sent to break a totem. Generous, because the totem is usually at the boss and
+// the owner is usually not, and a pet that will not cross the room is no use for this.
+static constexpr float PB_PET_TOTEM_RADIUS = 40.0f;
+
 static constexpr float PB_FILLER_PARTY_HEALTH = 90.0f;
 // When a filler cast already under way is worth throwing away. Smite is two and a half seconds and
 // nothing else can be cast during it, so without this the group's healing waits on damage nobody
@@ -1349,7 +1366,78 @@ bool PartyBotAI::KeepBusy()
     if (me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) || me->IsMounted())
         return false;
 
+    // Keeping busy is not worth taking the boss for.
+    //
+    // This exists so a bot with nothing else to do contributes a little rather than standing
+    // there, and a wand is the smallest contribution in the game -- but threat is charged on it
+    // the same as anything else, and a healer is the one member of the group that starts a fight
+    // already near the top of the table. Logged fifty nine wand shots from a priest at eighteen
+    // percent mana, thirty three of them from under four yards, while it sat top of Antu'sul's
+    // threat list at 1591 against a tank on 1024. The damage was rounding error; the threat was
+    // the wipe.
+    //
+    // The same ceiling the damage rotations already respect, so this is not a new judgement about
+    // threat, only the filler finally being asked to observe one.
+    if (IsOverThreatCeiling(pVictim))
+        return false;
+
     float const distance = me->GetCombatDistance(pVictim);
+
+    // Not while there is mana to cast with. Symmetrical with the cancellation in the update
+    // above, and it has to be: cancelling a wand that this would restart on the same tick is a
+    // bot that never fires either one. The wand is the bottom of the list for a caster, below
+    // every spell it knows, so reaching for it with a full bar means the rotation was gated --
+    // and leaving the bot visibly idle is the right outcome, because the wand was hiding that.
+    if (HasManaWorthCastingWith())
+    {
+        uint32 const nowMs = WorldTimer::getMSTime();
+        if (!m_wandHoldSince)
+            m_wandHoldSince = nowMs;
+
+        // Bounded, like every other refusal in this file, and for the reason the tank-lead hold
+        // gives: every rule here that refuses something has at some point refused it forever.
+        //
+        // The reasoning above is right about the ordinary case and wrong about exactly one -- a
+        // healer whose rotation has nothing it can aim at the thing hitting it. Zul'Farrak's
+        // third wave produced it, and it is unbreakable from outside: a priest six yards from a
+        // Sandfury Slave it is one yard per second too slow to outrun, on half a mana bar,
+        // casting Renew on itself every five seconds while the troll's health did not move once
+        // in nine minutes. No stall detector can see that either, because health is changing the
+        // whole time, so from a distance it reads as a fight in progress.
+        //
+        // So the refusal still fires, and still leaves the bot idle long enough that a gated
+        // rotation shows up in the log where it belongs, and then it stops being a principle and
+        // shoots.
+        if (WorldTimer::getMSTimeDiff(m_wandHoldSince, nowMs) < PB_WAND_HOLD_MAX_MS)
+        {
+            // Stop swinging as well as declining to shoot. Refusing the filler only removes the
+            // ranged option; the melee auto attack was switched on by the attack order and stays
+            // on until something clears it, so a caster that declines here and is standing in
+            // range quietly becomes a melee character. That is worse than the wand this was
+            // avoiding.
+            if (me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+                me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+            // Once in a while rather than every tick. At four ticks a second this line was two
+            // hundred and twenty seven entries in a single fight and drowned the log it was meant
+            // to explain.
+            time_t const now = time(nullptr);
+            if (IsCombatLogged() && now - m_lastWandHoldLog >= PB_STAND_LOG_INTERVAL)
+            {
+                m_lastWandHoldLog = now;
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] wandhold bot='%s' role=%s declined a wand at %.0f%% mana: "
+                         "the rotation should have had something to cast",
+                         me->GetName(), GetRoleName(m_role), me->GetPowerPercent(POWER_MANA));
+            }
+
+            return false;
+        }
+    }
+    else
+    {
+        m_wandHoldSince = 0;
+    }
 
     // A ranged attack, if the bot is carrying one it can fire from where it stands. Moving cancels
     // an autorepeat before it ever goes off, so a bot mid-walk is left alone rather than made to
@@ -8563,8 +8651,19 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     // rotation reach for something it can actually do.
     if (me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL))
     {
+        // And a caster that still has mana. A wand is what a caster does when the bar is empty,
+        // not while it is three quarters full, and once one is running the rotation does not get
+        // another look in: one Antu'sul attempt has the warlock fire a wand at 22:51:33 and then
+        // cast nothing at all for the next forty one seconds, mana climbing from 2,105 back to
+        // 2,905 out of 3,370 the whole time, with the boss in range and alive in front of it.
+        // Thirteen spells in a ninety five second fight, and it died at seventy one percent mana.
+        //
+        // The same note above already records this happening to a priest -- "a priest that had
+        // started wanding stopped healing until the wand stopped" -- and the cancellation added
+        // then only covered hunters and bots with no target. This is the rest of that fix.
         if (!me->GetVictim() ||
-            (me->GetClass() == CLASS_HUNTER && me->GetCombatDistance(me->GetVictim()) < 8.0f))
+            (me->GetClass() == CLASS_HUNTER && me->GetCombatDistance(me->GetVictim()) < 8.0f) ||
+            HasManaWorthCastingWith())
             me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
     }
 
@@ -12624,10 +12723,18 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
         // The refusal is asked about rather than the distance, because the distance is the same in
         // the case Sprint is actually for: a mob that ran, or a bot that fell behind on a corridor
         // nothing objects to. Those still get it.
+        //
+        // The third case, and the one the others did not cover: a target nobody has pulled, with
+        // the tank still behind. Sprint there is a rogue arriving first by design -- every live
+        // Antu'sul approach has Stealth, Cold Blood and Sprint go out within five seconds of each
+        // other while the tank is still walking -- and arriving first at an unengaged boss is the
+        // pull. Declined outright rather than delayed, because a rogue that walks instead of
+        // sprinting still gets there.
         if (m_spells.rogue.pSprint &&
            !me->HasUnitState(UNIT_STATE_ROOT) &&
            !me->CanReachWithMeleeAutoAttack(pVictim) &&
            !m_holdPosition &&
+           !IsAheadOfTankOnPull(pVictim) &&
            !me->WasPullRouteRefusedRecently(PB_SPRINT_AFTER_REFUSAL_MS) &&
             CanTryToCastSpell(me, m_spells.rogue.pSprint))
         {

@@ -22,6 +22,8 @@
 #include "Group.h"
 #include "ObjectAccessor.h"
 
+class DynamicObject;
+
 // Where a designated puller has got to. Firing is its own step rather than part of the approach
 // because a ranged attack does not leave the weapon the moment it is asked for: it is an auto repeat
 // spell that fires on the weapon timer, and moving cancels it. A puller that turned for home as soon

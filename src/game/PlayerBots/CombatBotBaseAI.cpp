@@ -20,7 +20,9 @@
 #include "ItemEvaluator.h"
 #include "DungeonTactics.h"
 #include "BotProvisions.h"
+#include "Database/DBCStores.h"
 
+#include <algorithm>
 #include <iterator>
 #include <random>
 
@@ -4581,7 +4583,27 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
     // Immolate, Curse of Agony and every self buff the bot lets lapse before renewing.
     //
     // Three cases, in order.
-    if (pSpellEntry->IsSpellAppliesAura())
+    //
+    // Ahead of all of them: a spell whose damage lands the moment it is cast, and whose aura is a
+    // side effect rather than the reason to cast it. Frostbolt is the example that matters. Its
+    // slow is incidental, its damage is the mage's entire job, and the duration rule below was
+    // reading that slow as though it were a damage over time effect - so a frost mage was refused
+    // its own main nuke for the five to nine seconds the slow was up and fell through to fire.
+    // Measured on a level 35 frost bot: twenty one Fireballs, fourteen Fire Blasts and thirteen
+    // Scorches against twelve Frostbolts, one or two per fresh mob and then none until the next.
+    //
+    // A periodic effect disqualifies the exemption, because that is the case the duration rule is
+    // for: Immolate deals damage on impact and then ticks, and recasting it early does throw away
+    // ticks already paid for.
+    bool const isPeriodic = pSpellEntry->HasAura(SPELL_AURA_PERIODIC_DAMAGE) ||
+                            pSpellEntry->HasAura(SPELL_AURA_PERIODIC_LEECH);
+
+    bool const isDirectDamage = pSpellEntry->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
+                                pSpellEntry->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE) ||
+                                pSpellEntry->HasEffect(SPELL_EFFECT_WEAPON_DAMAGE_NOSCHOOL) ||
+                                pSpellEntry->HasEffect(SPELL_EFFECT_NORMALIZED_WEAPON_DMG);
+
+    if (pSpellEntry->IsSpellAppliesAura() && !(isDirectDamage && !isPeriodic))
     {
         if (SpellAuraHolder* pHolder = pTarget->GetSpellAuraHolder(pSpellEntry->Id))
         {
@@ -4597,10 +4619,7 @@ bool CombatBotBaseAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* p
             // A stacking effect that does tick - Deadly Poison - is not in that class and falls
             // through to the duration rule below once its stack is full, because recasting it
             // early does discard ticks already paid for.
-            bool const isDamageOverTime = pSpellEntry->HasAura(SPELL_AURA_PERIODIC_DAMAGE) ||
-                                          pSpellEntry->HasAura(SPELL_AURA_PERIODIC_LEECH);
-
-            if (maxStacks > 1 && !isDamageOverTime)
+            if (maxStacks > 1 && !isPeriodic)
             {
                 // fall through and cast
             }
