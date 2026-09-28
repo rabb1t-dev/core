@@ -136,5 +136,9 @@ class PlayerBotMgr
 uint8 SelectRandomRaceForClass(uint8 playerClass, Team playerTeam);
 uint8 SelectGenderForBot(uint8 playerClass, uint8 race);
 
+// Party bots copy their leader through a buff shrine. Called once a player has successfully
+// used a gameobject; decides for itself whether that object is one worth copying.
+void PartyBotsCopyGameObjectUse(Player* pUser, GameObject* pGo);
+
 #define sPlayerBotMgr MaNGOS::Singleton<PlayerBotMgr>::Instance()
 #endif

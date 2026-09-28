@@ -1827,6 +1827,77 @@ bool HandlePartyBotUseGObjectHelper(Player* pTarget, GameObject* pGo)
     return false;
 }
 
+// Whether following the player through this object is sensible, or merely possible.
+//
+// The case this exists for is a buff shrine: the player clicks it, and the four bots standing
+// behind him should not be the only ones in the group without the buff. Copying every use
+// would be wrong though -- a chest would be looted five times over, and the Altar of the
+// Deeps behind Aku'mai would teleport the whole group out from under the player. So the test
+// is narrow: a button or goober whose linked trap casts something that is not a teleport.
+static bool IsWorthCopyingToPartyBots(GameObject const* pGo)
+{
+    GameObjectInfo const* pInfo = pGo->GetGOInfo();
+    if (!pInfo)
+        return false;
+
+    if (pInfo->type != GAMEOBJECT_TYPE_BUTTON && pInfo->type != GAMEOBJECT_TYPE_GOOBER)
+        return false;
+
+    uint32 const trapEntry = pInfo->GetLinkedGameObjectEntry();
+    if (!trapEntry)
+        return false;
+
+    GameObjectInfo const* pTrapInfo = sObjectMgr.GetGameObjectTemplate(trapEntry);
+    if (!pTrapInfo || pTrapInfo->type != GAMEOBJECT_TYPE_TRAP || !pTrapInfo->trap.spellId)
+        return false;
+
+    SpellEntry const* pSpell = sSpellMgr.GetSpellEntry(pTrapInfo->trap.spellId);
+    if (!pSpell)
+        return false;
+
+    // A teleport is the one effect that moving the whole group through would be a surprise
+    // rather than a convenience, so it is the one that disqualifies the object.
+    for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+        if (pSpell->Effect[i] == SPELL_EFFECT_TELEPORT_UNITS)
+            return false;
+
+    return true;
+}
+
+void PartyBotsCopyGameObjectUse(Player* pUser, GameObject* pGo)
+{
+    if (!pUser || !pGo || pUser->IsBot())
+        return;
+
+    Group* pGroup = pUser->GetGroup();
+    if (!pGroup)
+        return;
+
+    if (!IsWorthCopyingToPartyBots(pGo))
+        return;
+
+    // Deliberately wider than INTERACTION_DISTANCE. Bots follow at a few yards and arrive
+    // strung out, so requiring the player's own five yards would buff whichever two happened
+    // to be closest and silently skip the rest -- which reads as the feature being broken.
+    float const range = INTERACTION_DISTANCE * 4.0f;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == pUser)
+            continue;
+
+        if (!pMember->IsInWorld() || !pMember->IsAlive() || pMember->GetMap() != pGo->GetMap())
+            continue;
+
+        if (!pMember->IsWithinDist(pGo, range))
+            continue;
+
+        if (PartyBotAI* pAI = dynamic_cast<PartyBotAI*>(pMember->AI()))
+            pGo->Use(pMember);
+    }
+}
+
 bool ChatHandler::HandlePartyBotUseGObjectCommand(char* args)
 {
     Player* pPlayer = GetSession()->GetPlayer();

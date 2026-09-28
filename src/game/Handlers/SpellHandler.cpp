@@ -29,6 +29,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "GameObject.h"
+#include "PlayerBotMgr.h"
 #include "Map.h"
 
 using namespace Spells;
@@ -256,6 +257,10 @@ void WorldSession::HandleGameObjectUseOpcode(WorldPackets::Misc::GameObjectUse c
     {
         _player->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_LOOTING_CANCELS);
         obj->Use(_player);
+
+        // A party bot has no reason of its own to click a shrine, so without this the group
+        // leader is the only one who ever gets the buff off one.
+        PartyBotsCopyGameObjectUse(_player, obj);
     }
 }
 
