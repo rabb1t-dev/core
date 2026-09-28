@@ -335,6 +335,32 @@ static constexpr float PB_DISTANCING_RANGE = 15.0f;
 // genuinely in the swing and not every time a mob drifts a yard nearer than ideal.
 static constexpr float PB_CASTER_MELEE_FLOOR = 8.0f;
 
+// How far out HoldTacticalStandoff looks for a creature whose standoff this bot is inside. The
+// largest standoff in the table is twenty five, so this only has to cover that plus the distance
+// a bot could be from something it is not yet outside of.
+static constexpr float PB_STANDOFF_SCAN = 40.0f;
+// How much past the asked-for standoff the bot aims, so that the next knockback or the next step
+// of the chase does not put it straight back inside. Small, because every yard past the standoff
+// is a yard closer to being out of its own range.
+static constexpr float PB_STANDOFF_MARGIN = 2.0f;
+// And the outer bound on where it may end up. A caster's own spells reach thirty; walking to
+// thirty five to be safe is walking out of the fight.
+static constexpr float PB_STANDOFF_CEILING = 29.0f;
+// The longest walk worth making for it, and the shortest gap between two of them.
+static constexpr float PB_STANDOFF_MAX_TRAVEL = 18.0f;
+static constexpr time_t PB_STANDOFF_INTERVAL = 4;
+// How far inside the band is worth walking for. Without this the rule thrashes: one measured
+// fight has a hunter walk out five times in twenty two seconds, and one of those was from 23.3
+// yards of a twenty five yard band -- a gain of one and a half yards, paid for with a cast. The
+// band exists to keep a bot out of an area effect, and a bot a yard inside the edge of one is
+// not where the damage is.
+static constexpr float PB_STANDOFF_DEADBAND = 3.0f;
+
+// How close to the tank a healer that cannot escape wants to be before it stops walking. Inside
+// this it is already in the tank's lap and whatever is chasing it is in taunt range; outside it,
+// the healer is a second place for the boss to stand and every taunt keeps being undone.
+static constexpr float PB_HEALER_TANK_HUDDLE_RANGE = 8.0f;
+
 // How far out a bot looks for the cast it is supposed to hide from. Wide enough to cover any
 // single target nuke a boss has, and it is only ever asked on a map whose tactics name such a
 // spell, so the sweep is not something an ordinary fight pays for.
@@ -4993,11 +5019,11 @@ bool PartyBotAI::TakeCoverFromCast()
 // arc costs nothing and leaves it where the tank has it.
 static constexpr float PB_ESCAPE_SPEED_MARGIN = 1.15f;
 
+// Whether walking away from this enemy would actually open any distance. Only asked about an enemy
+// already known to be attacking this bot, so there is no "it is not on me, so it is easy to escape"
+// case here: that question is answered by the caller, and answered the other way.
 static bool CanEscapeOnFoot(Unit const* pBot, Unit const* pEnemy)
 {
-    if (pEnemy->GetVictim() != pBot)
-        return true;
-
     // Rooted, stunned or confused for long enough to be worth the walk. Same threshold the held
     // step uses, so the two paths cannot disagree about what counts as pinned.
     if (GetHeldInPlaceDurationMs(pEnemy) >= PB_HELD_STEP_MIN_REMAINING_MS)
@@ -5010,6 +5036,122 @@ static bool CanEscapeOnFoot(Unit const* pBot, Unit const* pEnemy)
     // Or slowed enough that the distance will genuinely open. A margin rather than a plain
     // comparison because a rounding-error advantage buys a yard and costs a cast.
     return pBot->GetSpeed(MOVE_RUN) > pEnemy->GetSpeed(MOVE_RUN) * PB_ESCAPE_SPEED_MARGIN;
+}
+
+// Hold the distance the instance table asks for, rather than merely chasing to it.
+//
+// The standoff was inert before this and the measurement says so plainly. Princess Theradras is
+// written down at twenty five yards, which is the radius of Dust Field plus a margin; across one
+// measured fight her party's ranged and healer logged seventy four ticks at twelve to nineteen
+// yards and eleven outside twenty. They spent the fight inside the thing the number exists to
+// clear, and the group lost at sixty nine percent.
+//
+// The reason is the same one BackOutOfMeleeRange was written for, one band further out.
+// BeginChasing applies the standoff by handing a distance to the chase generator, and the
+// generator applies it through PathInfo::UpdateForCaster, which truncates a path on the way in
+// and does nothing at all to a bot that is already closer than that. So the number bounds an
+// approach and never a position. A bot that arrived inside the band -- knocked back into it,
+// chased something into it, or simply pulled from there -- stays inside it for the whole fight.
+//
+// BackOutOfMeleeRange cannot cover this because it asks a different question: it looks for
+// something that can reach this bot with a swing, and Princess Theradras standing fifteen yards
+// away cannot. The danger at fifteen yards is not her reach, it is her radius, and only the table
+// knows she has one.
+//
+// Deliberately narrow. Only creatures the group is actually fighting, only creatures the table
+// names a standoff for, and only ranged bots and healers -- the same line BackOutOfMeleeRange
+// draws, for the same reason: a melee bot outside the radius is a melee bot not attacking.
+bool PartyBotAI::HoldTacticalStandoff()
+{
+    if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
+        return false;
+
+    if (m_holdPosition || IsInDuel() || !m_tactics)
+        return false;
+
+    if (!IsRangedDamageClass(me->GetClass()) ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+        return false;
+
+    // Same exemption as the melee backout: a caster reduced to its wand is a melee character for
+    // the rest of the fight, and walking it out of range of its only attack helps nobody.
+    if (me->GetPowerPercent(POWER_MANA) <= 10.0f &&
+       !me->GetWeaponForAttack(RANGED_ATTACK, true, true))
+        return false;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastStandoffWalk < PB_STANDOFF_INTERVAL)
+        return false;
+
+    // Whichever the bot is furthest inside, which is the one a single walk is least likely to
+    // leave it still standing in.
+    Unit* pTight = nullptr;
+    float want = 0.0f;
+    float deepest = 0.0f;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_STANDOFF_SCAN, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy || !pEnemy->IsAlive() || !pEnemy->IsCreature())
+            continue;
+
+        float const standoff = GetTacticalStandoff(pEnemy);
+        if (standoff <= 0.0f)
+            continue;
+
+        // Only what the group is already fighting. Walking away from something nobody has
+        // pulled is how a retreat becomes the next pull.
+        if (!IsEngagedWithGroup(pEnemy))
+            continue;
+
+        float const distance = me->GetDistance(pEnemy);
+        if (distance >= standoff)
+            continue;
+
+        float const depth = standoff - distance;
+        if (depth < PB_STANDOFF_DEADBAND)
+            continue;
+
+        if (!pTight || depth > deepest)
+        {
+            pTight = pEnemy;
+            want = standoff;
+            deepest = depth;
+        }
+    }
+
+    if (!pTight)
+        return false;
+
+    float x, y, z;
+    if (!FindSpotClearOfPoint(pTight->GetPositionX(), pTight->GetPositionY(),
+                              want + PB_STANDOFF_MARGIN, PB_STANDOFF_MAX_TRAVEL,
+                              x, y, z, PB_STANDOFF_CEILING))
+    {
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] standofffail bot='%s' role=%s is %.1fy inside the %.0fy band "
+                     "for '%s' and found nowhere to stand",
+                     me->GetName(), GetRoleName(m_role), deepest, want, pTight->GetName());
+        }
+        return false;
+    }
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] standoff bot='%s' role=%s walked out to %.1fy from '%s' "
+                 "(wanted %.0fy, was %.1fy)",
+                 me->GetName(), GetRoleName(m_role), pTight->GetDistance(x, y, z),
+                 pTight->GetName(), want, me->GetDistance(pTight));
+    }
+
+    m_lastStandoffWalk = now;
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+    return true;
 }
 
 bool PartyBotAI::BackOutOfMeleeRange()
@@ -5051,6 +5193,34 @@ bool PartyBotAI::BackOutOfMeleeRange()
         if (!pEnemy->CanReachWithMeleeAutoAttack(me))
             continue;
 
+        // And only what is actually hitting this bot. A mob the tank is holding, which happens to
+        // be standing in the healer's square, does it no damage at all, so stepping out of that
+        // square buys nothing and costs a cast -- and the step can walk the healer into a pack
+        // nobody has pulled yet. Fifteen of thirty eight backouts in a Scarlet Monastery run were
+        // this: a caster retreating from somebody else's mob.
+        //
+        // This reading used to be inside CanEscapeOnFoot, where "it is not attacking me" returned
+        // true and so made the mob a crowder to run from, which is the opposite of what the answer
+        // means. An enemy that is not on this bot is a reason to stand still.
+        //
+        // With one exception, and it is the one that has been killing the healer: a healer inside
+        // the swing radius of something the group is fighting. The rule above is right that a mob
+        // busy with the tank does the healer no damage right now, and wrong that this makes the
+        // square safe -- it is one taunt miss, one cleave or one add spawning behind the tank from
+        // being the most dangerous patch of floor in the room. Every Antu'sul attempt has the
+        // priest logging its first standfast at two to four yards from the boss and dying inside
+        // twenty seconds of the Servant arriving.
+        //
+        // Healers only, because a ranged damage dealer already keeps its distance through the
+        // caster chase and a melee bot belongs in there. And still only against something in
+        // genuine melee reach of the healer, which is what the check above established, so this
+        // does not reintroduce the retreat-from-anything behaviour that rule was written for.
+        bool const healerInSwingRadius =
+            m_role == ROLE_HEALER && IsEngagedWithGroup(pEnemy);
+
+        if (pEnemy->GetVictim() != me && !healerInSwingRadius)
+            continue;
+
         // And only what the bot can actually get away from. Anything else is stood up to.
         if (!CanEscapeOnFoot(me, pEnemy))
         {
@@ -5068,6 +5238,62 @@ bool PartyBotAI::BackOutOfMeleeRange()
 
     if (!pCrowder)
     {
+        // Nothing to run from, but possibly somewhere to run to.
+        //
+        // Standing its ground is the right answer to "I cannot outrun this", and it is the wrong
+        // answer to the situation a healer is actually in. Nothing in the group outruns Antu'sul
+        // -- seven against eight -- so CanEscapeOnFoot is permanently false against him and the
+        // healer plants for the rest of the fight, whatever else is true. Three separate Antu'sul
+        // wipes have the priest logging standfast every few seconds from two to four yards and
+        // dying there.
+        //
+        // But running to the tank is not running away. The healer does not have to be faster than
+        // the boss to win that move, because the boss follows it into the tank's lap, which is
+        // where the taunt sticks and where the healer wanted the boss anyway. The tank taunted
+        // Antu'sul off this priest five times in forty seconds and it walked straight back every
+        // time, because the priest it was chasing was standing ten to twenty yards away.
+        //
+        // Healers only. A ranged damage dealer has a standoff it is entitled to keep, and a melee
+        // bot is already where this would send it.
+        if (pStuckOn && m_role == ROLE_HEALER && !me->IsNonMeleeSpellCasted() &&
+            CanIssueCombatMovement())
+        {
+            if (Player* pTank = GetGroupMainTank())
+            {
+                float const tankDistance = me->GetDistance(pTank);
+
+                if (pTank->IsAlive() && pTank != me &&
+                    tankDistance > PB_HEALER_TANK_HUDDLE_RANGE &&
+                    me->IsWithinLOSInMap(pTank))
+                {
+                    time_t const now = time(nullptr);
+                    if (now - m_lastBackout >= PB_BACKOUT_INTERVAL)
+                    {
+                        if (!me->IsStopped())
+                            me->StopMoving();
+
+                        float x, y, z;
+                        pTank->GetPosition(x, y, z);
+                        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+
+                        m_lastBackout = now;
+                        NoteCombatMovement();
+
+                        if (IsCombatLogged())
+                        {
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                     "[BotCombat] huddle bot='%s' role=healer could not outrun "
+                                     "'%s', walked %.1fy to the tank '%s' to hand it over",
+                                     me->GetName(), pStuckOn->GetName(), tankDistance,
+                                     pTank->GetName());
+                        }
+
+                        return true;
+                    }
+                }
+            }
+        }
+
         // Say so, once in a while, so that a healer being eaten reads as a decision rather than as
         // an AI that has stopped noticing.
         if (pStuckOn && IsCombatLogged())
@@ -5101,12 +5327,21 @@ bool PartyBotAI::BackOutOfMeleeRange()
     if (!CanIssueCombatMovement())
         return false;
 
+    // One step per interval, the same way the held step is rationed. A mob that follows the bot
+    // puts it straight back inside melee range, and without a floor between attempts the bot
+    // re-decides on the next tick and spends the fight walking rather than casting. Above the
+    // movement call rather than below it so a refused step costs nothing.
+    time_t const now = time(nullptr);
+    if (now - m_lastBackout < PB_BACKOUT_INTERVAL)
+        return false;
+
     if (!me->IsStopped())
         me->StopMoving();
 
     if (!RunAwayFromTarget(pCrowder))
         return false;
 
+    m_lastBackout = now;
     NoteCombatMovement();
 
     if (IsCombatLogged())
@@ -7033,6 +7268,13 @@ void PartyBotAI::UpdateInCombatAI()
     // decides whether a clothed character is standing inside a raid boss's swing is not a rule to
     // leave to nine separate if-chains.
     if (BackOutOfMeleeRange())
+        return;
+
+    // And then the wider band, which only exists where an instance named one. Behind the melee
+    // backout because something already swinging at this bot is the more urgent of the two, and
+    // ahead of every rotation for the same reason that one is: a cast made from inside a twenty
+    // yard area effect is a cast paid for twice.
+    if (HoldTacticalStandoff())
         return;
 
     switch (me->GetClass())

@@ -122,18 +122,38 @@ public:
     uint32 ScoreFocusCandidate(Unit const* pEnemy) const;
     uint32 GetWorstKnownCastPriority(Unit const* pEnemy) const;
     uint32 GetPowerReservedForInterrupt(Powers powerType, SpellEntry const* pSpellEntry) const;
+    bool IsAnythingNearbyWorthInterrupting() const;
     Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority,
                                 bool mayPreempt) const;
     bool InterruptHostileCasters();
     Unit* SelectPeelTarget() const;
     bool PeelForTheHealer();
+
+    // Step clear of anything nobody has pulled that this bot is standing too close to. The only
+    // rule here that moves a bot for a reason outside the fight it is in, and the answer to
+    // trouble that walks up to a bot rather than the other way round.
+    bool AvoidUnpulledNeighbours();
+
+    // Whether a taunt is available to use on this target this instant. Asked before a tank
+    // considers peeling with its body, because a taunt does the same job from where it stands.
+    bool HasTauntReadyFor(Unit const* pTarget) const;
+    void FindGuardedEscorts(std::vector<Creature*>& out) const;
     Creature* FindGuardedEscort() const;
     Unit* SelectEscortAttackTarget() const;
+    Unit* GetGuardedEscort() const override;
     bool RecoverLineOfSight();
     // One rule for every caster and healer: do not stand in a melee arc a raid boss can swing
     // through. Shared rather than per class, because half the rotations had their own version of
     // this and the other half had none.
     bool BackOutOfMeleeRange();
+
+    // Walk a caster or healer back out to the distance the instance table asks for.
+    //
+    // Separate from BackOutOfMeleeRange because the two are about different things and only one
+    // of them existed. That rule answers "something can swing at me"; this answers "I am inside
+    // the radius of an area effect this creature is known to have", which is a fact about the
+    // creature rather than about reach, and no amount of melee logic sees it.
+    bool HoldTacticalStandoff();
 
     // A cast aimed at this bot that the instance tactics say to break line of sight against, or
     // null when there is none, when it is aimed at somebody else, or when the bot is already out
@@ -332,6 +352,13 @@ public:
     // When this bot last walked out of a held mob's reach, so it steps once rather than every
     // tick for as long as the root lasts.
     time_t m_lastHeldStep = 0;
+    // When this bot last stepped out of an unpulled creature's aggro radius, so it steps once and
+    // then lets the follow or the chase have its say rather than shuffling every tick.
+    time_t m_lastNeighbourStep = 0;
+    time_t m_lastBackout = 0;
+    // Rate limit for the standoff walk above, kept apart from m_lastBackout so that a bot doing
+    // one is not silently prevented from doing the other.
+    time_t m_lastStandoffWalk = 0;
     // One clock for every system that repositions a bot mid-fight, so they take turns rather than
     // fight each other.
     // When a warrior last changed target to collect an add, so that collecting cannot become a
