@@ -16,7 +16,7 @@
 
 /* ScriptData
 SDName: Instance_Blackfathom_Deeps
-SD%Complete: 50
+SD%Complete: 60
 SDComment:
 SDCategory: Blackfathom Deeps
 EndScriptData */
@@ -151,11 +151,17 @@ struct instance_blackfathom_deeps : public ScriptedInstance
             case GO_SHRINE_4:
                 m_uiShrine4GUID = pGo->GetGUID();
                 break;
-            case 103015:
+            case GO_SHRINE_OF_GELIHAST:
                 m_uiShrineOfGelihastGUID = pGo->GetGUID();
                 break;
-            case 103016:
+            case GO_ALTAR_OF_THE_DEEPS:
                 m_uiAltarOfTheDeepsGUID = pGo->GetGUID();
+                // The altar ships flagged GO_FLAG_NO_INTERACT and is meant to be opened by
+                // killing Aku'mai. The object can enter the world after that kill -- a grid
+                // reload, or a saved instance coming back -- so the state has to be applied
+                // here as well as in SetData, or the altar silently stays dead.
+                if (m_auiEncounter[BFD_ENCOUNTER_AKUMAI] == DONE)
+                    pGo->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NO_INTERACT);
                 break;
             case GO_PORTAL_DOOR:
                 m_uiMainDoorGUID = pGo->GetGUID();
@@ -193,6 +199,18 @@ struct instance_blackfathom_deeps : public ScriptedInstance
             case TYPE_AQUANIS:
                 m_auiEncounter[BFD_ENCOUNTER_AQUANIS] = uiData;
                 break;
+            case TYPE_AKUMAI:
+                m_auiEncounter[BFD_ENCOUNTER_AKUMAI] = uiData;
+
+                // Aku'mai is the last boss and the altar behind him is the way back to the
+                // entrance. Clearing the flag is what makes it clickable; nothing else in
+                // the instance touches it.
+                if (uiData == DONE)
+                {
+                    if (GameObject* pAltar = instance->GetGameObject(m_uiAltarOfTheDeepsGUID))
+                        pAltar->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_NO_INTERACT);
+                }
+                break;
         }
 
         if (uiData == DONE)
@@ -200,7 +218,7 @@ struct instance_blackfathom_deeps : public ScriptedInstance
             OUT_SAVE_INST_DATA;
 
             std::ostringstream saveStream;
-            saveStream << m_auiEncounter[BFD_ENCOUNTER_KELRIS] << " " << m_auiEncounter[BFD_ENCOUNTER_SHRINE] << " " << m_auiEncounter[BFD_ENCOUNTER_AQUANIS];
+            saveStream << m_auiEncounter[BFD_ENCOUNTER_KELRIS] << " " << m_auiEncounter[BFD_ENCOUNTER_SHRINE] << " " << m_auiEncounter[BFD_ENCOUNTER_AQUANIS] << " " << m_auiEncounter[BFD_ENCOUNTER_AKUMAI];
 
             strInstData = saveStream.str();
 
@@ -224,6 +242,8 @@ struct instance_blackfathom_deeps : public ScriptedInstance
                 return m_auiEncounter[BFD_ENCOUNTER_SHRINE];
             case TYPE_AQUANIS:
                 return m_auiEncounter[BFD_ENCOUNTER_AQUANIS];
+            case TYPE_AKUMAI:
+                return m_auiEncounter[BFD_ENCOUNTER_AKUMAI];
         }
 
         return 0;
@@ -245,6 +265,8 @@ struct instance_blackfathom_deeps : public ScriptedInstance
                 return m_uiShrine4GUID;
             case DATA_SHRINE_OF_GELIHAST:
                 return m_uiShrineOfGelihastGUID;
+            case DATA_ALTAR_OF_THE_DEEPS:
+                return m_uiAltarOfTheDeepsGUID;
             case DATA_MAINDOOR:
                 return m_uiMainDoorGUID;
         }
@@ -263,7 +285,7 @@ struct instance_blackfathom_deeps : public ScriptedInstance
         OUT_LOAD_INST_DATA(chrIn);
 
         std::istringstream loadStream(chrIn);
-        loadStream >> m_auiEncounter[BFD_ENCOUNTER_KELRIS] >> m_auiEncounter[BFD_ENCOUNTER_SHRINE] >> m_auiEncounter[BFD_ENCOUNTER_AQUANIS];
+        loadStream >> m_auiEncounter[BFD_ENCOUNTER_KELRIS] >> m_auiEncounter[BFD_ENCOUNTER_SHRINE] >> m_auiEncounter[BFD_ENCOUNTER_AQUANIS] >> m_auiEncounter[BFD_ENCOUNTER_AKUMAI];
 
         for (uint32 & i : m_auiEncounter)
             if (i == IN_PROGRESS)
@@ -275,6 +297,8 @@ struct instance_blackfathom_deeps : public ScriptedInstance
     {
         if (pCreature->GetEntry() == NPC_BARON_AQUANIS)
             SetData(TYPE_AQUANIS, DONE);
+        else if (pCreature->GetEntry() == NPC_AKUMAI)
+            SetData(TYPE_AKUMAI, DONE);
     }
 
 

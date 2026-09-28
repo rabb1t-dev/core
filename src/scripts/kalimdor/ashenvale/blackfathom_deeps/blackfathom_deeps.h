@@ -19,8 +19,10 @@ enum
     TYPE_KELRIS                 = 10,
     TYPE_SHRINE                 = 11,
     TYPE_AQUANIS                = 12,
+    TYPE_AKUMAI                 = 13,
 
     NPC_BARON_AQUANIS           = 12876,
+    NPC_AKUMAI                  = 4829,
     GO_FATHOM_STONE             = 177964,
 
     // Shrine event
@@ -35,9 +37,16 @@ enum
     GO_SHRINE_3                 = 21120,
     GO_SHRINE_4                 = 21121,
 
+    // The two clickable shrine/altar buttons. Each drives a linked trap that carries the
+    // actual spell: Gelihast's grants Blessing of Blackfathom, Aku'mai's teleports the
+    // group back to the instance entrance.
+    GO_SHRINE_OF_GELIHAST       = 103015,
+    GO_ALTAR_OF_THE_DEEPS       = 103016,
+
     BFD_ENCOUNTER_KELRIS        = 0,
     BFD_ENCOUNTER_SHRINE        = 1,
     BFD_ENCOUNTER_AQUANIS       = 2,
-    INSTANCE_BFD_MAX_ENCOUNTER  = 3,
+    BFD_ENCOUNTER_AKUMAI        = 3,
+    INSTANCE_BFD_MAX_ENCOUNTER  = 4,
 };
 #endif
