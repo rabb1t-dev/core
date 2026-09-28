@@ -756,17 +756,116 @@ float ItemEvaluator::UpgradeDelta(Player* pPlayer, ItemPrototype const* pProto,
         return candidateScore - worst;
     }
 
-    // Everything else has a primary slot. Prefer the first non-null allowed slot.
+    // Everything else has a primary slot -- or two, for a one-hander that a dual wielder may put in
+    // either hand. GetAllowedEquipSlots hands back main hand and off hand for exactly that case, and
+    // this used to take the first of them and break, so every one-handed drop was scored against the
+    // main hand. That is the one hand it would not be going into: a rogue carrying a good main hand
+    // and a rusty off-hand read every weapon that dropped as a downgrade and passed on all of them,
+    // and a rogue with an empty off-hand did the same, comparing against a hand it was not filling.
+    //
+    // The rule is the one the rings above already use, and for the same reason: the baseline is the
+    // worse occupant, because that is the one the candidate displaces. An empty slot scores zero,
+    // which makes any usable weapon an upgrade, which is the right answer for a hand holding nothing.
+    uint8 allowed = 0;
+    for (uint8 slot : slots)
+        if (slot != NULL_SLOT)
+            ++allowed;
+
     float baseline = 0.0f;
+    bool haveBaseline = false;
     for (uint8 slot : slots)
     {
         if (slot == NULL_SLOT)
             continue;
-        if (Item* pOcc = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            baseline = Score(ResolveItem(pOcc->GetProto(), pOcc), weights);
-        break;
+
+        Item* pOcc = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+
+        // A shield in the off-hand is not a baseline a weapon gets measured against, as long as
+        // there is another hand to measure against instead. Whether a weapon should displace a
+        // shield is not a question stat weights can answer -- block and armour never outscore a
+        // weapon's damage, and what a shield carries beyond stats is abilities -- so it stays where
+        // it already lives, with the requireShield rule in OptimizeEquipment. Without this a tank
+        // would roll on every one-hander on the strength of its shield scoring low, and then not
+        // wear what it won. Items whose only home is the off-hand still measure against it, or a
+        // bot holding a shield would count every off-hand trinket as free.
+        if (allowed > 1 && pOcc && slot == EQUIPMENT_SLOT_OFFHAND &&
+            pOcc->GetProto() && pOcc->GetProto()->InventoryType == INVTYPE_SHIELD)
+            continue;
+
+        float const score = pOcc ? Score(ResolveItem(pOcc->GetProto(), pOcc), weights) : 0.0f;
+        if (!haveBaseline || score < baseline)
+        {
+            baseline = score;
+            haveBaseline = true;
+        }
     }
     return candidateScore - baseline;
+}
+
+namespace
+{
+    // Ordered by weight, so "one step below the best" is subtraction. Zero is not an armour
+    // class: it is ITEM_SUBCLASS_ARMOR_MISC, which is where the game files cosmetics.
+    uint32 ArmorTier(uint32 skill)
+    {
+        switch (skill)
+        {
+            case SKILL_CLOTH:      return 1;
+            case SKILL_LEATHER:    return 2;
+            case SKILL_MAIL:       return 3;
+            case SKILL_PLATE_MAIL: return 4;
+            default:               return 0;
+        }
+    }
+}
+
+// The nine slots that have an armour class. Everything else a character wears -- cloak,
+// neck, rings, trinket, shield, held item, weapons -- either has no armour class or carries
+// its own proficiency, and is judged on its stats alone.
+//
+// Listed rather than inferred from the subclass, because the subclass is exactly what cannot
+// be trusted here: ITEM_SUBCLASS_ARMOR_MISC covers a ring and a wedding dress alike, and only
+// the slot separates them.
+static bool IsArmorSlot(uint32 inventoryType)
+{
+    switch (inventoryType)
+    {
+        case INVTYPE_HEAD:
+        case INVTYPE_SHOULDERS:
+        case INVTYPE_CHEST:
+        case INVTYPE_ROBE:
+        case INVTYPE_WAIST:
+        case INVTYPE_LEGS:
+        case INVTYPE_FEET:
+        case INVTYPE_WRISTS:
+        case INVTYPE_HANDS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool ItemEvaluator::IsCosmeticArmor(ItemPrototype const* pProto)
+{
+    return pProto && pProto->Class == ITEM_CLASS_ARMOR &&
+           IsArmorSlot(pProto->InventoryType) && !pProto->GetProficiencySkill();
+}
+
+bool ItemEvaluator::IsUsableArmorClass(Player const* pPlayer, ItemPrototype const* pProto)
+{
+    if (!pPlayer || !pProto || pProto->Class != ITEM_CLASS_ARMOR)
+        return true;
+
+    if (!IsArmorSlot(pProto->InventoryType))
+        return true;
+
+    uint32 const tier = ArmorTier(pProto->GetProficiencySkill());
+    if (!tier)
+        return false;
+
+    // Written as an addition because these are unsigned and the best tier can be 1.
+    uint32 const best = ArmorTier(pPlayer->GetHighestKnownArmorProficiency());
+    return tier <= best && tier + 1 >= best;
 }
 
 namespace
@@ -794,6 +893,13 @@ namespace
     bool CanWear(Player* pPlayer, Item* pItem, uint8 slot)
     {
         if (!pItem)
+            return false;
+
+        // A costume is not gear, for any role. This is the only armour-class judgement made
+        // here, because this function decides whether a slot *can* be filled and a no leaves
+        // it empty. Which armour class is preferable is decided by the caller, which is able
+        // to give the preference up rather than send a member out bare.
+        if (ItemEvaluator::IsCosmeticArmor(pItem->GetProto()))
             return false;
 
         uint16 dest = 0;
@@ -841,7 +947,7 @@ namespace
 }
 
 uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weights,
-                                        bool requireShield) const
+                                        bool requireShield, bool anyArmorClass) const
 {
     if (!pPlayer)
         return 0;
@@ -960,6 +1066,13 @@ uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weig
 
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
+        // Everything wearable in this slot, kept beside the preferred list so that a slot
+        // whose preference cannot be met is filled anyway. Refusing the wrong armour class
+        // outright is how a member ends up with nothing on: the item it was wearing stops
+        // being a candidate, the apply loop below sees a slot whose desired item differs
+        // from what is worn, unequips it, and has nothing to put back.
+        std::vector<Item*> wearable;
+
         for (Item* pItem : available)
         {
             if (!CanWear(pPlayer, pItem, slot))
@@ -978,8 +1091,16 @@ uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weig
                 (!pItem->GetProto() || pItem->GetProto()->InventoryType != INVTYPE_SHIELD))
                 continue;
 
-            candidates[slot].push_back(pItem);
+            wearable.push_back(pItem);
+
+            if (anyArmorClass || IsUsableArmorClass(pPlayer, pItem->GetProto()))
+                candidates[slot].push_back(pItem);
         }
+
+        // The preference is a preference. A level 40 warrior owning nothing but mail is
+        // better in mail than in nothing.
+        if (candidates[slot].empty())
+            candidates[slot].swap(wearable);
 
         // Best first, and ties broken on guid rather than left to whatever order the bags
         // happened to be walked in. Two members offered the same gear have to reach the same
@@ -1123,9 +1244,31 @@ uint32 ItemEvaluator::OptimizeEquipment(Player* pPlayer, StatWeights const& weig
     // never displaces the incumbent, starting here is what guarantees the pass can only ever
     // raise the loadout score. An eight-piece set is kept not by a rule about sets but
     // because every single-piece swap out of it scores lower than staying.
+    //
+    // Armour of a class the member should not be in is dropped from the seed rather than
+    // carried into it. A tie never displaces the incumbent and a cloth robe outscores the
+    // plate that ought to replace it, so leaving it in the seed is leaving it worn: the slot
+    // has to start empty for the pass to have anything to put there.
     Assignment current{};
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-        current[slot] = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    {
+        Item* pItem = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+
+        // Dropped from the seed only when the slot has something of the right armour class to
+        // put there instead. A tie never displaces the incumbent and a cloth robe outscores
+        // the plate that ought to replace it, so a wrong-class piece left in the seed is a
+        // wrong-class piece left worn -- but emptying the seat when there is no other chair
+        // is how the member ends up naked.
+        bool const slotHasPreferred = !candidates[slot].empty() &&
+                                      (anyArmorClass ||
+                                       IsUsableArmorClass(pPlayer, candidates[slot][0]->GetProto()));
+        if (pItem && slotHasPreferred &&
+            (IsCosmeticArmor(pItem->GetProto()) ||
+             (!anyArmorClass && !IsUsableArmorClass(pPlayer, pItem->GetProto()))))
+            pItem = nullptr;
+
+        current[slot] = pItem;
+    }
     seeds.push_back(current);
 
     // Nothing worn, which builds a loadout from the best each slot has to offer and is the

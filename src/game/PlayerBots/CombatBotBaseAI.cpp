@@ -3957,8 +3957,38 @@ ItemPrototype const* CombatBotBaseAI::SelectWeaponForSlot(
             return a->ItemId < b->ItemId;
         });
 
-    size_t const pool = std::min<size_t>(ranked.size(), CB_WEAPON_TOP_CHOICES);
-    return ranked[urand(0, uint32(pool) - 1)];
+    // Then quality, among the weapons that are close enough on damage for it to be free.
+    //
+    // Ranking on weapon damage alone is why a level forty two rogue turns up with no blue in
+    // either hand: inside a five level item band a green and a blue dagger have nearly the same
+    // damage per second, because that is set by the item level, and everything that actually
+    // separates them -- the agility, the stamina, the crit -- is in the stats this never read.
+    // So the sort was decided by hundredths of a point of damage and then by item id, and the
+    // blue lost on the tie-break.
+    //
+    // Within a few percent of the best damage on offer they are the same weapon as far as the
+    // swing is concerned, and the one carrying the stats is strictly better. Outside that band
+    // damage still wins, so this never hands a rogue a pretty dagger that hits for less.
+    float const bestDps = weaponDps(ranked.front());
+    float const dpsFloor = bestDps * (1.0f - CB_WEAPON_QUALITY_DPS_TOLERANCE);
+
+    std::vector<ItemPrototype const*> contenders;
+    for (ItemPrototype const* pProto : ranked)
+    {
+        if (weaponDps(pProto) < dpsFloor)
+            break;
+
+        contenders.push_back(pProto);
+    }
+
+    std::stable_sort(contenders.begin(), contenders.end(),
+        [](ItemPrototype const* a, ItemPrototype const* b)
+        {
+            return a->Quality > b->Quality;
+        });
+
+    size_t const pool = std::min<size_t>(contenders.size(), CB_WEAPON_TOP_CHOICES);
+    return contenders[urand(0, uint32(pool) - 1)];
 }
 
 void CombatBotBaseAI::EquipRandomGearInEmptySlots()
@@ -3968,7 +3998,16 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
     bool const onlyPvE = urand(0, 1) != 0;
     uint8 const honorRank = onlyPvE ? 0 : urand(5, 18);
 
+    // Two pools per slot. `itemsPerSlot` is what the bot should wear: the right armour
+    // class, the right stat. `fallbackPerSlot` is everything it *can* wear, and exists so
+    // that a slot is never left empty while something legal for it is sitting in the pool.
+    //
+    // A slot that comes up empty is worse than a slot filled imperfectly, and both of the
+    // filters below can empty one: the armour-class rule can, at a level where the class's
+    // own armour barely exists yet, and the item-level band can, in the gaps where a slot
+    // simply has nothing itemised. Neither is a reason to send a tank in bare-chested.
     std::map<uint32 /*slot*/, std::vector<ItemPrototype const*>> itemsPerSlot;
+    std::map<uint32 /*slot*/, std::vector<ItemPrototype const*>> fallbackPerSlot;
     for (auto const& itr : sObjectMgr.GetItemPrototypeMap())
     {
         ItemPrototype const* pProto = &itr.second;
@@ -4027,13 +4066,34 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
         if (levelling && pProto->ItemLevel > (me->GetLevel() + levelDifference))
             continue;
 
-        // Nothing above uncommon while levelling. The primary stat filter below drops every
-        // candidate that lacks the class's main stat, and no white item in this client carries
-        // one, so the pool is already uncommon and above before anything is rolled. Left without
-        // a ceiling the roll lands on rare and epic often enough that a levelling bot barely
-        // takes damage from what it is levelling against.
-        if (levelling && pProto->Quality >= ITEM_QUALITY_RARE)
+        // Epic stays out while levelling. The primary stat filter below drops every candidate
+        // that lacks the class's main stat, and no white item in this client carries one, so the
+        // pool is already uncommon and above before anything is rolled. Left without a ceiling
+        // the roll lands on rare and epic often enough that a levelling bot barely takes damage
+        // from what it is levelling against.
+        if (levelling && pProto->Quality > ITEM_QUALITY_RARE)
             continue;
+
+        // Rare is different, and the blanket ban on it was costing real damage. A character that
+        // has reached the low forties and is running dungeons has blues in several slots; a bot
+        // capped at green does not, and the gap shows up hardest on weapons, where the whole of a
+        // melee bot's damage is the weapon it swings. The two settings this reads have been in
+        // the distributed config all along with nothing behind them.
+        //
+        // Weapons take the allowance outright once the level is reached, armour rolls for it.
+        // One weapon decides a melee class's damage and the roll is made once per slot, so
+        // leaving that to chance means a rogue whose entire contribution turns on a coin flip;
+        // armour is spread over a dozen slots, where a percentage produces the intended mix of
+        // mostly greens with a few blues rather than a full set of them.
+        if (levelling && pProto->Quality == ITEM_QUALITY_RARE)
+        {
+            if (me->GetLevel() < sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_RARE_LEVEL))
+                continue;
+
+            if (pProto->Class != ITEM_CLASS_WEAPON &&
+                !roll_chance_u(sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_RARE_CHANCE)))
+                continue;
+        }
 
         if (me->CanUseItem(pProto, onlyPvE) != EQUIP_ERR_OK)
             continue;
@@ -4044,16 +4104,22 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
         if (pProto->RequiredReputationFaction && uint32(me->GetReputationRank(pProto->RequiredReputationFaction)) < pProto->RequiredReputationRank)
             continue;
 
+        // Cosmetic armour is never worn by anybody, healers included. A dress is an
+        // INVTYPE_ROBE with no armour class, no armour and no stats, and it was only ever a
+        // candidate because the test it used to face compared proficiency skills and a
+        // cosmetic piece has none to compare.
+        if (ItemEvaluator::IsCosmeticArmor(pProto))
+            continue;
+
+        // The wrong armour class does not disqualify an item here, it demotes it. Refusing it
+        // outright is what put a level 40 warrior in an empty chest slot: its highest
+        // proficiency is plate, plate at that level is three statless breastplates, and the
+        // primary stat filter then had nothing to keep.
+        bool const preferred = (m_role == ROLE_HEALER) ||
+                               ItemEvaluator::IsUsableArmorClass(me, pProto);
+
         if (uint32 skill = pProto->GetProficiencySkill())
         {
-            // Don't equip cloth items on warriors, etc unless bot is a healer
-            if (pProto->Class == ITEM_CLASS_ARMOR &&
-                pProto->InventoryType != INVTYPE_CLOAK &&
-                pProto->InventoryType != INVTYPE_SHIELD &&
-                skill != me->GetHighestKnownArmorProficiency() &&
-                m_role != ROLE_HEALER)
-                continue;
-
             // Fist weapons use unarmed skill calculations, but we must query fist weapon skill presence to use this item
             if (pProto->SubClass == ITEM_SUBCLASS_WEAPON_FIST)
                 skill = SKILL_FIST_WEAPONS;
@@ -4083,7 +4149,9 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
                         continue;
                 }
 
-                itemsPerSlot[slot].push_back(pProto);
+                if (preferred)
+                    itemsPerSlot[slot].push_back(pProto);
+                fallbackPerSlot[slot].push_back(pProto);
 
                 // Unique item
                 if (pProto->MaxCount == 1)
@@ -4094,12 +4162,16 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 
     // 1. Remove items that don't have our primary stat from the list
     // 2. Remove non-pvp items if we have a pvp item available
+    //
+    // Run over both pools, because the fallback is picked from directly when the preferred
+    // pool comes up empty and a fallback chosen without these two passes would be a random
+    // green rather than the best of what is left.
     uint32 const primaryStat = GetPrimaryItemStatForClassAndRole(me->GetClass(), m_role);
-    for (auto& itr : itemsPerSlot)
+    auto narrowPool = [primaryStat](std::vector<ItemPrototype const*>& pool)
     {
         bool hasPrimaryStatItem = false;
 
-        for (auto const& pItem : itr.second)
+        for (auto const& pItem : pool)
         {
             for (auto const& stat : pItem->ItemStat)
             {
@@ -4116,7 +4188,7 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 
         if (hasPrimaryStatItem)
         {
-            itr.second.erase(std::remove_if(itr.second.begin(), itr.second.end(),
+            pool.erase(std::remove_if(pool.begin(), pool.end(),
             [primaryStat](ItemPrototype const* & pItem)
             {
                 bool itemHasPrimaryStat = false;
@@ -4131,12 +4203,12 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 
                 return !itemHasPrimaryStat;
             }),
-                itr.second.end());
+                pool.end());
         }
 
         bool hasPvpItem = false;
 
-        for (auto const& pItem : itr.second)
+        for (auto const& pItem : pool)
         {
             if (pItem->RequiredHonorRank)
             {
@@ -4147,33 +4219,57 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
 
         if (hasPvpItem)
         {
-            itr.second.erase(std::remove_if(itr.second.begin(), itr.second.end(),
+            pool.erase(std::remove_if(pool.begin(), pool.end(),
                 [](ItemPrototype const* & pItem)
             {
                 return pItem->RequiredHonorRank == 0;
             }),
-                itr.second.end());
+                pool.end());
         }
-    }
+    };
 
-    for (auto const& itr : itemsPerSlot)
+    for (auto& itr : itemsPerSlot)
+        narrowPool(itr.second);
+    for (auto& itr : fallbackPerSlot)
+        narrowPool(itr.second);
+
+    // Walked over the fallback pool, which holds every slot the preferred pool holds and the
+    // ones it had to give up on, so a slot that the armour-class rule or the level band
+    // emptied is still reached and still filled.
+    for (auto const& itr : fallbackPerSlot)
     {
+        uint8 const slot = itr.first;
+
         // Don't equip offhand if using 2 handed weapon
-        if (itr.first == EQUIPMENT_SLOT_OFFHAND)
+        if (slot == EQUIPMENT_SLOT_OFFHAND)
         {
             if (Item* pMainHandItem = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
                 if (pMainHandItem->GetProto()->InventoryType == INVTYPE_2HWEAPON)
                     continue;
         }
 
-        if (itr.second.empty())
+        auto const preferredItr = itemsPerSlot.find(slot);
+        bool const havePreferred = preferredItr != itemsPerSlot.end() &&
+                                   !preferredItr->second.empty();
+        std::vector<ItemPrototype const*> const& pool =
+            havePreferred ? preferredItr->second : itr.second;
+
+        if (pool.empty())
             continue;
 
-        ItemPrototype const* pProto = SelectWeaponForSlot(itr.second, itr.first);
+        ItemPrototype const* pProto = SelectWeaponForSlot(pool, slot);
         if (!pProto)
-            pProto = SelectRandomContainerElement(itr.second);
+            pProto = SelectRandomContainerElement(pool);
         if (!pProto)
             continue;
+
+        if (!havePreferred && IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] gear bot='%s' slot=%u had nothing of its own armour class in "
+                     "band, taking '%s' (%u) rather than leaving the slot empty",
+                     me->GetName(), uint32(slot), pProto->Name1, pProto->ItemId);
+        }
 
         me->SatisfyItemRequirements(pProto);
         me->StoreNewItemInBestSlots(pProto->ItemId, 1);
@@ -4973,7 +5069,7 @@ void CombatBotBaseAI::EquipOrUseNewItem()
         // out from stat weights, because block and armour rarely outscore a two-hander's damage,
         // and the abilities lost are not stats at all.
         bool const requireShield = (m_role == ROLE_TANK) && IsShieldClass(me->GetClass());
-        sItemEvaluator.OptimizeEquipment(me, *pWeights, requireShield);
+        sItemEvaluator.OptimizeEquipment(me, *pWeights, requireShield, m_role == ROLE_HEALER);
         return;
     }
 

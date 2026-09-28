@@ -194,8 +194,37 @@ class ItemEvaluator
         // two-hander frequently wins on stats while silently forfeiting Shield Bash, Shield Block
         // and every point of block chance. One capture has a warrior tank refuse fifty nine
         // interrupts in a row with SPELL_FAILED_EQUIPPED_ITEM_CLASS for exactly this reason.
+        // Whether a bot should wear this armour, judged by its armour class rather than by
+        // its stats. True for everything that is not armour in one of the nine slots that
+        // have an armour class -- weapons, cloaks, shields, necks, rings, trinkets and held
+        // items are all judged on their own terms.
+        //
+        // For those nine the rule is the heaviest class the character is trained in, or one
+        // step below it. Not strict equality: a level 40 warrior's highest is plate, and
+        // plate that early is three statless breastplates, while the mail a real warrior is
+        // still half-dressed in at that level is thirty-five pieces, eleven of them carrying
+        // strength. Strict equality is what left a slot with nothing in it worth wearing.
+        //
+        // Armour of subclass MISC has no armour class at all -- that subclass is the dresses,
+        // the shirts and the tabards -- and is refused outright. It is the hole a wedding
+        // hanbok walked through: the test it had to pass was written to compare proficiency
+        // skills, and a cosmetic piece has none to compare.
+        static bool IsUsableArmorClass(Player const* pPlayer, ItemPrototype const* pProto);
+
+        // Armour in one of those nine slots that has no armour class at all: the dresses and
+        // the shirts. Nobody wears these, healers included, so it is asked separately from
+        // the question above, which healers are exempt from.
+        static bool IsCosmeticArmor(ItemPrototype const* pProto);
+
+        //
+        // anyArmorClass lifts the rule that armour must be of the best class the character is
+        // trained in, and is meant for healers, who routinely want the intellect piece over the
+        // heavier one. For everyone else the rule holds: the weights value armour at a fraction
+        // of a point where stamina is worth four, so a cloth robe with a little stamina beats a
+        // plate chest with none, and the search will put a warrior in it every time.
         uint32 OptimizeEquipment(Player* pPlayer, StatWeights const& weights,
-                                 bool requireShield = false) const;
+                                 bool requireShield = false,
+                                 bool anyArmorClass = false) const;
 
     private:
         void ApplySpell(ResolvedStats& stats, SpellEntry const* pSpell) const;

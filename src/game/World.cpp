@@ -996,7 +996,9 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_PARTY_BOT_SKIP_CHECKS, "PartyBot.SkipChecks", false);
     setConfigMinMax(CONFIG_UINT32_PARTY_BOT_AUTO_EQUIP, "PartyBot.AutoEquip", PLAYER_BOT_AUTO_EQUIP_RANDOM_GEAR, PLAYER_BOT_AUTO_EQUIP_STARTING_GEAR, PLAYER_BOT_AUTO_EQUIP_PREMADE_GEAR);
     setConfigMinMax(CONFIG_UINT32_BATTLE_BOT_AUTO_EQUIP, "BattleBot.AutoEquip", PLAYER_BOT_AUTO_EQUIP_RANDOM_GEAR, PLAYER_BOT_AUTO_EQUIP_STARTING_GEAR, PLAYER_BOT_AUTO_EQUIP_PREMADE_GEAR);
-    setConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_LEVEL_DIFFERENCE, "PartyBot.RandomGearLevelDifference", 10);
+    setConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_LEVEL_DIFFERENCE, "PartyBot.RandomGearLevelDifference", 5);
+    setConfig(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_RARE_LEVEL, "PartyBot.RandomGearRareRampStartLevel", 35);
+    setConfigMinMax(CONFIG_UINT32_PARTY_BOT_RANDOM_GEAR_RARE_CHANCE, "PartyBot.RandomGearRareMaxChance", 20, 0, 100);
     // Off, so that the corpse run is the recovery path rather than an alternative to one. On,
     // a wiped group stands back up where it fell and the death penalty does not exist.
     setConfig(CONFIG_BOOL_PARTY_BOT_AUTO_REVIVE, "PartyBot.AutoRevive", false);
