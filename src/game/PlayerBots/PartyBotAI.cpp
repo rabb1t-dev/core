@@ -10552,18 +10552,20 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
         }
     }
 
-    if (Player* pTarget = SelectBuffTarget(m_spells.priest.pShadowProtection, m_spells.priest.pPrayerofShadowProtection, pBuffSpell))
-    {
-        if (CanTryToCastSpell(pTarget, pBuffSpell))
-        {
-            if (DoCastSpell(pTarget, pBuffSpell) == SPELL_CAST_OK)
-            {
-                m_isBuffing = true;
-                me->ClearTarget();
-                return;
-            }
-        }
-    }
+    // No Shadow Protection here, deliberately.
+    //
+    // It is a situational buff wearing a maintenance buff's clothes. Fortitude and Divine Spirit
+    // raise stats that help in every fight, so a priest keeps them up as a matter of course.
+    // Shadow Protection helps only against one damage school, and the bot has no way to know
+    // whether the next fight uses it -- so casting it always means paying for it always. At four
+    // hundred and fifty mana a head that is thirteen hundred and fifty on a five man, better than
+    // a third of a level forty two priest's pool, handed over before a boss that deals physical
+    // and nature damage and casts nothing shadow at all.
+    //
+    // A player casts this when they know the fight calls for it. The bot does not know, so the
+    // honest default is not to. If it should come back for particular encounters, the place for
+    // that is a field on DungeonTactics naming the schools worth resisting, decided per map rather
+    // than guessed here.
 
     if (m_spells.priest.pInnerFire &&
         CanTryToCastSpell(me, m_spells.priest.pInnerFire))
@@ -10991,22 +10993,9 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
         m_isBuffing = false;
     }
 
-    if (Unit* pVictim = me->GetVictim())
-    {
-        // Not while holding. Sending the pet is the same pull as going itself, taken by proxy.
-        if (Pet* pPet = m_holdPosition ? nullptr : me->GetPet())
-        {
-            if (!pPet->GetVictim())
-            {
-                pPet->GetCharmInfo()->SetIsCommandAttack(true);
-                pPet->AI()->AttackStart(pVictim);
-            }
-        }
-
+    // The pet is UpdatePetCombat's business now, which unlike this runs in combat too.
+    if (me->GetVictim())
         UpdateInCombatAI_Warlock();
-    }
-    else
-        SummonPetIfNeeded();
 }
 
 // Whether a damage-over-time spell will live long enough on this target to earn back the cast that
@@ -11183,14 +11172,6 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
             }
         }
 
-        if (m_spells.warlock.pRainOfFire &&
-           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pRainOfFire))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pRainOfFire) == SPELL_CAST_OK)
-                return;
-        }
-
         // Demonic Sacrifice used to sit here, conditioned on nothing beyond the warlock having a
         // living pet, so every warlock bot destroyed its own pet the moment it could and then
         // fought the rest of the instance without one. The buff it leaves behind is worth having
@@ -11221,12 +11202,41 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
+        // Curse of Agony with the other damage over time effects rather than below Fear and
+        // Drain Life, which is where it was and which meant it landed last or not at all. It is
+        // the warlock's cheapest damage per point of mana and it runs for twenty four seconds, so
+        // on anything that lives long enough to be worth a curse it wants to be up in the first
+        // few seconds alongside Immolate and Corruption, not after the fight has turned.
+        if (m_spells.warlock.pCurseofAgony &&
+            IsWorthDotting(pVictim) &&
+            CanTryToCastSpell(pVictim, m_spells.warlock.pCurseofAgony))
+        {
+            if (DoCastSpell(pVictim, m_spells.warlock.pCurseofAgony) == SPELL_CAST_OK)
+                return;
+        }
+
         if (m_spells.warlock.pSiphonLife &&
            (me->GetHealthPercent() < 80.0f) &&
             IsWorthDotting(pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
+                return;
+        }
+
+        // Rain of Fire underneath the single target damage over time effects, not above them.
+        //
+        // It is an eight second channel, and above the dots it was the first thing a warlock did
+        // on any pull with three mobs in it -- which in Zul'Farrak is the pull that hatches four
+        // broodlings in front of the boss. One capture has the warlock channel Rain of Fire at
+        // 22:51:22 and not get Immolate onto Antu'sul until 22:51:31, nine seconds of the boss
+        // fight spent on trash the tank was already holding. The dots go on first now; if there
+        // is still a crowd worth the channel afterwards, it is still here.
+        if (m_spells.warlock.pRainOfFire &&
+           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+            CanTryToCastSpell(pVictim, m_spells.warlock.pRainOfFire))
+        {
+            if (DoCastSpell(pVictim, m_spells.warlock.pRainOfFire) == SPELL_CAST_OK)
                 return;
         }
 
@@ -11247,13 +11257,6 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
                 return;
         }
 
-        if (m_spells.warlock.pCurseofAgony &&
-            IsWorthDotting(pVictim) &&
-            CanTryToCastSpell(pVictim, m_spells.warlock.pCurseofAgony))
-        {
-            if (DoCastSpell(pVictim, m_spells.warlock.pCurseofAgony) == SPELL_CAST_OK)
-                return;
-        }
 
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
             && me->GetDistance(pVictim) > 30.0f)
