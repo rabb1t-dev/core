@@ -11002,6 +11002,26 @@ void Unit::UpdateSplineMovement(uint32 t_diff)
         ((Player*)this)->SetPosition(loc.x, loc.y, loc.z, loc.orientation);
     else
         GetMap()->CreatureRelocation((Creature*)this, loc.x, loc.y, loc.z, loc.orientation);
+
+    // And told to the clients watching, because nothing else ever will. A bot's position reaches
+    // other clients only through the spline packets sent while it is still walking: SetPosition
+    // above moves it on the server and broadcasts nothing at all, and a spline that ends by
+    // arriving sends no stop of its own. Watchers are therefore left holding the movement flags
+    // from the launch packet, go on extrapolating the model forward once the spline visual runs
+    // out, and draw the bot jammed against whatever geometry lies that way while the server has it
+    // in melee and swinging. Every report of a bot "running into a wall" while its hits land on a
+    // mob it is nowhere near is this, and melee never noticed because reach is checked server side.
+    //
+    // MSG_MOVE_STOP carrying the cleared flags is exactly what a real client sends when it stops
+    // and what MovementHandler relays for one, so no watcher needs a special case. Being server
+    // side it also carries ctime 0, which pauses the client extrapolation that caused the drift.
+    // Sent after the relocation above so the position in it is the one the bot arrived at.
+    //
+    // Only a spline that ended by arriving needs this. One cut short goes through StopMoving, which
+    // launches a stop spline of its own, and that asymmetry is why an interrupted walk always drew
+    // correctly and a completed one did not.
+    if (arrived && IsPlayer() && static_cast<Player*>(this)->IsBot())
+        SendMovementPacket(MSG_MOVE_STOP);
 }
 
 void Unit::MonsterMove(float x, float y, float z)
