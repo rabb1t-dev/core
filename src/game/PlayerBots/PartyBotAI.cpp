@@ -11330,6 +11330,47 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
     // fights anyway and there is no swap back to pay for.
     bool const tanking = GetRole() == ROLE_TANK;
 
+    // The pull, which has to be decided before the stance rule below rather than after it: that
+    // rule pins a tank in Defensive Stance, Charge is Battle Stance only, and so a tank warrior
+    // could never Charge anything. That was written down as an accepted trade -- "losing the gap
+    // closer costs a tank bot very little, because it is following the party rather than
+    // initiating" -- and the premise is no longer true. The group is being asked to let the tank
+    // arrive first, and Charge is how a warrior does that: it crosses the gap faster than anyone
+    // else can walk it, stuns what it lands on, and arrives with rage already in the bar.
+    //
+    // The thrash this replaced is worth remembering, because the shape is easy to recreate: a
+    // capture with thirty one Battle Stances, thirty one Defensive Stances and twenty nine Charges
+    // in half an hour, the two rules taking turns and the tank opening every fight of a dungeon on
+    // an empty rage bar. The guard against it is that the swap is only ever made when the Charge
+    // is genuinely there to be cast -- target unengaged, in band, off cooldown -- so the stance
+    // change is always immediately followed by the Charge rather than by another stance change.
+    if (tanking && !m_holdPosition && ShouldChargeToPull())
+    {
+        if (me->GetShapeshiftForm() != FORM_BATTLESTANCE)
+        {
+            if (m_spells.warrior.pBattleStance &&
+                CanTryToCastSpell(me, m_spells.warrior.pBattleStance))
+            {
+                if (DoCastSpell(me, m_spells.warrior.pBattleStance) == SPELL_CAST_OK)
+                    return;
+            }
+        }
+        else if (CanTryToCastSpell(me->GetVictim(), m_spells.warrior.pCharge))
+        {
+            if (DoCastSpell(me->GetVictim(), m_spells.warrior.pCharge) == SPELL_CAST_OK)
+            {
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] charge bot='%s' role=tank opened on '%s' from %.1fy",
+                             me->GetName(), me->GetVictim()->GetName(),
+                             me->GetDistance(me->GetVictim()));
+                }
+                return;
+            }
+        }
+    }
+
     if (tanking && m_spells.warrior.pDefensiveStance)
     {
         if (me->GetShapeshiftForm() != FORM_DEFENSIVESTANCE &&
@@ -11374,6 +11415,180 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
                 return;
         }
     }
+}
+
+// Whether there is a Charge to open with right now.
+//
+// Deliberately narrow. Every condition here exists to make sure that answering yes is followed by
+// a Charge and not by a second opinion, because the cost of being wrong is a stance swap that
+// undoes itself and a tank that starts the fight with no rage.
+bool PartyBotAI::ShouldChargeToPull() const
+{
+    if (!m_spells.warrior.pCharge || !m_spells.warrior.pBattleStance)
+        return false;
+
+    // Only as an opener. Charge is out-of-combat only, and a tank already fighting has nothing to
+    // gain from leaving Defensive Stance.
+    if (me->IsInCombat())
+        return false;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !pVictim->IsAlive() || pVictim->IsInCombat())
+        return false;
+
+    if (!IsValidHostileTarget(pVictim) || !me->IsWithinLOSInMap(pVictim))
+        return false;
+
+    if (!me->IsSpellReady(m_spells.warrior.pCharge))
+        return false;
+
+    // In the band. Charge has a minimum range as well as a maximum, and a tank standing inside the
+    // minimum is close enough to walk the rest.
+    float const distance = me->GetDistance(pVictim);
+    if (distance < PB_CHARGE_MIN_RANGE || distance > PB_CHARGE_MAX_RANGE)
+        return false;
+
+    // And not into something the group has not agreed to fight. Charge crosses the ground between
+    // in a straight line at speed, which is the one movement no detour can be applied to, so the
+    // ordinary route rule is asked about the whole of it up front.
+    return !me->WasPullRouteRefusedRecently(PB_SPRINT_AFTER_REFUSAL_MS) &&
+           !PathWouldAggroUnengaged(pVictim->GetPositionX(), pVictim->GetPositionY(),
+                                    pVictim->GetPositionZ());
+}
+
+// Whether this healer can still afford to spend mana on absorbing damage rather than undoing it.
+//
+// Power Word: Shield is the worst conversion in the priest's book -- roughly three hundred mana for
+// four hundred and forty absorbed, against Greater Heal's nine hundred for three hundred and
+// seventy -- and it is bought first, which is the wrong way round when the pool has to last. The
+// Antu'sul attempt that got closest has the priest spending about twelve hundred mana on four
+// shields, running dry forty eight seconds in, and then casting nothing but rank one Lesser Heal
+// while the tank fell from forty four percent to dead. Two of those shields went out at under a
+// third of a bar remaining.
+//
+// Only a healer is held to this. A shadow priest's shield is what keeps its own cast going and it
+// is not the group's mana bar being rationed.
+bool PartyBotAI::HasManaToSpendOnAbsorbs() const
+{
+    if (GetRole() != ROLE_HEALER)
+        return true;
+
+    return me->GetPowerPercent(POWER_MANA) >= PB_SHIELD_MANA_FLOOR;
+}
+
+// Whether this bot should keep its global cooldown free for an interrupt rather than spend it.
+//
+// The last measurable gap in stopping Antu'sul's heals, and the one the castleft instrumentation
+// was added to find. At 22:44:20 the rogue spent its global on Slice and Dice; Healing Wave of
+// Antu'sul started inside that global; the global cleared at 22:44:21 and the Kick went out at
+// 22:44:22 with eight hundred milliseconds of a three second cast left. The log recorded an
+// interrupt and the boss gained a full Wave a second later. The ability was never the problem --
+// it was off cooldown, in range and affordable the whole time. The bot had simply spent the tick
+// the cast began on.
+//
+// So the reserve extends from the ability to the global itself. While a mob known to own a heal
+// worth stopping is inside the health band where that heal switches on, a bot holding a ready
+// interrupt stops casting filler and auto attacks instead. It costs a Sinister Strike or a Sunder
+// and it buys the difference between reacting in two hundred milliseconds and reacting in two
+// seconds, against a heal worth twenty four hundred health a cast.
+//
+// Narrow on purpose. It wants a ready interrupt, so a bot with nothing to hold back is never
+// slowed; it wants a mob whose own book contains the heal, read from the creature rather than
+// guessed; and it wants that mob low enough that the heal is actually live, because a boss at
+// full health has not started healing and the group needs the damage to get it there.
+bool PartyBotAI::ShouldReserveGlobalCooldownForInterrupt(Unit const* pVictim) const
+{
+    if (!pVictim || IsInDuel())
+        return false;
+
+    // Where this particular creature's heals switch on, read from the instance table rather
+    // than from a constant. The constant was set to sixty five because that is where Antu'sul
+    // starts casting Flash Heal, which made every bot in the game hold its rotation from sixty
+    // five percent of every boss, most of which never heal at all.
+    //
+    // A creature with no entry answers zero and is never reserved against, which is the right
+    // default: the reserve costs a Sunder or a Sinister Strike every tick it is on, and that is
+    // only worth paying where there is a heal to stop.
+    float const watchBelow = m_tactics
+                           ? m_tactics->GetHealWatchPercent(pVictim->GetEntry())
+                           : 0.0f;
+
+    if (watchBelow <= 0.0f || pVictim->GetHealthPercent() > watchBelow)
+        return false;
+
+    if (GetWorstKnownCastPriority(pVictim) < PB_INTERRUPT_HEAL)
+        return false;
+
+    // Already casting, in which case InterruptHostileCasters is about to spend the ability this
+    // very tick and there is nothing to reserve it for.
+    if (GetInterruptPriority(pVictim) >= PB_INTERRUPT_HEAL)
+        return false;
+
+    std::vector<SpellEntry const*> candidates;
+    GetInterruptSpells(candidates);
+
+    for (SpellEntry const* pCandidate : candidates)
+    {
+        if (!me->IsSpellReady(pCandidate))
+            continue;
+
+        if (me->GetPower(Powers(pCandidate->powerType)) < Spell::CalculatePowerCost(pCandidate, me))
+            continue;
+
+        if (pCandidate->rangeIndex == SPELL_RANGE_IDX_COMBAT &&
+            !me->CanReachWithMeleeAutoAttack(pVictim))
+            continue;
+
+        // Holding the global for an ability this target is immune to is the worst version of
+        // this: the bot stops casting, the heal lands anyway, and the damage that would have
+        // shortened the fight was never dealt. Against Antu'sul the reserve was suppressing the
+        // tank's rotation for the whole stretch below sixty five percent, for nothing.
+        if (!CanInterruptWith(pCandidate, pVictim))
+            continue;
+
+        return true;
+    }
+
+    return false;
+}
+
+// Whether this bot has enough mana that wanding is the wrong thing to be doing.
+//
+// Only for classes whose damage comes out of a mana bar in the first place. A hunter wands
+// nothing, a warrior has no bar, and a rogue's energy is not what this is about.
+bool PartyBotAI::HasManaWorthCastingWith() const
+{
+    if (me->GetPowerType() != POWER_MANA || me->GetClass() == CLASS_HUNTER)
+        return false;
+
+    // Damage dealers only, and never a healer. This is the whole of the regression it caused.
+    //
+    // A healer's rotation is supposed to produce nothing when nobody needs healing, and its mana
+    // is reserved for the heals rather than spent on damage -- so "has mana, therefore should be
+    // casting" is true of a warlock and false of a priest. Applied to the healer it refused the
+    // wand two hundred and twenty seven times in one fight at around twenty percent mana, and
+    // because the refusal happens above the ranged attack rather than instead of it, what was
+    // left was the melee auto attack the attack order had already switched on: the priest walked
+    // into the boss and swung a mace at it for the whole fight.
+    // A healer wands only on a bar it has no other use for.
+    //
+    // Scoping this to the damage dealers fixed the priest swinging a mace and replaced it with the
+    // priest firing a wand, which is the same mistake at range. The Antu'sul attempt that reached
+    // twenty eight percent has the healer shoot Antu'sul more than twenty times from twelve yards
+    // down to three point nine, collect the boss, and spend three Power Word: Shields keeping
+    // itself alive inside its own swing radius -- nine hundred mana, a quarter of the bar, bought
+    // by damage worth twenty seven a shot. It was rationing to the tank alone forty seconds later
+    // and casting rank one Lesser Heal by the end.
+    //
+    // Above ninety percent there is nothing to ration and the shot is free. Below it the mana is
+    // spoken for, and so is the threat.
+    if (m_role == ROLE_HEALER)
+        return me->GetPowerPercent(POWER_MANA) < PB_HEALER_WAND_MANA_CEILING;
+
+    if (m_role != ROLE_RANGE_DPS)
+        return false;
+
+    return me->GetPowerPercent(POWER_MANA) >= PB_WAND_MANA_FLOOR;
 }
 
 bool PartyBotAI::ShouldTauntTarget(Unit const* pVictim) const
@@ -11598,7 +11813,8 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // guarantee is that spending here does not cost the next Sunder Armor, and the spell costs
     // answer that directly, at every level and every rank.
     if (SpellEntry const* pDump = (m_spells.warrior.pCleave &&
-                                   me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1)
+                                   me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
+                                   !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pVictim))
                                 ? m_spells.warrior.pCleave
                                 : m_spells.warrior.pHeroicStrike)
     {
@@ -11906,7 +12122,8 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         // point of damage or has a cooldown to respect.
         if (me->GetPower(POWER_RAGE) > PB_WARRIOR_DPS_RAGE_DUMP)
         {
-            if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1)
+            if (m_spells.warrior.pCleave && me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pVictim))
             {
                 if (CanTryToCastSpell(pVictim, m_spells.warrior.pCleave))
                 {
