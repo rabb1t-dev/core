@@ -1321,7 +1321,7 @@ bool PartyBotAI::UpdatePullSequence()
             {
                 if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
                 {
-                    me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
+                    me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
                     LogPull("walking to where the order came from");
                 }
 
@@ -1416,7 +1416,7 @@ bool PartyBotAI::UpdatePullSequence()
                 }
 
                 me->GetMotionMaster()->MovePoint(0, targetX, targetY, pTarget->GetPositionZ(),
-                                                 MOVE_PATHFINDING);
+                                                 MOVE_PATHFINDING | MOVE_RUN_MODE);
                 LogPull("closing on foot");
             }
 
@@ -1554,7 +1554,7 @@ bool PartyBotAI::UpdatePullSequence()
                 me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
 
             if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != POINT_MOTION_TYPE)
-                me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING);
+                me->GetMotionMaster()->MovePoint(0, m_holdX, m_holdY, m_holdZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
 
             return true;
         }
@@ -1990,7 +1990,7 @@ bool PartyBotAI::UpdateCorpseRun()
         // the ghost stands within a few paces of its door and forty-eight yards over the top of
         // it, which is precisely where Maraudon kept stranding them. Dropping in is the way in.
         bool const atTheDoor = !corpseIsOnThisMap && me->GetDistance2d(x, y) < PB_PORTAL_STEP_IN_RANGE;
-        me->GetMotionMaster()->MovePoint(0, x, y, z, atTheDoor ? MOVE_NONE : MOVE_PATHFINDING);
+        me->GetMotionMaster()->MovePoint(0, x, y, z, atTheDoor ? MOVE_RUN_MODE : (MOVE_PATHFINDING | MOVE_RUN_MODE));
     }
 
     // Progress is measured rather than assumed, because a ghost with nowhere to path still
@@ -3961,13 +3961,13 @@ bool PartyBotAI::SafeMoveTo(float x, float y, float z)
         if (!FindSafeDetour(x, y, z, detourX, detourY, detourZ))
             return false;
 
-        me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING);
+        me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
         return true;
     }
 
     if (!WouldPathPullExtraEnemies(x, y, z))
     {
-        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+        me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
         return true;
     }
 
@@ -3983,7 +3983,7 @@ bool PartyBotAI::SafeMoveTo(float x, float y, float z)
                  me->GetName(), GetRoleName(GetRole()), detourX, detourY, x, y);
     }
 
-    me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING);
+    me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
     return true;
 }
 
@@ -4754,7 +4754,7 @@ bool PartyBotAI::DragFightAwayFromNeighbours()
         return false;
 
     NoteCombatMovement();
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
 
     if (IsCombatLogged())
     {
@@ -4947,7 +4947,7 @@ bool PartyBotAI::TakeCoverFromCast()
     if (!me->IsStopped())
         me->StopMoving();
 
-    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING);
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
     NoteCombatMovement();
 
     // Zero is the "no walk" value, so a tick counter that happens to land on it borrows the next
