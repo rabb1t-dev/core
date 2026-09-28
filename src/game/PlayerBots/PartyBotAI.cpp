@@ -8114,10 +8114,19 @@ RollVote PartyBotAI::DecideLootRoll(uint32 itemId) const
     RollVote vote = ROLL_PASS;
 
     // Not a question of taste. A bot that cannot wear the thing has no upgrade to measure, and
-    // CanUseItem is what rules out the wrong armour class, the wrong weapon, and the level it has
-    // not reached yet.
+    // CanUseItem is what rules out the wrong weapon and the level it has not reached yet.
+    //
+    // It does not rule out the wrong armour class, and cannot: every class in this game is
+    // allowed to wear cloth, so a warrior needing a robe off a Scarlet Monastery corpse is a
+    // legal equip and a ridiculous one. The armour weight that decides it is 0.084 a point
+    // against stamina's 4, so a cloth robe with a few stamina outscores a four hundred armour
+    // breastplate carrying none -- which is most of the plate a level 40 warrior can reach.
     if (me->CanUseItem(pProto) != EQUIP_ERR_OK)
         reason = "cannot use it at all";
+    else if (ItemEvaluator::IsCosmeticArmor(pProto))
+        reason = "is a costume, not armour";
+    else if (m_role != ROLE_HEALER && !ItemEvaluator::IsUsableArmorClass(me, pProto))
+        reason = "is the wrong armour class for it";
     else if (StatWeights const* pWeights = GetStatWeights())
     {
         // Scored against what is worn in that slot, so the answer accounts for the thing being
@@ -8418,6 +8427,42 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
                 AutoEquipGear(sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_AUTO_EQUIP));
 
+                // And again if it produced a naked bot.
+                //
+                // Two of five bots in one session came out with filled=2/19 -- both weapon slots
+                // and no armour at all -- and went into Antu'sul like that; the tank among them
+                // died at thirty five percent. Every armour candidate is gated on
+                // me->GetSkillValue() for its proficiency, which LearnArmorProficiencies grants
+                // at the top of the same call, so a bot whose skills have not settled by the
+                // time the pool is built sees an empty pool for every armour slot and fills
+                // none of them. The weapons come through because a weapon the bot cannot use is
+                // refused by CanUseItem rather than by the skill lookup.
+                //
+                // Cheap to check and cheap to repeat: the pass only ever fills empty slots, so
+                // running it twice on a bot that succeeded the first time does nothing at all.
+                uint32 armorFilled = 0;
+                for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                {
+                    if (slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND ||
+                        slot == EQUIPMENT_SLOT_RANGED)
+                        continue;
+
+                    if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                        ++armorFilled;
+                }
+
+                if (!armorFilled)
+                {
+                    if (IsCombatLogged())
+                    {
+                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                 "[BotCombat] gear bot='%s' role=%s came out with no armour at "
+                                 "all, retrying the pass", me->GetName(), GetRoleName(m_role));
+                    }
+
+                    AutoEquipGear(sWorld.getConfig(CONFIG_UINT32_PARTY_BOT_AUTO_EQUIP));
+                }
+
                 // Gear alone is only half of what a group turns up with. Enchant what was just
                 // equipped and put the hour-long consumables in the bags; drinking them happens
                 // out of combat, in UseProvisionConsumables.
@@ -8586,6 +8631,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             // a wipe.
             me->SetAttackOrders(ObjectGuid());
             m_pullTargetGuid.Clear();
+
+            // The standing kill instruction too, for the same reason the rest of this exists: it
+            // now outlives the mob entering combat, so without this it would also outlive the
+            // group, and the corpse run would end with everyone walking back onto a full health
+            // mob because a player said so ten minutes ago.
+            ClearGroupAttackOrder();
 
             // The add a warrior had broken off to collect, and the target it meant to go back to.
             // Both name mobs from the fight that just killed it.
