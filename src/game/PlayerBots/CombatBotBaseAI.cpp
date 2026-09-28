@@ -2861,13 +2861,66 @@ bool CombatBotBaseAI::FindAndPreHealTarget()
     return pTarget;
 }
 
-bool CombatBotBaseAI::IsValidHostileTarget(Unit const* pTarget) const
+// How far to look for something else to hit before deciding a controlled mob is the whole fight.
+// Generous, because the filter underneath it is "already in combat" rather than "nearby", and a
+// pack can be spread across a boss room; an unpulled pack at any distance is excluded by that
+// filter rather than by this radius.
+static constexpr float CB_LAST_ENEMY_SEARCH_RADIUS = 60.0f;
+
+// Everything about a target that has nothing to do with crowd control.
+bool CombatBotBaseAI::IsAttackableHostileTarget(Unit const* pTarget) const
 {
     return me->IsValidAttackTarget(pTarget) &&
            pTarget->IsVisibleForOrDetect(me, me, false) &&
-           !pTarget->HasBreakableByDamageCrowdControlAura() &&
            !pTarget->IsTotalImmune() &&
            pTarget->GetTransport() == me->GetTransport();
+}
+
+// Whether crowd control on this mob is still worth respecting.
+//
+// Hitting a sheep while there is anything else to attack throws away a cast a player just spent,
+// which is why controlled mobs were excluded from targeting outright. But that rule has no end
+// condition, and the end condition is the whole point: once the sheep is the only thing left
+// alive, the control has already bought the group whatever it was going to buy, and refusing to
+// touch it leaves five bots standing in the room waiting out the timer with nothing else to do.
+//
+// So the rule is not "never attack crowd control", it is "never attack crowd control while there
+// is an alternative".
+bool CombatBotBaseAI::IsProtectedByCrowdControl(Unit const* pTarget) const
+{
+    if (!pTarget->HasBreakableByDamageCrowdControlAura())
+        return false;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, CB_LAST_ENEMY_SEARCH_RADIUS, enemies);
+
+    for (Unit const* pEnemy : enemies)
+    {
+        if (!pEnemy || pEnemy == pTarget || !pEnemy->IsAlive())
+            continue;
+
+        // Only what is already fighting. The search returns every unfriendly unit in range, and
+        // counting an unpulled pack down the corridor as "something else to hit" would keep the
+        // sheep protected until it woke up on its own, which is the behaviour being fixed.
+        if (!pEnemy->IsInCombat())
+            continue;
+
+        // Another held mob is not an alternative either. Two sheep left standing would otherwise
+        // each be spared on account of the other, and the group would wait out both.
+        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+            continue;
+
+        if (IsAttackableHostileTarget(pEnemy))
+            return true;
+    }
+
+    return false;
+}
+
+bool CombatBotBaseAI::IsValidHostileTarget(Unit const* pTarget) const
+{
+    return IsAttackableHostileTarget(pTarget) &&
+          !IsProtectedByCrowdControl(pTarget);
 }
 
 bool CombatBotBaseAI::IsValidDispelTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const
@@ -6481,7 +6534,10 @@ bool CombatBotBaseAI::IsBreakableCrowdControlInRange(float radius, Unit const* p
         if (!pEnemy || !pEnemy->IsAlive())
             continue;
 
-        if (pEnemy->HasBreakableByDamageCrowdControlAura())
+        // Only control the group is still respecting. A sheep that is the last thing alive is
+        // about to be attacked deliberately, so withholding the totem for its sake would hold
+        // back the shaman's damage on the one target left to use it on.
+        if (IsProtectedByCrowdControl(pEnemy))
             return true;
     }
 

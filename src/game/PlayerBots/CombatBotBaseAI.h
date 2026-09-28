@@ -329,6 +329,8 @@ public:
     float GetManaAdjustedHealPercent(float requestedPercent) const;
     bool IsRationingHealsForTank() const;
     bool IsAlreadyHealing(ObjectGuid guid) const;
+    bool IsAttackableHostileTarget(Unit const* pTarget) const;
+    bool IsProtectedByCrowdControl(Unit const* pTarget) const;
     bool IsValidHostileTarget(Unit const* pTarget) const;
     bool IsValidDispelTarget(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     bool FindAndPreHealTarget();
@@ -340,6 +342,8 @@ public:
     SpellEntry const* SelectMostEfficientHealingSpell(Unit const* pTarget, std::set<SpellEntry const*, T>& spellList) const;
     template <class T>
     SpellEntry const* SelectMostEfficientHealingSpell(Unit const* pTarget, int32 missingHealth, std::set<SpellEntry const*, T>& spellList) const;
+    template <class T>
+    SpellEntry const* SelectFastestHealingSpell(Unit const* pTarget, std::set<SpellEntry const*, T>& spellList) const;
     int32 GetIncomingdamage(Unit const* pTarget) const;
     bool AreOthersOnSameTarget(ObjectGuid guid, bool checkMelee = true, bool checkSpells = true) const;
 

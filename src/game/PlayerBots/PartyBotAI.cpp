@@ -2934,7 +2934,69 @@ bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget
             return false;
     }
 
+    if (!IsWorthALongCooldownCC(pSpellEntry, pTarget))
+        return false;
+
     return true;
+}
+
+// Whether this target is worth a crowd control the bot only gets once.
+//
+// Blind is a five minute cooldown. That is longer than the whole of Antu'sul, so the rogue gets
+// exactly one, and every attempt so far has spent it in the first ten seconds on a Sul'lithuz
+// Broodling out of the trigger pack -- trash the group kills in four swings -- leaving nothing for
+// the Servant of Antu'sul that arrives thirty seconds later at seventy five percent and spends the
+// rest of the fight eating the healer. The log reads the same way every time: one "cc" line
+// against a Broodling, and none ever against the Servant.
+//
+// A short cooldown needs none of this. Gouge, Sap and Polymorph come back inside a pull, so
+// spending one early costs nothing and the ordinary target selection is right about them.
+//
+// The judgement of what is worth saving for comes from the instance's tactics rather than from
+// anything on the creature, because that is where it can be known. Both creatures here are
+// summons of the same boss, both are elite, and the Servant is not distinguishable from the
+// Broodling by level, health or family alone at the moment the choice has to be made. What
+// separates them is when they arrive, and the table already records it: the summon is named
+// against the boss that calls it, so requiring that boss to be alive and already fighting rules
+// out the pre-pull hatchlings and admits the mid-fight adds, without naming either.
+bool PartyBotAI::IsWorthALongCooldownCC(SpellEntry const* pSpellEntry, Unit const* pTarget) const
+{
+    if (pSpellEntry->GetRecoveryTime() < PB_CC_LONG_COOLDOWN_MS)
+        return true;
+
+    // Nothing written down for this map, so nothing to save it for. Every instance without an
+    // entry behaves exactly as it did before this existed.
+    if (!m_tactics)
+        return true;
+
+    Creature const* pCreature = pTarget ? pTarget->ToCreature() : nullptr;
+    if (!pCreature)
+        return true;
+
+    // Not on something weaker than the bot casting it. This is what the summoner check alone did
+    // not catch: Sul'lithuz Broodling and Servant of Antu'sul are both summons of the same boss and
+    // both appear in his entry in the table, so requiring a named summon admitted the trigger pack
+    // as readily as the real add -- and the tank has usually already engaged Antu'sul by the time
+    // the last Broodling is up, so requiring the summoner to be fighting admitted it too. The log
+    // has the rogue spending Blind on a level thirty nine Broodling at 22:27:52, three separate
+    // attempts running, with the level forty eight Servant arriving half a minute later to nothing.
+    //
+    // Level is the discriminator that actually separates them and it needs no table: a creature
+    // below the bot's own level is trash the group kills in a few swings, and nothing about it is
+    // worth a cooldown measured in minutes.
+    if (pTarget->GetLevel() < me->GetLevel())
+        return false;
+
+    float gate = 0.0f;
+    uint32 const summonerEntry = m_tactics->GetBurnGateFor(pCreature->GetEntry(), gate);
+    if (!summonerEntry)
+        return false;
+
+    // And the summoner has to be in the fight. The same Broodling entry is used by the trigger
+    // pack that hatches before anybody has touched Antu'sul and by the adds he calls once he is
+    // engaged, so the entry alone cannot tell them apart and the boss's own combat state can.
+    Creature const* pSummoner = me->FindNearestCreature(summonerEntry, PB_CC_SUMMONER_SEARCH_RADIUS, true);
+    return pSummoner && pSummoner->IsInCombat();
 }
 
 bool PartyBotAI::AttackStart(Unit* pVictim)
@@ -9465,6 +9527,7 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
                     return;
             }
             if (m_spells.paladin.pConsecration &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
                (GetAttackersInRangeCount(10.0f) > 2) &&
                 CanTryToCastSpell(me, m_spells.paladin.pConsecration))
             {
@@ -9738,6 +9801,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
 
         if (m_spells.hunter.pVolley &&
            (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
+            !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pVolley))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pVolley) == SPELL_CAST_OK)
@@ -10103,6 +10167,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
             }
 
             if (m_spells.mage.pArcaneExplosion &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
                 CanTryToCastSpell(me, m_spells.mage.pArcaneExplosion))
             {
                 if (DoCastSpell(me, m_spells.mage.pArcaneExplosion) == SPELL_CAST_OK)
@@ -10615,6 +10680,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
             if (m_spells.priest.pHolyNova &&
                 GetRole() != ROLE_HEALER &&
                 GetAttackersInRangeCount(10.0f) > 2 &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
                 CanTryToCastSpell(me, m_spells.priest.pHolyNova))
             {
                 if (DoCastSpell(me, m_spells.priest.pHolyNova) == SPELL_CAST_OK)
@@ -11475,6 +11541,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
 
         if (m_spells.warrior.pSweepingStrikes &&
             CanTryToCastSpell(me, m_spells.warrior.pSweepingStrikes) &&
+            !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pVictim) &&
            (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2))
         {
             if (DoCastSpell(me, m_spells.warrior.pSweepingStrikes) == SPELL_CAST_OK)
@@ -11543,6 +11610,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
         }
 
         if (m_spells.warrior.pWhirlwind &&
+            !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
             CanTryToCastSpell(me, m_spells.warrior.pWhirlwind))
         {
             if (DoCastSpell(me, m_spells.warrior.pWhirlwind) == SPELL_CAST_OK)
