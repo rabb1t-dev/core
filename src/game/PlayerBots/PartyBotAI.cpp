@@ -5235,24 +5235,6 @@ bool PartyBotAI::InterruptHostileCasters()
         }
     }
 
-    // Anything fighting an ally this instance asked the group to keep alive.
-    //
-    // The escort is not a group member, so none of the tests above can see it, and in a fight
-    // built around one the mobs spend most of their time on it rather than on the party. Left out,
-    // the group treats every such mob as somebody else's business the instant it turns to face the
-    // NPC it was summoned to kill -- which is the moment the group most needs to stay on it.
-    std::vector<Creature*> escorts;
-    FindGuardedEscorts(escorts);
-    for (Creature const* pEscort : escorts)
-    {
-        if (pEnemy->GetVictim() == pEscort)
-            return true;
-
-        for (const auto pAttacker : pEscort->GetAttackers())
-            if (pAttacker == pEnemy)
-                return true;
-    }
-
     return false;
 }
 
@@ -9052,6 +9034,14 @@ void PartyBotAI::UpdateInCombatAI()
     if (ReconsiderHealInFlight())
         return;
 
+    // Ahead of the step below and of everything under it, because this is the only damage in a
+    // dungeon that nothing else in the tick can even see. A held attacker's swings are healable
+    // and a bad standoff is survivable; a hundred and fifty a second from a patch of floor with
+    // no attacker attached to it is neither, and the bot is taking it while every other rule
+    // reports that nothing is wrong.
+    if (StepOutOfGroundHazard())
+        return;
+
     // Before the rotation, because standing in the swing radius of something that has been frozen
     // in place specifically to get it off this bot is free damage taken, and every tick spent
     // casting instead of stepping is another swing of it.
@@ -9066,6 +9056,37 @@ void PartyBotAI::UpdateInCombatAI()
 
     // Melee getting back behind its target once whatever drove it round the front has gone.
     ReconsiderMeleeChaseAngle();
+
+    // Interrupts first, ahead of the herding below and ahead of every role.
+    //
+    // This used to sit under GatherLooseEnemies, and that ordering was costing the fight. Herding
+    // returns true whenever the tank fetches something, which against Antu'sul is constant -- one
+    // capture has fifteen herd events and five peels in a ninety second fight -- and every one of
+    // them consumed the tick before the interrupt check was ever reached. The result is an
+    // interrupt that arrives two seconds into a three second cast: both logged interrupts of
+    // Healing Wave of Antu'sul went out with castleft=1000ms and 800ms remaining, and the heal
+    // landed anyway both times.
+    //
+    // A peel that happens a quarter of a second later costs almost nothing. A heal of two and a
+    // half thousand health that lands because nobody looked costs the attempt.
+    if (InterruptHostileCasters())
+        return;
+
+    // Then the potion, below the interrupt because a Healing Wave landing is worse than a tick of
+    // drinking, and above the rotations because by the time a healer is empty the casts the potion
+    // was going to buy have already been missed.
+    if (TryUseRestorePotion())
+        return;
+
+    // The tank's taunt, ahead of the collecting below rather than after it.
+    //
+    // Both of them answer "something is eating the healer" and only one of them costs anything.
+    // Tried in the old order, the body peel got first refusal and took it: the tank left the mob
+    // it was holding, walked to the add, and the taunt path was never reached that tick because
+    // collecting commits it. So the expensive tool was chosen while the free one sat unused, and
+    // on an add that stays at range the expensive one cannot work at all.
+    if (!IsInDuel() && m_role == ROLE_TANK && PeelForTheHealer())
+        return;
 
     // Warriors collecting whatever is loose onto themselves and walking it back to the group.
     // Above the rotation because a caster being chewed on is worth more than this warrior's next
@@ -9085,15 +9106,12 @@ void PartyBotAI::UpdateInCombatAI()
         {
             Unit* pVictim = me->GetVictim();
 
-            // Ahead of the two rules below, because neither of them fires for the case that
-            // actually kills groups. Both ask about the tank's own target: it has none, or the one
-            // it has has turned on somebody else. A tank happily holding one mob while a second
-            // walks past it into the healer satisfies neither, and so did nothing at all, which is
-            // how the run this was written from ended: the healer at four attackers and seventeen
-            // percent mana, four seconds from a wipe, with the tank's log line reading normally
-            // throughout.
-            if (PeelForTheHealer())
-                return;
+            // PeelForTheHealer used to be called here and is now called further up, above the
+            // collecting. It belongs ahead of the two rules below for the reason it always did --
+            // both of those ask about the tank's own target, it has none or the one it has has
+            // turned on somebody else, and a tank happily holding one mob while a second walks
+            // past it into the healer satisfies neither -- and it belongs ahead of the collecting
+            // as well, because the collecting answers the same question by walking.
 
             // Defend party members - by taking a new target only when there is no target to keep.
             //
@@ -11186,6 +11204,14 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
             return;
     }
 
+    // Shield Bash is worth more than a Sunder. Below the stance swap, which has to happen first
+    // because Shield Bash cannot be cast outside Defensive, and below nothing else: the tank's
+    // own survival cooldowns are further down and a dead tank interrupts nothing, but those are
+    // health-gated and will fire through this when they are actually needed.
+    if (pVictim && me->GetHealthPercent() > PB_TANK_RESERVE_HEALTH_FLOOR &&
+        ShouldReserveGlobalCooldownForInterrupt(pVictim))
+        return;
+
     // Staying alive outranks holding the target, since a dead tank holds nothing.
     if (me->GetHealthPercent() < 35.0f)
     {
@@ -11360,23 +11386,19 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
 {
     if (Unit* pVictim = me->GetVictim())
     {
-        if (pVictim->IsNonMeleeSpellCasted(false, false, true))
-        {
-            if (m_spells.warrior.pPummel &&
-                CanTryToCastSpell(pVictim, m_spells.warrior.pPummel))
-            {
-                if (DoCastSpell(pVictim, m_spells.warrior.pPummel) == SPELL_CAST_OK)
-                    return;
-            }
-
-            if (m_spells.warrior.pShieldBash &&
-                IsWearingShield(me) &&
-                CanTryToCastSpell(pVictim, m_spells.warrior.pShieldBash))
-            {
-                if (DoCastSpell(pVictim, m_spells.warrior.pShieldBash) == SPELL_CAST_OK)
-                    return;
-            }
-        }
+        // No interrupt branch here. Shield Bash and Pummel are spent by InterruptHostileCasters,
+        // which is the only place that knows what is being cast, whether the mob has something
+        // worse coming, and whether another bot has already taken this cast away.
+        //
+        // What used to stand here fired either of them at any non-melee cast at all, and against
+        // Antu'sul that lost the fight on its own. He summons and drops totems on an eleven second
+        // timer and heals on a twelve second one, so the raw branch spent Shield Bash on a totem
+        // roughly every time it came off cooldown -- the log has it at 20:00:28, 20:00:48,
+        // 20:01:07 and 20:01:19, its cooldown to the second -- and the reserve logged nointerrupt
+        // in the same second, having correctly decided to hold it for the heal. Both interrupts
+        // then landed on the same Healing Wave at 20:01:19 because this path does not consult the
+        // share window either, and the next Wave three seconds later returned a third of his
+        // health bar with nothing left to stop it.
 
         // A tank wants a different list in a different order from a warrior who is there to do
         // damage, and sharing one costs it most of what it has: the order below is priority,
@@ -11802,6 +11824,11 @@ void PartyBotAI::UpdateInCombatAI_Rogue()
 {
     if (Unit* pVictim = me->GetVictim())
     {
+        // Kick is worth more than anything below it. Auto attacks keep running; only the abilities
+        // that would occupy the global are held, and only against a mob that is about to heal.
+        if (ShouldReserveGlobalCooldownForInterrupt(pVictim))
+            return;
+
         if (me->HasAuraType(SPELL_AURA_MOD_STEALTH))
         {
             if (m_spells.rogue.pPremeditation &&

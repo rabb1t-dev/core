@@ -425,6 +425,14 @@ public:
     // spends out of combat.
     time_t m_lastPoisonLog = 0;
     mutable time_t m_lastStandLog = 0;
+    mutable time_t m_lastInterruptWatchCheck = 0;
+    mutable bool m_interruptWatchWorth = false;
+    mutable time_t m_lastLeftoverScan = 0;
+    time_t m_lastPetLog = 0;
+    time_t m_lastPetSummon = 0;
+    uint32 m_threatRefusals = 0;
+    uint32 m_threatDownranks = 0;
+    time_t m_lastThreatLog = 0;
     // Whether this death has already had the bot's standing orders torn up. Reset on rising, so
     // every death gets one clearing and no death gets one per tick.
     bool m_ordersClearedByDeath = false;
