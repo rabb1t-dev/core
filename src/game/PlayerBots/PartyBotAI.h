@@ -80,6 +80,26 @@ public:
     // Which tank owns which target, so that a raid's worth of tanks does not all claim the
     // exemptions written for the single tank of a five man.
     bool IsAssignedTankFor(Unit const* pTarget) const;
+    bool ShouldDumpThreatWithFeignDeath(Unit* pTarget) const;
+    bool IsApproachAnywayTarget(Unit const* pTarget) const;
+    bool ShouldChargeToPull() const;
+    bool IsWorthALongCooldownCC(SpellEntry const* pSpellEntry, Unit const* pTarget) const;
+    bool HasManaToSpendOnAbsorbs() const;
+    bool HasManaWorthCastingWith() const;
+    mutable time_t m_lastWandHoldLog = 0;
+    // When the current wand refusal began, so it can be bounded rather than held for ever.
+    uint32 m_wandHoldSince = 0;
+    bool TryFreezingTrapSequence();
+    void EndTrapAttempt(uint32 now);
+    bool ShouldReserveGlobalCooldownForInterrupt(Unit const* pVictim) const;
+    Unit* FindSummonWorthTrapping(float radius) const;
+
+    // When the current feign-and-trap attempt began, and when the hunter may try another. Both
+    // zero when no attempt is running. The deadline these carry is what makes the sequence
+    // unable to livelock the way the removed version did.
+    uint32 m_feignUntil = 0;
+    uint32 m_trapAttemptStart = 0;
+    uint32 m_trapStandDownUntil = 0;
 
     bool IsInOpeningRamp(Unit const* pTarget) const;
     void HoldOpeningSwings(Unit const* pTarget);
@@ -208,6 +228,8 @@ public:
     bool UpdatePullSequence();
     void LogPull(char const* what) const;
     void HoldPet(bool hold);
+    void CommandPetAttack(Pet* pPet, Unit* pTarget);
+    void UpdatePetCombat();
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
     SpellEntry const* GetInstantPullSpell() const;

@@ -589,13 +589,31 @@ static constexpr time_t PB_COMBAT_MOVE_INTERVAL = 3;
 // and will be chased down immediately. Two seconds is about one swing plus the walk.
 static constexpr uint32 PB_HELD_STEP_MIN_REMAINING_MS = 2000;
 
+// How long a bot waits before trying again to summon or revive a pet that is missing or dead. The
+// retry exists for the mid-fight case, where the reason a summon was refused is usually a cast
+// already in flight, so it wants to be short enough to land inside the same fight.
+static constexpr time_t PB_PET_SUMMON_INTERVAL = 5;
+
 // And a floor on how often, so one root produces one step rather than a step every tick for as
 // long as it lasts.
 static constexpr time_t PB_HELD_STEP_INTERVAL = 3;
 
+// Floor between two attempts to walk out of melee, so a caster that keeps being followed spends
+// the fight casting rather than stepping. Same value as the held step above.
+static constexpr time_t PB_BACKOUT_INTERVAL = 3;
+
 // How often a caster that has decided to stand and take it says so. Once per fight is the useful
 // rate; the decision itself is remade every tick.
 static constexpr time_t PB_STAND_LOG_INTERVAL = 5;
+// What being first and second on an instance's escort list is worth, in health percentage points,
+// when the healer is choosing between several hurt escorts. Enough to reach the one the encounter
+// turns on before it is critical; far too little to ignore one that is dying.
+static constexpr float CB_ESCORT_FIRST_RANK_BONUS = 15.0f;
+static constexpr float CB_ESCORT_SECOND_RANK_BONUS = 8.0f;
+// How long a caster will decline its wand on the grounds that the rotation ought to have had
+// something better. Long enough that a gated rotation is still visible as idleness in the log,
+// short enough that it cannot become a stalemate nothing can break.
+static constexpr uint32 PB_WAND_HOLD_MAX_MS = 10000;
 
 // How many consecutive ticks a bot spends unable to see its own target before it stops arguing
 // with the wall and walks. Four ticks is one second. Not one tick: a mob crossing behind a pillar
@@ -980,6 +998,148 @@ void PartyBotAI::HoldPet(bool hold)
     // not restored on purpose: nothing here set it, and it is the setting that makes a pet pull.
     pPet->GetCharmInfo()->SetReactState(REACT_DEFENSIVE);
     pPet->GetCharmInfo()->SetCommandState(COMMAND_FOLLOW);
+}
+
+// Keep a pet working, asked every tick rather than once before the fight.
+//
+// Both pet classes used to command their pet from UpdateOutOfCombatAI_Hunter and _Warlock, and the
+// dispatcher only runs those while the bot is not in combat. So the pet's entire opportunity to be
+// told to attack was the sliver between its owner acquiring a victim and the server flagging that
+// owner as in combat - a window a bot misses routinely once the group pulls with a dedicated
+// puller, because it is already flagged by the time it picks a target. A pet that missed it stood
+// still for the whole fight.
+//
+// Two more followed from the same cause. The order was latched behind "the pet has no victim", so a
+// pet whose target died idled for the rest of a multi-mob pull rather than moving to the next one;
+// and a pet that died could not be replaced until combat ended, because the summon sat in the same
+// out-of-combat-only path.
+void PartyBotAI::UpdatePetCombat()
+{
+    if (me->GetClass() != CLASS_HUNTER && me->GetClass() != CLASS_WARLOCK)
+        return;
+
+    if (!me->IsAlive() || IsInDuel())
+        return;
+
+    Pet* pPet = me->GetPet();
+
+    // Missing or dead. Throttled rather than attempted every tick, because a summon refused for a
+    // reason that will still hold next tick - a cast already in progress, a spell not ready - would
+    // otherwise be retried four times a second for the length of the fight.
+    if (!pPet || !pPet->IsAlive())
+    {
+        // Replacing a pet mid-fight is the point of doing this in combat at all, but only where
+        // replacing it is a single cast. A hunter with no pet to its name goes through spawning a
+        // beast and taming it, and a wolf materialising in the middle of a boss fight to be tamed
+        // is worse than the hunter finishing the fight alone: that case waits for the fight to end.
+        bool const canSummonNow = !me->IsInCombat() ||
+                                  me->GetClass() == CLASS_WARLOCK ||
+                                  me->GetPetGuid();
+
+        time_t const now = time(nullptr);
+        if (canSummonNow && now - m_lastPetSummon >= PB_PET_SUMMON_INTERVAL)
+        {
+            m_lastPetSummon = now;
+            SummonPetIfNeeded();
+        }
+
+        return;
+    }
+
+    if (!pPet->GetCharmInfo())
+        return;
+
+    // Holding means the pet holds too: sending it in is the same pull as going in person, taken by
+    // proxy. HoldPet has already made it passive, so this only needs to not undo that.
+    if (m_holdPosition)
+        return;
+
+    // A totem is the one job a pet is better suited to than its owner.
+    //
+    // Everything the instance marks kill-on-sight has to be walked to and hit, and for a ranged
+    // owner that means leaving its firing position and giving up its rotation to break something
+    // with a few hundred health. A pet is already mobile, already expendable, and contributes far
+    // less damage to the boss than its owner does -- so sending it is close to free, and the owner
+    // never stops shooting.
+    //
+    // Only the stationary ones. The same list carries Antu'sul's Servants, which are level forty
+    // eight elites, and a pet sent at one alone is a dead pet and a totem still standing.
+    if (Unit* pTotem = FindFocusTotemForPet(PB_PET_TOTEM_RADIUS))
+    {
+        if (pPet->GetVictim() != pTotem)
+            CommandPetAttack(pPet, pTotem);
+
+        return;
+    }
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !IsValidHostileTarget(pVictim))
+        return;
+
+    // Only on a mismatch, so this is not an order re-sent four times a second, but it is re-sent
+    // the moment the pet's target dies or the group's focus moves.
+    if (pPet->GetVictim() == pVictim)
+        return;
+
+    CommandPetAttack(pPet, pVictim);
+}
+
+// Order a pet onto a target the way the game does it when a player clicks attack.
+//
+// Setting IsCommandAttack and calling AttackStart is not the whole of that command, and the part
+// that was missing turns out to be the part that decides whether it takes effect at all.
+// PetAI::CanAttack ends, for a pet in follow mode, at "return !IsReturning()". That latch is set by
+// PetAI::HandleReturnMovement, which runs on every pet tick that the pet has no living victim --
+// so it is set in the gap between one target dying and the next order arriving, which is exactly
+// when the order arrives. It clears only when the pet reports arriving at its follow point, and a
+// pet whose owner keeps moving around a fight may never report that at all.
+//
+// So the warlock was not failing to send its pet in. It was sending it in constantly and having
+// every order refused in silence, because AttackStart calls CanAttack and returns without a word.
+//
+// HandleReturnMovement also calls ClearCharmInfoFlags on its way past, which unsets the very
+// IsCommandAttack flag this sets, so the flag did not reliably survive to the pet's own next tick
+// either.
+//
+// Mirrors Unit::PetCommandAttack rather than approximating it: the same five flags, in the same
+// order, with the same AttackStop ahead of a retarget.
+void PartyBotAI::CommandPetAttack(Pet* pPet, Unit* pTarget)
+{
+    CharmInfo* pCharmInfo = pPet->GetCharmInfo();
+    if (!pCharmInfo || !pTarget)
+        return;
+
+    if (IsCombatLogged())
+    {
+        time_t const now = time(nullptr);
+        if (now - m_lastPetLog >= PB_PET_LOG_INTERVAL)
+        {
+            m_lastPetLog = now;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] pet bot='%s' pet='%s' -> '%s' at %.1fy (was on '%s'), "
+                     "returning=%u following=%u atstay=%u cmdattack=%u cmdfollow=%u passive=%u",
+                     me->GetName(), pPet->GetName(), pTarget->GetName(),
+                     pPet->GetDistance(pTarget),
+                     pPet->GetVictim() ? pPet->GetVictim()->GetName() : "none",
+                     uint32(pCharmInfo->IsReturning()), uint32(pCharmInfo->IsFollowing()),
+                     uint32(pCharmInfo->IsAtStay()), uint32(pCharmInfo->IsCommandAttack()),
+                     uint32(pCharmInfo->IsCommandFollow()),
+                     uint32(pPet->HasReactState(REACT_PASSIVE)));
+        }
+    }
+
+    pPet->ClearUnitState(UNIT_STATE_FOLLOW);
+
+    if (pPet->GetVictim())
+        pPet->AttackStop();
+
+    pCharmInfo->SetIsCommandAttack(true);
+    pCharmInfo->SetIsAtStay(false);
+    pCharmInfo->SetIsFollowing(false);
+    pCharmInfo->SetIsCommandFollow(false);
+    pCharmInfo->SetIsReturning(false);
+
+    pPet->AI()->AttackStart(pTarget);
 }
 
 bool PartyBotAI::ShouldBreakHold() const
@@ -7288,6 +7448,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
     }
 
+    // Before the rotation, and outside the in-combat branch, because a pet is the one thing a bot
+    // owns that keeps working while the bot itself is busy casting.
+    UpdatePetCombat();
+
     if (me->IsInCombat())
         UpdateInCombatAI();
 
@@ -7671,10 +7835,10 @@ void PartyBotAI::UpdateInCombatAI()
     if (GatherLooseEnemies())
         return;
 
-    // Ahead of every role, because an interrupt is worth more than whatever that role was going to
-    // do with the tick and because the classes that own one are spread across all of them. Most
-    // bots have no interrupt at all and leave on the first line of it.
-    if (InterruptHostileCasters())
+    // The hunter dropping combat to lay a trap under a summon the group has been told to leave
+    // alone. Costs the tick when it fires and nothing at all otherwise, and it cannot run long:
+    // the sequence carries its own deadline and stands itself down for thirty seconds afterwards.
+    if (TryFreezingTrapSequence())
         return;
 
     if (!IsInDuel())
@@ -8328,24 +8492,56 @@ void PartyBotAI::UpdateOutOfCombatAI_Hunter()
                 return;
         }
 
-        // Not while holding. Sending the pet is the same pull as going itself, taken by proxy.
-        if (Pet* pPet = m_holdPosition ? nullptr : me->GetPet())
-        {
-            if (!pPet->GetVictim())
-            {
-                pPet->GetCharmInfo()->SetIsCommandAttack(true);
-                pPet->AI()->AttackStart(pVictim);
-            }
-        }
-
+        // The pet is UpdatePetCombat's business now, which unlike this runs in combat too.
         UpdateInCombatAI_Hunter();
     }
-    else
-        SummonPetIfNeeded();
 }
 
 void PartyBotAI::UpdateInCombatAI_Hunter()
 {
+    // Take the Feign Death off again, because nothing else will.
+    //
+    // Feign Death has a six minute duration and a feigned hunter cannot act, so "the rotation
+    // resumes on the next tick and the aura drops the instant it does" -- which is what the
+    // threat dump below claimed -- describes something that cannot happen. The rotation never
+    // runs, so nothing removes the aura, so the rotation never runs. The trap sequence had this
+    // exact bug and was fixed by giving it an explicit end; the threat dump kept it.
+    //
+    // Measured: the hunter dumps threat at 00:33:26 with mythreat=2322 against the tank's 2201,
+    // correctly, and then produces no tick at all until 00:34:50. Eighty four seconds, from the
+    // group's highest damage dealer, in a fight that stalled at twenty nine percent and wiped.
+    //
+    // The dump itself works on the cast: SetFeignDeath calls CombatStop and clears the threat
+    // references immediately, so by the next tick the threat is already gone and there is
+    // nothing left to protect. The panic use at low health wants longer -- it is buying time for
+    // a heal -- so the two carry different deadlines rather than one compromise.
+    if (m_spells.hunter.pFeignDeath && me->HasAura(m_spells.hunter.pFeignDeath->Id))
+    {
+        // The trap sequence owns its own feign and ends it in EndTrapAttempt. Two owners of one
+        // aura would have this path cancelling the trap setup a tick after it began.
+        if (!m_trapAttemptStart)
+        {
+            uint32 const now = WorldTimer::getMSTime();
+            if (!m_feignUntil || now >= m_feignUntil)
+            {
+                me->RemoveAurasDueToSpell(m_spells.hunter.pFeignDeath->Id);
+                m_feignUntil = 0;
+
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] feign bot='%s' stood back up at %.0f%% health",
+                             me->GetName(), me->GetHealthPercent());
+                }
+            }
+            else
+            {
+                // Still down on purpose. Nothing else can be done while feigned anyway.
+                return;
+            }
+        }
+    }
+
     if (Unit* pVictim = me->GetVictim())
     {
         if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
@@ -8404,7 +8600,22 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 return;
         }
 
+        // Multi-Shot picks its extra targets itself, out of whatever is standing near the one it
+        // is aimed at, so it is the group's most reliable way of waking its own crowd control.
+        // One Antu'sul attempt has the rogue landing Blind on the Servant at 20:00:37 and the
+        // hunter firing Multi-Shot in the same second: the Servant was loose again two seconds
+        // later, went back to the healer, and the healer was dead inside a minute. That is the
+        // whole value of the CC, thrown away by a shot worth one extra target's damage.
+        // And not as a single target filler either. Multi-Shot costs roughly half again what
+        // Arcane Shot does and only pays that back when it has extra targets to hit; fired at a
+        // lone boss it is the most expensive way the hunter owns to deal one shot of damage.
+        // The hunter's whole bar is eighteen hundred and sixty mana and one Antu'sul attempt had
+        // it empty fifty eight seconds in, after which it could do nothing but auto shot for the
+        // rest of the fight -- so what the early mana is spent on decides the hunter's damage far
+        // more than the order the shots come in.
         if (m_spells.hunter.pMultiShot &&
+            me->GetEnemyCountInRadiusAround(pVictim, 8.0f) > 1 &&
+            !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pVictim) &&
             CanTryToCastSpell(pVictim, m_spells.hunter.pMultiShot))
         {
             if (DoCastSpell(pVictim, m_spells.hunter.pMultiShot) == SPELL_CAST_OK)
@@ -8430,7 +8641,19 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                     return;
             }
 
+            // Aspect of the Monkey only when survival is genuinely the question.
+            //
+            // It adds dodge and nothing else -- no attack power, no damage of any kind -- so
+            // swapping into it is the hunter turning its own damage off, and the trigger was
+            // merely "something is within eight yards", which against a boss is the entire fight.
+            // One Antu'sul capture has the hunter flipping Monkey, Hawk, Monkey, Hawk in forty
+            // seconds: four global cooldowns, four mana payments, and every ranged shot in
+            // between fired at the lower attack power.
+            //
+            // Against a boss in melee range the answer is not more dodge, it is to keep shooting
+            // and let the tank hold it. Below the health floor that stops being true.
             if (m_spells.hunter.pAspectOfTheMonkey &&
+                me->GetHealthPercent() < PB_HUNTER_MONKEY_HEALTH &&
                 CanTryToCastSpell(me, m_spells.hunter.pAspectOfTheMonkey))
             {
                 if (DoCastSpell(me, m_spells.hunter.pAspectOfTheMonkey) == SPELL_CAST_OK)
@@ -8442,13 +8665,56 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
                 CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
             {
                 if (DoCastSpell(me, m_spells.hunter.pFeignDeath) == SPELL_CAST_OK)
+                {
+                    // The panic button, so stay down long enough for a heal to arrive.
+                    m_feignUntil = WorldTimer::getMSTime() + PB_FEIGN_PANIC_MS;
                     return;
+                }
+            }
+        }
+
+        // The threat dump, which is a different decision from the panic button above: that one
+        // waits until the hunter is nearly dead, and by then the boss has been on it for twenty
+        // seconds and the healer has spent the fight's mana keeping it standing. This fires the
+        // moment the lead is gone, whatever the health bar says.
+        //
+        // The aura is removed explicitly at the top of this function once m_feignUntil passes.
+        // It does not come off by itself and it does not come off because the rotation ran: a
+        // feigned hunter has no rotation. Assuming otherwise cost eighty four seconds of the
+        // group's best damage in the attempt that stalled at twenty nine percent.
+        if (m_spells.hunter.pFeignDeath &&
+            ShouldDumpThreatWithFeignDeath(pVictim) &&
+            CanTryToCastSpell(me, m_spells.hunter.pFeignDeath))
+        {
+            if (DoCastSpell(me, m_spells.hunter.pFeignDeath) == SPELL_CAST_OK)
+            {
+                // The threat is gone on the cast, so this only has to outlast the cast itself.
+                m_feignUntil = WorldTimer::getMSTime() + PB_FEIGN_THREAT_DUMP_MS;
+
+                if (IsCombatLogged())
+                {
+                    ThreatManager& threat = pVictim->GetThreatManager();
+                    Player* pTank = GetGroupMainTank();
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] feign bot='%s' dropped threat on '%s' with Feign Death: "
+                             "mythreat=%.0f tank='%s' tankthreat=%.0f wasvictim=%u",
+                             me->GetName(), pVictim->GetName(), threat.getThreat(me),
+                             pTank ? pTank->GetName() : "none",
+                             pTank ? threat.getThreat(pTank) : 0.0f,
+                             pVictim->GetVictim() == me ? 1 : 0);
+                }
+                return;
             }
         }
 
         if (pVictim->CanReachWithMeleeAutoAttack(me))
         {
+            // Not into a snare immunity. Wing Clip's whole effect is the slow, so against
+            // anything carrying MECHANIC_SNARE in its immunity mask -- which includes Antu'sul
+            // and his Servants -- it is forty mana and a global cooldown for no effect at all,
+            // and the log has it cast anyway.
             if (m_spells.hunter.pWingClip &&
+               !pVictim->IsImmuneToMechanic(MECHANIC_SNARE) &&
                 CanTryToCastSpell(pVictim, m_spells.hunter.pWingClip))
             {
                 DoCastSpell(pVictim, m_spells.hunter.pWingClip);

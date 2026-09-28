@@ -646,6 +646,13 @@ public:
                 return m_spells.warlock.pBanish;
             case CLASS_ROGUE:
                 return m_spells.rogue.pBlind;
+            // No hunter entry, deliberately. Freezing Trap is the only control in the game with
+            // no creature type restriction, and it is flagged
+            // SPELL_ATTR_NOT_IN_COMBAT_ONLY_PEACEFUL -- it cannot be cast during the fight it is
+            // wanted in. Feign Death was tried as a way round that and is not one: it takes the
+            // hunter out of the fight, needs the trap off cooldown, needs the feign to hold, and
+            // needs the add to walk onto it. Built, measured, and removed -- one attempt had the
+            // hunter lie down for sixty nine seconds and never lay the trap at all.
             case CLASS_DRUID:
                 return m_spells.druid.pHibernate;
         }
@@ -760,6 +767,7 @@ public:
             SpellEntry const* pRaptorStrike;
             SpellEntry const* pDisengage;
             SpellEntry const* pFeignDeath;
+            SpellEntry const* pFreezingTrap;
             SpellEntry const* pScareBeast;
             SpellEntry const* pVolley;
         } hunter;

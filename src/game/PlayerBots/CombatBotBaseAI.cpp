@@ -720,6 +720,11 @@ void CombatBotBaseAI::PopulateSpellData()
                     if (IsHigherRankSpell(m_spells.hunter.pFeignDeath))
                         m_spells.hunter.pFeignDeath = pSpellEntry;
                 }
+                else if (pSpellEntry->SpellName[0].find("Freezing Trap") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.hunter.pFreezingTrap))
+                        m_spells.hunter.pFreezingTrap = pSpellEntry;
+                }
                 else if (pSpellEntry->SpellName[0].find("Scare Beast") != std::string::npos)
                 {
                     if (IsHigherRankSpell(m_spells.hunter.pScareBeast))
@@ -1990,7 +1995,7 @@ std::vector<CombatBotBaseAI::SpellSlot> CombatBotBaseAI::GetSpellSlots() const
                      SLOT(hunter, pAimedShot), SLOT(hunter, pMultiShot), SLOT(hunter, pConcussiveShot),
                      SLOT(hunter, pWingClip), SLOT(hunter, pHuntersMark), SLOT(hunter, pMongooseBite),
                      SLOT(hunter, pRaptorStrike), SLOT(hunter, pDisengage), SLOT(hunter, pFeignDeath),
-                     SLOT(hunter, pScareBeast), SLOT(hunter, pVolley) };
+                     SLOT(hunter, pFreezingTrap), SLOT(hunter, pScareBeast), SLOT(hunter, pVolley) };
         case CLASS_MAGE:
             return { SLOT(mage, pIceArmor), SLOT(mage, pArcaneIntellect), SLOT(mage, pArcaneBrilliance),
                      SLOT(mage, pIceBarrier), SLOT(mage, pManaShield), SLOT(mage, pPolymorph),
