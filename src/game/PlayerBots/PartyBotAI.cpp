@@ -3951,6 +3951,12 @@ static uint32 GetHeldInPlaceDurationMs(Unit const* pEnemy)
 // freezing that looks like the bot has stopped working.
 bool PartyBotAI::SafeMoveTo(float x, float y, float z)
 {
+    // Before reachability, because a destination off the held ground is refused whether or not
+    // there is a path to it, and asking the pathfinder first would be paying for a mesh query to
+    // answer a question already settled.
+    if (WouldLeaveHeldGround(x, y, z))
+        return false;
+
     // Reachable before safe, because an unreachable destination is not made acceptable by having
     // nothing hostile near it. MovePoint answers an off-mesh point with a straight line rather
     // than a refusal, so without this the bot walks into whatever is between it and the spot and
@@ -6409,12 +6415,30 @@ void PartyBotAI::UpdateAI(uint32 const diff)
             me->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
     }
 
+    // Ahead of everything else that moves the bot, because all of it -- the sight step, the
+    // neighbour step, the chase, the follow -- is about where to stand within the fight, and this
+    // is about being in the right fight at all. A bot feared down the pyramid stairs has no
+    // business choosing a firing position at the bottom of them.
+    if (ReturnToHeldGround())
+        return;
+
     // Ahead of the hold, and deliberately not subject to it. A hold means do not close on the mob
     // and do not trail the leader; it has never meant stand behind a rock contributing nothing,
     // which is what a held bot with no line of sight actually does. The step this takes stops at
     // the standoff a ranged bot would have chosen anyway, so a held bot still ends up waiting,
     // just somewhere it can shoot from.
+    // Before the bot's own sight recovery, because a healer that cannot see the person it is
+    // keeping alive has a worse problem than one that cannot see what it is wanding.
+    if (RecoverHealLineOfSight())
+        return;
+
     if (me->IsInCombat() && RecoverLineOfSight())
+        return;
+
+    // Ahead of the follow and the chase below, because both of them will walk a bot straight back
+    // into whatever it just stepped out of, and the refusal built into the generators only holds
+    // once the bot is outside the band -- which is what this puts it.
+    if (AvoidUnpulledNeighbours())
         return;
 
     // Both branches below exist to close a distance, by chasing a target or by trailing the leader,

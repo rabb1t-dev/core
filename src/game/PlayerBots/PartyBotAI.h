@@ -99,7 +99,21 @@ public:
     // one dungeon.
     void RefreshDungeonTactics();
     float GetTacticalStandoff(Unit const* pTarget) const final;
+    bool WouldLeaveHeldGround(float x, float y, float z) const final;
+    // The other half of a hold line: get back on it after something threw the bot off.
+    bool ReturnToHeldGround();
+    // Whether this bot could fight this target at all without leaving the ground it holds.
+    bool CanEngageFromHeldGround(Unit const* pTarget) const;
+    // Step into sight of a party member the healer can reach but cannot see.
+    bool RecoverHealLineOfSight();
+    std::vector<uint32> const* GetApproachAnywayEntries() const final;
+    bool GetFightAnchor(Unit const* pVictim, float& x, float& y, float& z,
+                        float& radius) const final;
     bool IsEngagedWithGroup(Unit const* pEnemy) const;
+    void SetGroupAttackOrder(ObjectGuid guid);
+    void ClearGroupAttackOrder();
+    bool HasThreatOnGroup(Unit const* pEnemy) const;
+    Unit* SelectControlledLeftoverTarget() const;
     bool IsTargetInCurrentFight(Unit const* pTarget) const;
     Unit* SelectGroupFocusTarget() const;
     bool CrowdControlOffFocus();

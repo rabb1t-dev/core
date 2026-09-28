@@ -5366,9 +5366,19 @@ bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
 
             me->UpdateAllowedPositionZ(x, y, z);
 
+            // Going wide is still going, and a detour that leaves the ground the group is holding
+            // is the failure this was meant to avoid taking a longer route to.
+            if (WouldLeaveHeldGround(x, y, z))
+                continue;
+
             // Aggro first, because it is arithmetic against a list already in hand and the
             // reachability test below is a mesh query.
-            if (WouldPathPullExtraEnemies(x, y, z))
+            //
+            // The geometric form, not the discretionary one. This is a search for a clean leg
+            // rather than a decision to stand still, and under orders the discretionary form
+            // answers "nothing is in the way" about every candidate -- which makes the first
+            // one win, and the first one is the direct line this was called to get off.
+            if (PathWouldAggroUnengaged(x, y, z))
                 continue;
 
             // And it has to be somewhere the bot can actually walk to, which is a question for
@@ -5520,6 +5530,82 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
     if (m_holdPosition)
         return;
 
+    // Nor does a bot holding ground its instance named follow something off it.
+    //
+    // This is the whole of the gauntlet rule and it is a refusal rather than a detour, because
+    // there is no route to the foot of a staircase that does not end at the foot of the
+    // staircase. Standing still is the correct play: in an event built this way the next one
+    // arrives on its own, and the bot that went to meet it arrives among the forty that have not
+    // been released yet.
+    //
+    // Melee included, and melee especially. A ranged bot that cannot close simply keeps firing;
+    // a melee bot that cannot close does nothing at all for a few seconds, and that is a far
+    // better trade than the pull.
+    if (pVictim && WouldLeaveHeldGround(pVictim->GetPositionX(), pVictim->GetPositionY(),
+                                        pVictim->GetPositionZ()))
+    {
+        if (IsCombatLogged())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] holdline bot='%s' role=%s did not follow '%s' off the ground it "
+                     "is holding (target at %.1f %.1f %.1f)",
+                     me->GetName(), GetRoleName(m_role), pVictim->GetName(),
+                     pVictim->GetPositionX(), pVictim->GetPositionY(), pVictim->GetPositionZ());
+        }
+        return;
+    }
+
+    // Let the tank arrive first.
+    //
+    // The order every group of players runs on and the one thing no bot here was told: whoever is
+    // tanking walks in, takes the hit, and everybody else closes behind them. Without it the party
+    // converges on the target as five independent bots at five different speeds, and whichever one
+    // happens to be nearest is the one that pulls. One Antu'sul attempt has the priest inside his
+    // aggro radius with the boss already swinging at it, and the tank's threat measured one second
+    // later at four -- the healer had the boss from the first swing, died seventeen seconds in, and
+    // the fight was lost before the tank had landed a Sunder.
+    //
+    // Only against something the group is not yet fighting. The instant the target is in combat
+    // this stops applying entirely and the ordinary chase resumes, because from then on the threat
+    // table decides who it hits and standing back buys nothing.
+    //
+    // Distance rather than any notion of formation, because that is the whole of what matters:
+    // being further from the target than the tank is. A bot already behind the tank is untouched
+    // by this and keeps walking.
+    if (IsAheadOfTankOnPull(pVictim))
+    {
+        {
+            uint32 const now = WorldTimer::getMSTime();
+            if (!m_tankLeadHoldSince)
+                m_tankLeadHoldSince = now;
+
+            // Bounded, and deliberately so. Every rule in this file that refuses a movement has at
+            // some point refused it forever -- a waypoint that never becomes safe, a pull that
+            // never lands -- and a party frozen behind a tank that is itself being held is the
+            // same failure wearing this rule's name. After the timeout the bot goes anyway: a bad
+            // pull is recoverable and a party standing still in a boss room is not.
+            if (WorldTimer::getMSTimeDiff(m_tankLeadHoldSince, now) < CB_TANK_LEAD_MAX_HOLD_MS)
+            {
+                if (IsCombatLogged())
+                {
+                    Player* pTank = GetGroupMainTank();
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] tanklead bot='%s' role=%s waited for '%s' to reach "
+                             "'%s' first (me %.1fy, tank %.1fy)",
+                             me->GetName(), GetRoleName(m_role),
+                             pTank ? pTank->GetName() : "the tank",
+                             pVictim->GetName(), me->GetDistance(pVictim),
+                             pTank ? pTank->GetDistance(pVictim) : 0.0f);
+                }
+                return;
+            }
+        }
+    }
+    else
+    {
+        m_tankLeadHoldSince = 0;
+    }
+
     if ((m_role == ROLE_RANGE_DPS || m_role == ROLE_HEALER) &&
         IsRangedDamageClass(me->GetClass()) &&
        !IsAttackSpeedOverridenForm(me->GetShapeshiftForm()) &&
@@ -5576,10 +5662,25 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
             float x, y, z;
             pVictim->GetNearPoint(me, x, y, z, 0, candidate, pVictim->GetAngle(me));
 
-            chaseDistance = candidate;
-            if (!WouldPositionPullExtraEnemies(x, y, z))
+            if (WouldPositionPullExtraEnemies(x, y, z))
+                continue;
+
+            if (!foundSafe)
+            {
+                foundSafe = true;
+                safeDistance = candidate;
+            }
+
+            if (PositionSeesTarget(x, y, z, pVictim))
+            {
+                chaseDistance = candidate;
+                foundVisible = true;
                 break;
+            }
         }
+
+        if (!foundVisible)
+            chaseDistance = foundSafe ? safeDistance : chaseDistance;
 
         // Falling out of that loop without a safe answer leaves the closest, which is the least bad
         // of them: nothing on the list is safe, so the bot may as well be standing where the fight
@@ -5622,6 +5723,102 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         // and the rule that nothing can parry or block what it cannot see, so it is a fallback for
         // as long as the rear is unsafe and no longer.
         m_chasingInFront = (chaseAngle == 0.0f);
+    }
+
+    // Fight this one from the spot its instance names, not from wherever the chase ends up.
+    //
+    // Only melee, and only the approach. A knockback fight is not lost to the knockback -- it is
+    // lost to what the bot does afterwards, which is to pick itself up wherever it landed and walk
+    // back in on whatever bearing that happens to leave. Sent back to the same anchor every time,
+    // the bot spends the fight in the one place where the throw is absorbed by the bank behind it
+    // rather than crossing the room.
+    //
+    // Ranged and healers are left alone deliberately: their answer to an area knockback is the
+    // standoff, which they already have from the same table entry, and walking them to a spot
+    // chosen for its wall would walk them into the radius it exists to survive.
+    if (pVictim && (m_role == ROLE_TANK || m_role == ROLE_MELEE_DPS))
+    {
+        float anchorX, anchorY, anchorZ, anchorRadius;
+        if (GetFightAnchor(pVictim, anchorX, anchorY, anchorZ, anchorRadius))
+        {
+            float const fromAnchor = me->GetDistance(anchorX, anchorY, anchorZ);
+
+            if (fromAnchor > anchorRadius)
+            {
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] anchor bot='%s' role=%s walked back to the fight spot "
+                             "for '%s', %.1fy off it",
+                             me->GetName(), GetRoleName(m_role), pVictim->GetName(), fromAnchor);
+                }
+
+                me->GetMotionMaster()->MovePoint(0, anchorX, anchorY, anchorZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
+                return;
+            }
+
+            // Standing on it. Hold rather than chase, so that a boss stepping a yard sideways
+            // does not walk the whole melee line off the wall it is standing against -- the
+            // threat table brings him back, and the anchor is inside his reach by construction.
+            //
+            // Unless he has genuinely left. An anchor that is held against a boss on the far side
+            // of the room is a melee line standing in a corner hitting nothing, which is a worse
+            // failure than the one this exists to fix and an easy one to mistake for it. Past the
+            // ring plus a body length the hold gives way and the ordinary chase resumes.
+            if (pVictim->GetDistance(anchorX, anchorY, anchorZ) <= anchorRadius + CB_ANCHOR_SLACK)
+                return;
+
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] anchorbreak bot='%s' gave up the fight spot: '%s' is %.1fy "
+                         "off it and not coming back on its own",
+                         me->GetName(), pVictim->GetName(),
+                         pVictim->GetDistance(anchorX, anchorY, anchorZ));
+            }
+        }
+    }
+
+    // Steer round what the direct line would wake, rather than walking through it.
+    //
+    // The pull rules all stand aside under orders, for a good reason: told to go and kill
+    // something, a bot that stops short because the way is not clean has refused the order while
+    // looking like it accepted it, and in a dungeon there is no route to anything that passes
+    // nothing else. But "do not stop" was implemented as "do not look", and the two are not the
+    // same. A player given the same order walks around the camp; only if there is no way round
+    // does it go through.
+    //
+    // One leg at a time, and only while there is still ground to cover -- inside melee range
+    // there is nothing left to steer. The next update runs this again from wherever the leg
+    // ended, so the detour is re-judged against everything that has moved meanwhile, and the
+    // moment the remaining line is clean the chase generator takes over again.
+    if (me->HasAttackOrders() && !me->CanReachWithMeleeAutoAttack(pVictim))
+    {
+        float const victimX = pVictim->GetPositionX();
+        float const victimY = pVictim->GetPositionY();
+        float const victimZ = pVictim->GetPositionZ();
+
+        if (PathWouldAggroUnengaged(victimX, victimY, victimZ))
+        {
+            float detourX, detourY, detourZ;
+            if (FindSafeDetour(victimX, victimY, victimZ, detourX, detourY, detourZ))
+            {
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] orderdetour bot='%s' role=%s went wide to (%.1f %.1f) "
+                             "on the way to '%s' rather than straight through what is between",
+                             me->GetName(), GetRoleName(m_role), detourX, detourY,
+                             pVictim->GetName());
+                }
+
+                me->GetMotionMaster()->MovePoint(0, detourX, detourY, detourZ, MOVE_PATHFINDING | MOVE_RUN_MODE);
+                return;
+            }
+
+            // No way round, so through it is: the order stands and the alternative is a bot
+            // that has stopped. This is the case the rule standing aside was written for.
+        }
     }
 
     // we use dist = 1 always so we can specify angle, instead of spreading around target like mobs
