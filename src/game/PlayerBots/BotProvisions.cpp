@@ -54,6 +54,25 @@ enum BotConsumableItems
 
     ITEM_MINOR_WIZARD_OIL = 20744,              // level 5, +8 spell damage
     ITEM_MINOR_MANA_OIL = 20745,                // level 20, mana regeneration
+
+    // Potions, which unlike everything above are drunk in the fight rather than before it.
+    //
+    // All of them share cooldown category 4 at two minutes, health and mana alike, so a bot gets
+    // exactly one over a fight of any length this side of a raid and the choice of which is a real
+    // one rather than a formality.
+    ITEM_MINOR_HEALING_POTION = 118,            // level 1, 70-90
+    ITEM_LESSER_HEALING_POTION = 858,           // level 3, 140-180
+    ITEM_HEALING_POTION = 929,                  // level 12, 280-360
+    ITEM_GREATER_HEALING_POTION = 1710,         // level 21, 455-585
+    ITEM_SUPERIOR_HEALING_POTION = 3928,        // level 35, 700-900
+    ITEM_MAJOR_HEALING_POTION = 13446,          // level 45, 1050-1350
+
+    ITEM_MINOR_MANA_POTION = 2455,              // level 5, 140-180
+    ITEM_LESSER_MANA_POTION = 3385,             // level 14, 280-360
+    ITEM_MANA_POTION = 3827,                    // level 22, 455-585
+    ITEM_GREATER_MANA_POTION = 6149,            // level 31, 700-900
+    ITEM_SUPERIOR_MANA_POTION = 13443,          // level 41, 900-1500
+    ITEM_MAJOR_MANA_POTION = 13444,             // level 49, 1350-2250
 };
 
 // Weapon enchants, best first. Fiery Weapon is the one a min-maxing guild puts on everything it
@@ -209,6 +228,34 @@ static std::vector<BotConsumableChoice> const s_healerConsumables =
 };
 
 static std::vector<BotConsumableChoice> const s_noConsumables = {};
+
+// The best potion of each kind the bot is high enough to drink, newest first.
+//
+// Separate from the consumable list above because these are used on a different schedule and for a
+// different reason. A scroll is drunk before the pull and lasts half an hour; a potion is drunk
+// because the fight is going badly, and whether to spend it is a decision made with the health and
+// mana bars in view. Keeping them out of that list also keeps UseProvisionConsumables, which
+// deliberately refuses to run in combat, from drinking the group's emergency mana before the pull.
+uint32 GetBotHealthPotion(uint32 level)
+{
+    if (level >= 45) return ITEM_MAJOR_HEALING_POTION;
+    if (level >= 35) return ITEM_SUPERIOR_HEALING_POTION;
+    if (level >= 21) return ITEM_GREATER_HEALING_POTION;
+    if (level >= 12) return ITEM_HEALING_POTION;
+    if (level >= 3)  return ITEM_LESSER_HEALING_POTION;
+    return ITEM_MINOR_HEALING_POTION;
+}
+
+uint32 GetBotManaPotion(uint32 level)
+{
+    if (level >= 49) return ITEM_MAJOR_MANA_POTION;
+    if (level >= 41) return ITEM_SUPERIOR_MANA_POTION;
+    if (level >= 31) return ITEM_GREATER_MANA_POTION;
+    if (level >= 22) return ITEM_MANA_POTION;
+    if (level >= 14) return ITEM_LESSER_MANA_POTION;
+    if (level >= 5)  return ITEM_MINOR_MANA_POTION;
+    return 0;
+}
 
 std::vector<BotConsumableChoice> const& GetBotConsumables(uint8 classId, CombatBotRoles role, uint32 level)
 {

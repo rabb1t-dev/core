@@ -54,6 +54,11 @@ uint32 GetBotArmorEnchant(uint8 equipmentSlot, uint8 classId, CombatBotRoles rol
 // used. Empty for a bot too low for any of it.
 std::vector<BotConsumableChoice> const& GetBotConsumables(uint8 classId, CombatBotRoles role, uint32 level);
 
+// The best health and mana potion this level can drink. The mana one is zero below level five,
+// where none exists yet.
+uint32 GetBotHealthPotion(uint32 level);
+uint32 GetBotManaPotion(uint32 level);
+
 // The weapon stone that suits a weapon of this subclass: sharpening for bladed, weightstone for
 // blunt. Zero for a weapon that takes neither, such as a bow.
 uint32 GetBotWeaponStone(uint32 weaponSubclass, uint32 level);

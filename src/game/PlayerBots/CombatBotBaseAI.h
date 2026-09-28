@@ -145,10 +145,39 @@ enum CombatBotPoisons
     CB_ITEM_INSTANT_POISON = 6947,
     CB_ITEM_DEADLY_POISON = 2892,
     CB_ITEM_WOUND_POISON = 10918,
+
+    // Blind's reagent. The spell is useless without it, and the bot has no way to buy one.
+    CB_SPELL_BLIND = 2094,
+    CB_ITEM_BLINDING_POWDER = 5530,
 };
+
+static constexpr uint32 CB_BLINDING_POWDER_STACK = 10;
+static constexpr uint32 CB_BLIND_MIN_LEVEL = 26;
 
 static constexpr uint32 CB_POISON_MIN_LEVEL = 20;
 static constexpr uint32 CB_POISON_STACK_SIZE = 10;
+
+// Potions. Five is a stack, and at one per two minute cooldown that is more fights than a bot
+// lives through between respawns.
+static constexpr uint32 CB_POTION_STACK_SIZE = 5;
+
+// How far below the best damage per second on offer a weapon may sit and still be treated as an
+// equal, so that its quality decides instead. Inside a five level item band this is the whole
+// difference between a green and a blue: the damage is set by item level and is nearly identical,
+// and the stats are not.
+static constexpr float CB_WEAPON_QUALITY_DPS_TOLERANCE = 0.06f;
+
+// When a potion is worth the cooldown. The health figure is low because a potion is a poor heal
+// and a good panic button, and the mana figure is high because a healer that waits until it is
+// empty has already missed the casts the potion was going to pay for -- measured against the
+// Antu'sul run where the priest crossed thirty five percent at fourteen twenty six and was at
+// zero by fourteen forty three, seventeen seconds later.
+static constexpr float CB_POTION_HEALTH_PERCENT = 30.0f;
+static constexpr float CB_POTION_MANA_PERCENT = 35.0f;
+
+// Below this a healer's own health bar outranks its mana bar, because it can no longer heal
+// itself out of trouble anyway.
+static constexpr float CB_POTION_HEALER_MANA_FLOOR = 10.0f;
 
 // How many of the best weapons in a level band a bot picks between. One would mean every warrior
 // of a level carrying the same axe; the top handful means they all carry a good one.
@@ -256,6 +285,10 @@ public:
     void ApplyProvisionEnchants();
     void StockProvisionConsumables();
     void LearnRoguePoisons();
+
+    // Drink a health or mana potion mid fight. True when one went down, so the caller spends the
+    // tick on it.
+    bool TryUseRestorePotion();
     bool UseProvisionConsumables();
 
     // Starting a heal before anybody needs it, and throwing it away if nobody comes to need it.

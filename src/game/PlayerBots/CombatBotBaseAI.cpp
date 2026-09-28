@@ -4742,10 +4742,31 @@ void CombatBotBaseAI::ApplyProvisionEnchants()
 
         Item* pMainHand = me->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
 
+        // Which of the eighteen slots actually came out with something in them. Counted and
+        // then named, because "the bot is naked" and "the bot is wearing the wrong thing" look
+        // identical from outside and the difference is the whole diagnosis. This has already
+        // cost two rebuilds spent guessing.
+        uint32 filled = 0;
+        std::string empties;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            if (me->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                ++filled;
+            else
+            {
+                if (!empties.empty())
+                    empties += ",";
+                empties += std::to_string(uint32(slot));
+            }
+        }
+
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
-                 "[BotCombat] provision bot='%s' role=%s lvl=%u enchanted=%u slots, weapon enchant=%u",
-                 me->GetName(), GetRoleName(m_role), level, enchanted,
-                 pMainHand ? pMainHand->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) : 0);
+                 "[BotCombat] provision bot='%s' role=%s lvl=%u filled=%u/%u slots enchanted=%u, "
+                 "weapon enchant=%u, empty slots=[%s]",
+                 me->GetName(), GetRoleName(m_role), level, filled,
+                 uint32(EQUIPMENT_SLOT_END - EQUIPMENT_SLOT_START), enchanted,
+                 pMainHand ? pMainHand->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) : 0,
+                 empties.c_str());
     }
 }
 
@@ -4796,6 +4817,22 @@ void CombatBotBaseAI::LearnRoguePoisons()
         if (!me->HasItemCount(poison.itemId, 1))
             AddItemToInventory(poison.itemId, CB_POISON_STACK_SIZE);
     }
+
+    // Blinding Powder, for the same reason as the vials: without it the spell exists and cannot be
+    // cast, and nothing says so.
+    //
+    // Blind is the rogue's entry in the crowd control table and one of only three controls in the
+    // game with no creature type restriction, which makes it the answer to anything the polymorph
+    // family refuses -- a Servant of Antu'sul among them. It also takes a reagent, so a bot that
+    // was never given one fails the cast check every time and simply never controls anything. The
+    // combat log reads as a rogue that does not know the spell.
+    // Level rather than HasSpell, because the spell is not learned yet when this runs.
+    // StockProvisionConsumables is called before MakeCharacterCurrentForLevel, so asking whether
+    // the rogue knows Blind here always answered no, the powder was never handed over, and every
+    // Blind afterwards failed its reagent check in silence. The combat log for that reads exactly
+    // like a rogue with no crowd control at all, which is how it went unnoticed.
+    if (level >= CB_BLIND_MIN_LEVEL && !me->HasItemCount(CB_ITEM_BLINDING_POWDER, 1))
+        AddItemToInventory(CB_ITEM_BLINDING_POWDER, CB_BLINDING_POWDER_STACK);
 }
 
 // Put the consumables in the bags. Drinking them is UseProvisionConsumables' job, and happens out
@@ -4814,6 +4851,17 @@ void CombatBotBaseAI::StockProvisionConsumables()
         if (!me->HasItemCount(choice.itemId, 1))
             AddItemToInventory(choice.itemId, 1);
     }
+
+    // Potions, which are the one thing here that gets drunk in the fight. A stack rather than one,
+    // because unlike a scroll they are spent every pull that goes long.
+    if (uint32 const healthPotion = GetBotHealthPotion(level))
+        if (!me->HasItemCount(healthPotion, 1))
+            AddItemToInventory(healthPotion, CB_POTION_STACK_SIZE);
+
+    if (me->GetPowerType() == POWER_MANA)
+        if (uint32 const manaPotion = GetBotManaPotion(level))
+            if (!me->HasItemCount(manaPotion, 1))
+                AddItemToInventory(manaPotion, CB_POTION_STACK_SIZE);
 
     // The weapon stone competes for the temporary enchantment slot, which is where a rogue's
     // poison goes. A poison is worth more than six damage, so a rogue carries no stone.
@@ -6533,6 +6581,87 @@ SpellCastResult CombatBotBaseAI::CastWeaponBuff(SpellEntry const* pSpellEntry, E
     // is measured against a shaman with a mana cost fewer than it has.
     Spell* spell = new Spell(me, pSpellEntry, false, ObjectGuid(), nullptr, nullptr, nullptr);
     return spell->prepare(std::move(targets), nullptr);
+}
+
+// Drink a potion, mid fight, because the bar that matters is about to run out.
+//
+// Everything else a bot carries is drunk before the pull and refused in combat, which is right for
+// a scroll and wrong for the one consumable whose whole purpose is to be spent when a fight goes
+// badly. A level forty two priest holds roughly thirty six hundred mana; against Antu'sul it
+// healed cleanly, wasted nothing measurable, and was still empty at sixty seconds with the boss at
+// twenty five percent. The bar is simply smaller than the encounter, and a Superior Mana Potion at
+// nine hundred to fifteen hundred is a quarter to a third of it back.
+//
+// Health and mana potions share cooldown category four at two minutes, so this is one potion per
+// fight and the choice between them is real. Dying outranks running dry, with one exception: a
+// healer at low health and any mana at all can heal itself, and would rather have the mana.
+bool CombatBotBaseAI::TryUseRestorePotion()
+{
+    if (!me->IsInCombat() || me->IsNonMeleeSpellCasted() || IsInDuel())
+        return false;
+
+    uint32 const level = me->GetLevel();
+
+    auto drink = [&](uint32 itemId) -> bool
+    {
+        if (!itemId)
+            return false;
+
+        Item* pItem = FindCarriedItemById(me, itemId);
+        if (!pItem)
+            return false;
+
+        ItemPrototype const* pProto = pItem->GetProto();
+        if (!pProto)
+            return false;
+
+        for (auto const& itr : pProto->Spells)
+        {
+            if (!itr.SpellId || itr.SpellTrigger != ITEM_SPELLTRIGGER_ON_USE)
+                continue;
+
+            SpellEntry const* pSpellEntry = sSpellMgr.GetSpellEntry(itr.SpellId);
+
+            // IsSpellReady with the prototype is what reads the shared two minute category, so a
+            // bot that has already had one this fight declines here rather than failing the cast.
+            if (!pSpellEntry || !me->IsSpellReady(pSpellEntry, pProto))
+                continue;
+
+            if (me->CastSpell(me, pSpellEntry, false, pItem) != SPELL_CAST_OK)
+                continue;
+
+            if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] potion bot='%s' role=%s drank '%s' at %.0f%% health, "
+                         "%.0f%% mana", me->GetName(), GetRoleName(m_role), pProto->Name1,
+                         me->GetHealthPercent(),
+                         me->GetPowerType() == POWER_MANA ? me->GetPowerPercent(POWER_MANA) : 0.0f);
+            }
+
+            return true;
+        }
+
+        return false;
+    };
+
+    bool const usesMana = me->GetPowerType() == POWER_MANA;
+    float const manaPercent = usesMana ? me->GetPowerPercent(POWER_MANA) : 100.0f;
+
+    // A healer with mana left can answer its own health bar and would rather keep the cooldown for
+    // the thing it cannot cast its way out of.
+    bool const healerWouldRatherHaveMana =
+        m_role == ROLE_HEALER && manaPercent > CB_POTION_HEALER_MANA_FLOOR;
+
+    if (me->GetHealthPercent() < CB_POTION_HEALTH_PERCENT && !healerWouldRatherHaveMana)
+        if (drink(GetBotHealthPotion(level)))
+            return true;
+
+    if (usesMana && manaPercent < CB_POTION_MANA_PERCENT)
+        if (drink(GetBotManaPotion(level)))
+            return true;
+
+    return false;
 }
 
 bool CombatBotBaseAI::UseTrinketEffects(bool onlyToBreakCC)
