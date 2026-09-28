@@ -237,8 +237,25 @@ struct npc_snufflenose_gopherAI : public FollowerAI
         std::list<GameObject*> lTubersInRange;
         GetGameObjectListWithEntryInGrid(lTubersInRange, m_creature, GO_BLUELEAF_TUBER, 60.0f);
 
+        // Every way this can fail is silent from the player's side: the command text is said
+        // before the search runs, so a gopher that finds nothing and a gopher that is working
+        // look identical until the second one says it sniffed the ground. One line saying which
+        // of the four checks rejected what is the difference between a bug report of "he wiggles
+        // his whiskers and never digs" and knowing which check to go and look at.
+        Unit* pOwner = m_creature->GetOwner();
+        uint32 rejSpawned = 0;
+        uint32 rejFlag = 0;
+        uint32 rejLos = 0;
+        uint32 rejZ = 0;
+        uint32 rejFound = 0;
+
         if (lTubersInRange.empty())
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[Gopher] find owner='%s' tubers_in_60y=0 - nothing to reject",
+                     pOwner ? pOwner->GetName() : "none");
             return;
+        }
 
         lTubersInRange.sort(ObjectDistanceOrder(m_creature));
         GameObject* pNearestTuber = nullptr;
@@ -252,10 +269,40 @@ struct npc_snufflenose_gopherAI : public FollowerAI
                 break;
             }
 
+            // Same order as IsValidTuber, so the counts say which check is doing the rejecting
+            // rather than merely that something did.
+            Unit* pViewPoint = pOwner ? pOwner : (Unit*)m_creature;
+            bool alreadyDug = false;
+            for (const auto& guid : m_foundTubers)
+                if (itr->GetObjectGuid() == guid)
+                    alreadyDug = true;
+
+            if (itr->isSpawned())
+                ++rejSpawned;
+            else if (!itr->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_INTERACT_COND))
+                ++rejFlag;
+            else if (!itr->IsWithinLOSInMap(pViewPoint))
+                ++rejLos;
+            else if (alreadyDug)
+                ++rejFound;
+            else
+                ++rejZ;
         }
 
         if (!pNearestTuber)
+        {
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[Gopher] find owner='%s' tubers_in_60y=%u none valid - "
+                     "already_spawned=%u no_interact_flag=%u failed_los=%u too_far_in_z=%u already_dug=%u",
+                     pOwner ? pOwner->GetName() : "none", uint32(lTubersInRange.size()),
+                     rejSpawned, rejFlag, rejLos, rejZ, rejFound);
             return;
+        }
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[Gopher] find owner='%s' tubers_in_60y=%u digging guid=%u at %.1f yards",
+                 pOwner ? pOwner->GetName() : "none", uint32(lTubersInRange.size()),
+                 pNearestTuber->GetGUIDLow(), m_creature->GetDistance(pNearestTuber));
 
         DoScriptText(SAY_GOPHER_FOUND, m_creature);
 
@@ -331,6 +378,16 @@ bool EffectDummyCreature_npc_snufflenose_gopher(WorldObject* pCaster, uint32 uiS
 
             if (npc_snufflenose_gopherAI* pGopherAI = dynamic_cast<npc_snufflenose_gopherAI*>(pCreatureTarget->AI()))
             {
+                // Which of the two things a stick can do actually happened. Only one of them digs,
+                // and both say the same line first, so from the player's side they are the same
+                // event: the command text fires either way and the gopher looks equally idle.
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[Gopher] command by='%s' paused=%u -> %s",
+                         pUnit->GetName(),
+                         uint32(pGopherAI->HasFollowState(STATE_FOLLOW_PAUSED) ? 1 : 0),
+                         pGopherAI->HasFollowState(STATE_FOLLOW_PAUSED) ? "unpause only, no search"
+                                                                        : "search for tuber");
+
                 if (pGopherAI->HasFollowState(STATE_FOLLOW_PAUSED))
                 {
                     pGopherAI->SetFollowPaused(false);
