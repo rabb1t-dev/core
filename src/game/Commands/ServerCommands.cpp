@@ -357,13 +357,18 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
         return false;
     }
 
-    if (value == wasEnabled)
-    {
-        PSendSysMessage("Permanent rested xp is already %s.", value ? "on" : "off");
-        return true;
-    }
-
     sWorld.setConfig(CONFIG_BOOL_REST_ALWAYS_FULL, value);
+
+    // No early return for "it is already off". The refill and the drain below belong to the state
+    // being asked for, not to the switch changing, and tying them to the change made the command
+    // lie in the one case people actually type it in: a pool banked while the switch was on, or
+    // carried across a restart -- which resets the switch from the config and keeps every pool --
+    // survived being turned off, because off to off looked like nothing to do. Asking for off and
+    // being told "already off" while the xp bar stays blue reads as a command that does not work.
+    //
+    // Idempotent in both directions now: off empties the pools whatever the switch was, on tops
+    // them up whatever the switch was, and the message says when the switch itself did not move.
+    char const* const already = (value == wasEnabled) ? " The switch was already there." : "";
 
     if (value)
     {
@@ -384,8 +389,8 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
             ++refilled;
         }
 
-        PSendSysMessage("Permanent rested xp is now on. %u online character%s topped up.",
-                        refilled, refilled == 1 ? "" : "s");
+        PSendSysMessage("Permanent rested xp is now on. %u online character%s topped up.%s",
+                        refilled, refilled == 1 ? "" : "s", already);
     }
     else
     {
@@ -410,8 +415,8 @@ bool ChatHandler::HandleServerSetRestedXpCommand(char* args)
         CharacterDatabase.Execute("UPDATE `characters` SET `rest_bonus` = 0 WHERE `rest_bonus` > 0");
 
         PSendSysMessage("Permanent rested xp is now off and banked pools are emptied. %u online "
-                        "character%s drained, offline ones cleared in the database.",
-                        drained, drained == 1 ? "" : "s");
+                        "character%s drained, offline ones cleared in the database.%s",
+                        drained, drained == 1 ? "" : "s", already);
     }
 
     PSendSysMessage("This lasts until the next restart, when Rest.AlwaysFull in the config decides again.");
