@@ -18,8 +18,8 @@ loop.
 | --- | --- | --- |
 | 0 - Roster, persistence, instance entry | **done** | Spell ranks are not matched to level, and a member dropped below its authored level does not re-spend its refunded talents |
 | 1 - Item evaluation engine | **done** | Nothing. Caps and set bonuses are scored on the loadout, bags are walked, and the roster's spec reaches the lookup. Talent-granted hit is not yet subtracted from the caps, which leaves them loose in the safe direction |
-| 2 - Loot distribution and award safety | **not started** | All of it. The safety rules first, then the four loot defects that destroy or strand items |
-| 3 - Raid readiness | **in progress** | Talent specs are done at every level; consumables, resistance sets, repair, world buffs, composition rules and `.raidguild report` are not started |
+| 2 - Loot distribution and award safety | **not started** | The safety rules and the four loot defects. One roll-side fault is closed early: `e20fcb1df` stops a bot rolling on armour of the wrong class, which `CanUseItem` cannot refuse because every class may wear cloth |
+| 3 - Raid readiness | **in progress** | Repair and durability are done (`5b2404cee`), and combat consumables have arrived early: a bot now carries and drinks health and mana potions mid fight, and a rogue carries the reagent Blind needs (`7bf4378bd`). Talent specs are *not* done at every level -- see below. Resistance sets, world buffs, composition rules and `.raidguild report` are not started |
 | 4 - Bridge to encounter awareness | **not started** | Gated on wipe recovery, which lives in the companion document |
 
 ### Landed
@@ -42,6 +42,31 @@ loop.
 | `a31b06272` | `.harness itemstats` and `.harness spellstats`, the engine read back from outside the process |
 | `d73c9647c` | The engine checked against a published ranker, and the bot checked against the engine |
 | `62a821ba7` | Phase 1 closed: loadout scoring with stat caps and set bonuses, bags walked, the roster's spec reaching the weight lookup, and `.raidguild spec` to author it |
+| `5b2404cee` | Durability loss switched off cleanly, and repair on the way in |
+| `6cea4422f` | Every loot roll decision reported, not only the ones that want the item |
+| `e50419f24` | Bot names that read like names |
+| `109c4ec68` | A level 19 healer spec, and the role argument written down |
+| `f5ebe54ef` | Enchants and consumables, and what the melee logs showed |
+| `130106e30` | Rogue poisons applied from the vial rather than cast for free |
+| `ca85e2b50` | Weapons picked on damage, and what every bot actually does, counted |
+| `d38b4bfb8` | ItemFinder, a window for looking item ids up by name |
+| `856d60429` | ItemFinder made a search-and-deliver tool rather than a list of numbers |
+| `5559cdb94` | ItemFinder's icons loaded without waiting to be hovered |
+| `a7b80075d` | ItemFinder's icons given a slot border tinted by item quality |
+| `435cfcf81` | ItemFinder's results drawn as they arrive |
+| `c79193ec5` | PartyBuilder, and a way to dismiss a whole party at once |
+| `06aafc99e` | PartyBuilder's class picker, and its columns lining up |
+| `bf08ed153` | PartyBuilder parties of two, three or four |
+| `5654b5961` | PartyBuilder's columns given one source of truth |
+| `762ec2525` | PartyBuilder opens with one companion ticked, not four |
+| `991eb1ab5` | The rested xp switch flipped without knowing where it sits |
+| `a808f8b81` | A raid roster that actually fights, and a harness that can prove it |
+| `360f9ce98` | The raid put away when a run fails, not only when it passes |
+| `4dd87ec1d` | The rested pools drained whenever off is asked for, not only when the switch moves |
+| `6b72376ba` | Random gear that fills every slot, an armour class that demotes rather than disqualifies, a rare band, and one-handers scored against the hand they would go in |
+| `cb5f7d497` | An ordered protection build, so a warrior tank below sixty stops getting an arms one |
+| `7bf4378bd` | Potions carried and drunk mid fight, and the reagent Blind needs |
+| `e20fcb1df` | The robe a warrior would win refused, and a gear pass that produced a naked bot retried |
 
 ### Next
 
@@ -59,7 +84,16 @@ In order, because each depends on the one before it.
    credited five points of hit it does not need. Loose in the safe direction — the error is that
    some hit stays overvalued, which is the behaviour the caps replaced — but closing it means
    deriving a per-spec figure from the authored talent build and keeping the two in step.
-4. **Phase 2**, beginning with the safety rules and then the four loot defects, since bots cannot be given
+4. **Author the specs that are still missing, as *ordered* builds.** "Talent specs are done at
+   every level" was wrong, and the way it was wrong is worth keeping in view:
+   `SelectPremadeSpecTemplate` takes a template only when its level matches the bot exactly, or
+   when the template is *ordered* and sits at or above the bot's level, because an ordered spec can
+   be spent down to a smaller talent budget and an unordered one means nothing applied in part. The
+   warrior list had no ordered protection entry at all, so every tank warrior under 60 fell through
+   to `arms-pve`, which is ordered. `cb5f7d497` closes that one. Druid and paladin tanking, and
+   healer builds between 19 and 60, are in the same position, and an unordered level 60 template is
+   not evidence that a level is covered.
+5. **Phase 2**, beginning with the safety rules and then the four loot defects, since bots cannot be given
    real loot until an award cannot strand or destroy it.
 
 ### Findings that changed the plan
@@ -181,6 +215,29 @@ In order, because each depends on the one before it.
   declines for a tank holding a shield and a fast one-hander, and a declined weapon proves nothing
   about the off-hand rule it was there to check. Any test that depends on a bot equipping something
   now has to make that item a genuine upgrade for the spec being tested.
+- **An unordered template at level 60 is not coverage of any other level, and the roster had no way
+  to notice.** `SelectPremadeSpecTemplate` silently falls through to the nearest ordered template
+  of the right class, whatever role that template is for, so a missing ordered protection build did
+  not read as a missing build -- it read as a tank warrior with an arms talent tree and an error
+  line nobody was looking at. The cost was not only survivability: an arms-talented tank builds
+  almost no threat, and the bots' damage ceiling is a share of the tank's threat, so a level 35 run
+  had the tank at a median of 8 rage holding top threat 65 percent of the time while the mage stood
+  idle for 75 percent of the ticks on which it had a target and mana to cast. Coverage has to be
+  counted as *ordered templates at or below each level*, not as templates.
+- **Refusing the wrong armour class outright empties a slot, and an empty slot is worse than a
+  wrong one.** A level 40 warrior's highest proficiency is plate, plate at that level is three
+  statless breastplates, and the primary-stat filter then keeps none of them -- so the bot went in
+  bare-chested. The armour class is a preference that can be given up, not a requirement, and the
+  random gear pass now carries a fallback pool per slot for exactly that. The same distinction runs
+  the other way on the loot roll, where the wrong armour class has to be refused: `CanUseItem`
+  cannot do it, because every class in this game may legally wear cloth.
+- **Skill grants and the candidate pool race inside one call.** Every armour candidate is gated on
+  `me->GetSkillValue()` for its proficiency, which `LearnArmorProficiencies` grants at the top of
+  the same call, so a bot whose skills have not settled sees an empty pool for every armour slot
+  and fills none of them -- two of five bots in one session came out with both weapons and no
+  armour at all. Weapons come through because a weapon the bot cannot use is refused by
+  `CanUseItem` rather than by the skill lookup, which is why the failure looked selective rather
+  than structural.
 
 ### Test coverage
 

@@ -22,14 +22,14 @@ changed the plan.
 | Phase | Status | What is left |
 | --- | --- | --- |
 | 0 - Death and wipe recovery | **in progress** | Applying a soulstone before the pull, which needs a warlock spell slot that does not exist yet. Everything else is done and tested at raid scale |
-| 1 - Generic combat correctness | **in progress** | Tick responsiveness. Spell reflect is contingent on there being content that needs it, and there may be none |
+| 1 - Generic combat correctness | **in progress** | Spell reflect, contingent on there being content that needs it, and there may be none. Tick responsiveness is done: `6c82a9f34` |
 | The rotation engine | **not started** | All of it. Spell population, its prerequisite, is done |
 | 1a - Playing the class properly | **not started** | All of it. The largest phase in the project |
 | 1b - Raid flow, pull control, tank assignment | **not started** | All of it |
-| 2 - Movement arbitration and hazard avoidance | **not started** | All of it, and gated on 3a rather than the reverse |
-| 3a - Encounter directive layer | **not started** | All of it |
+| 2 - Movement arbitration and hazard avoidance | **in progress** | The arbiter itself. A good deal of the behaviour it was meant to own landed early, driven by the dungeon rollout: hold lines, tactical standoffs, fight anchors, firing positions, stepping clear of an unengaged pack, and walking out of a ground hazard. What is missing is the thing that ranks them against each other; today they are an ordered if-chain at the top of the tick |
+| 3a - Encounter directive layer | **in progress** | The dynamic half. A static form of the directive exists and is driving the rollout: see *The dungeon tactics table* below. What it cannot express is anything that changes during a fight |
 | 3b - Instance objective orchestration | **not started** | All of it |
-| 4 - Content rollout, smallest first | **not started** | All of it |
+| 4 - Content rollout, smallest first | **in progress** | Most of it. Tier 0 and Tier 2 five-mans are being driven end to end one at a time, ahead of the rotation engine rather than after it. Six instances have tactics-table entries -- Shadowfang Keep, Wailing Caverns, Razorfen Kraul, Razorfen Downs, Zul'Farrak, Maraudon -- and three of those have end-to-end suites. The rest of the 5-man list has neither |
 | 4b - Difficulty tuning | **not started** | All of it, built alongside 1a rather than after it |
 | 5 - Tooling | **in progress** | Hazard and directive inspection, attempt logging |
 
@@ -67,6 +67,89 @@ changed the plan.
 | `51007f390` | A bot below sixty learns the class spells its level would already have |
 | `1ba9c0df2` | `.harness threat` reports which flip rule each attacker is judged by |
 | `6477e5e16` | The tank holds the target at full raid size |
+| `6c82a9f34` | The think rate quadrupled to 250 ms, and every role's combat state logged |
+| `3915fe083` | Bots no longer stand idle mid-fight |
+| `826758ee9` | Bots no longer rise into the boss that killed them |
+| `5b2404cee` | Durability loss switched off cleanly, and repair on the way in |
+| `6cea4422f` | Every loot roll decision reported, not only the ones that want the item |
+| `c99eb6176` | Ranged attacks that never fired again once the bot stopped walking |
+| `e50419f24` | Bot names that read like names |
+| `d3296e1e4` | Party bots fight one target, land their casts, and ration heals |
+| `109c4ec68` | A level 19 healer spec, and the role argument written down |
+| `f5ebe54ef` | Enchants and consumables, and what the melee logs showed |
+| `775d31683` | Casters walked out of a rooted mob's reach, and the race tables settled |
+| `fb8c125c6` | Hostile casts ranked, rather than judged worth stopping or not |
+| `4b08b0a25` | Routes checked rather than only destinations, and steered round what blocks them |
+| `b95545889` | A mob's whole spellbook read before an interrupt is spent |
+| `c1d3237db` | Racials, starting with the one that breaks a sleep |
+| `bca8da56a` | What a spell will actually do to the target, checked before it is cast |
+| `9270a8856` | Warriors collect what is loose and walk it back to the group |
+| `cb7512c87` | The movement systems stopped fighting each other, and damage warriors got their rage back |
+| `130106e30` | Rogue poisons, the melee facing unstuck, and the evidence logged |
+| `ca85e2b50` | Weapons picked on damage, and what every bot actually does, counted |
+| `4459215a4` | Warriors no longer run back to ground the group has left; totems kept off the sheep |
+| `d38b4bfb8` | ItemFinder, a window for looking item ids up by name |
+| `789cce113` | Only the add a warrior is going to hit gets fetched, and the healer's tally line |
+| `519a1f40f` | A peel made a detour rather than a change of plan |
+| `0d7ba25b8` | One warrior sent after an add, not every warrior |
+| `f05a21296` | The rotation stopped spending what the interrupt was being saved for |
+| `85621cc29` | Overpower no longer offered on demand, stealth openers, and why an interrupt was missed |
+| `856d60429` | ItemFinder made a search-and-deliver tool rather than a list of numbers |
+| `5559cdb94` | ItemFinder's icons loaded without waiting to be hovered |
+| `a7b80075d` | ItemFinder's icons given a slot border tinted by item quality |
+| `991eb1ab5` | The rested xp switch flipped without knowing where it sits |
+| `435cfcf81` | ItemFinder's results drawn as they arrive |
+| `c79193ec5` | PartyBuilder, and a way to dismiss a whole party at once |
+| `06aafc99e` | PartyBuilder's class picker, and its columns lining up |
+| `bf08ed153` | PartyBuilder parties of two, three or four |
+| `5654b5961` | PartyBuilder's columns given one source of truth |
+| `762ec2525` | PartyBuilder opens with one companion ticked, not four |
+| `1125a3094` | Melee bots no longer walk a semicircle every time a mob turns |
+| `78597b675` | The hunter turned to face what it is shooting, and the group given room to stand |
+| `be2a0d5ac` | The formation slot no longer touches the leader's grid, which crashed the server |
+| `a808f8b81` | A raid roster that actually fights, and a harness that can prove it |
+| `2d332d1e4` | Bots no longer refuse to walk past mobs they cannot see |
+| `360f9ce98` | The raid put away when a run fails, not only when it passes |
+| `45cdb4e71` | The pathfinder asked where a bot can walk, and a mob buffing itself interrupted |
+| `c8dd806ba` | Void Bolt dodged out of Arugal's sight, and an empty movement stack that killed the world |
+| `71158304c` | The Arugal test no longer races its own level change |
+| `5f6973fdb` | Mana and rage no longer spent on things that do not pay |
+| `72456ee88` | The party kills one thing at a time, and the right thing |
+| `362499af6` | A healer stands its ground when it cannot outrun what is hitting it |
+| `6bb34f26e` | `.harness gobject`, `gossip` and `dynobj`, and an enemy list that does not need entries named |
+| `4dd87ec1d` | The rested pools drained whenever off is asked for, not only when the switch moves |
+| `888c43038` | A stopped bot broadcasts where it stopped, so watchers stop drawing it into a wall |
+| `cf8cebfc5` | The Altar of the Deeps opened by Aku'mai's death, and pointed somewhere worth going |
+| `9492ab114` | Party bots take the buff when their leader clicks the shrine |
+| `c2b3c8622` | Where a bot appears chosen rather than rolled, and come-to-me allowed to override pull avoidance |
+| `8224125cd` | The dungeon tactics table taught hold lines, escorts, kill order, ignore lists, anchors, burn gates, heal watch and ground hazards |
+| `42f58bd1f` | Knowing a route pulls separated from refusing to take it, and what a spell splashes onto checked |
+| `39e9bd426` | Run asked for on every bot MovePoint rather than inherited |
+| `f681aab00` | Held ground, the tank arriving first, and melee fighting from the anchor |
+| `8b2c65eab` | Firing positions, and the searches for a spot clear of an unengaged pack or a patch of floor |
+| `a88df345a` | The standoff made a position rather than an approach, and retreats only from what is on you |
+| `e97090bf6` | Walking out of a persistent area aura, and the Maraudon suite |
+| `ce9e7b2e3` | Escorts kept alive, and ordered when there are five of them |
+| `47a05c3ca` | The Zul'Farrak pyramid made a gauntlet: the cage guard, the release ceiling, the wave pools |
+| `76f828298` | Zum'rah able to raise his graves, and the graves no longer raising an army for players |
+| `6b72376ba` | Random gear that fills every slot, and a bot allowed to wear the blue it is holding |
+| `cb5f7d497` | An ordered protection build, so a warrior tank below sixty stops getting an arms one |
+| `7bf4378bd` | Potions drunk mid fight, and the reagent Blind needs |
+| `3756c0953` | Interrupts that can land, spent on the heal that matters, and reported honestly |
+| `df309fa41` | Pets commanded every tick and replaced mid fight, and Feign Death given an end |
+| `0ef2b7d17` | The instance's kill order read, and a player's attack order outliving the pull |
+| `0282fac51` | The heal that lands chosen over the heal that fits, and filler abandoned for it |
+| `92141ae13` | A once-a-fight crowd control saved for the add worth it, and the sheep attacked once it is last |
+| `3bb627e26` | Why the Snufflenose Gopher did not dig |
+| `dd82e6d08` | A SOAP request in flight no longer holds the whole shutdown open |
+| `f08e6acaf` | The interrupt moved ahead of the herding, and the raw interrupt branches taken out of the rotations |
+| `4d046b14b` | Threat headroom measured in the ceiling's own units, and Feign Death given its real job |
+| `3748ab418` | The tank stopped shuttling between peels, and the AoE taunt allowed to fire with a totem in the room |
+| `5142ed337` | The warlock's opening order, and Shadow Protection taken out of the priest's buff chain |
+| `f4d04142f` | A tank warrior allowed to Charge the pull, and the global cooldown held for the interrupt |
+| `ebabdb2d1` | The filler taught to respect threat and mana, and the duration rule taught to allow Frostbolt |
+| `e20fcb1df` | The robe a warrior would win refused, a naked gear pass retried, and the kill order dropped on a wipe |
+| `441903666` | How a dungeon gets tested end to end, written down, and the Arugal wing suite |
 
 ### Next
 
@@ -75,16 +158,23 @@ In order. The first two close Phase 0 and Phase 1; the third is the gate on ever
 1. **Apply a soulstone before the pull.** Consuming one works and Rebirth and Ankhs are done, so
    this is the last of Phase 0. It is blocked on the warlock spell struct having no soulstone slot,
    which is `PopulateSpellData` work.
-2. **Author tank specs at 19, 29, 39 and 49.** A low-level bot asked to tank now has the right
-   spellbook but spends its talents on an arms twink build. Data work rather than code.
+2. **Author the remaining tank and healer specs by level.** Mostly closed for warriors:
+   `cb5f7d497` adds an *ordered* protection build, which is what `SelectPremadeSpecTemplate`
+   requires to spend a template down to a sub-60 talent budget, and a level 19 healer spec landed
+   in `109c4ec68`. Druid and paladin tanking, and healer builds between 19 and 60, are still
+   unauthored. Data work rather than code.
 3. **The rotation engine**, which gates Phase 1a and therefore most of the project. Build the
-   action pipeline first, since chain casting alone is roughly 17 percent of caster throughput and
-   needs no new hooks.
+   action pipeline first: the tick change below took the systematic part of the chain-casting loss
+   off the table, and what is left is a queue problem rather than a timer one.
 
-Two items are deliberately parked. **Tick responsiveness** is part of the engine's action pipeline
-rather than a separate task, and doing it early would mean doing it twice. **Spell reflect
-avoidance** waits on evidence that any scripted boss in this codebase reflects, since a grep for
-`SPELL_AURA_REFLECT_SPELLS` across `src/scripts` returns nothing.
+Running alongside those, and not waiting on any of them, is **the dungeon rollout**: one instance
+at a time, driven end to end by a harness suite, with whatever it turns out to need written into
+the tactics table. This was expected to come after the rotation engine and has not, for a reason
+worth recording -- see *Findings that changed the plan*.
+
+One item is deliberately parked. **Spell reflect avoidance** waits on evidence that any scripted
+boss in this codebase reflects, since a grep for `SPELL_AURA_REFLECT_SPELLS` across `src/scripts`
+returns nothing.
 
 ### Findings that changed the plan
 
@@ -273,6 +363,31 @@ Recorded because each one cost real investigation and would otherwise be re-deri
   player who has gone elsewhere carried a null pointer into `Corpse::GetFactionTemplateId`.
   The race is on the corpse in all three cases and is what set the owner's faction to begin
   with, so it is derived from that rather than left to a caller to remember.
+- **Running a dungeon end to end finds different bugs from reading the code, and finds them in a
+  different order.** The plan had content rollout last, after the rotation engine and the class
+  work, on the reasoning that there is no point pointing an unfinished bot at an encounter. That
+  turned out to be backwards for the five-mans. Driving one instance at a time surfaced a run of
+  faults that no amount of rotation work would have reached and that a code reading would not have
+  suspected: an interrupt immunity that made every interrupt log a success and do nothing
+  (`3756c0953`), a pet command refused in silence by `PetAI::CanAttack` (`df309fa41`), a standoff
+  that bounded an approach and never a position (`a88df345a`), a cage handler that summoned a
+  hundred and fifteen trolls instead of twenty three (`47a05c3ca`), and a boss mechanic that has
+  never once fired because `GameObject::Use` returns early for a non-player (`76f828298`). None of
+  these is a rotation problem and all of them decide the fight. The rollout therefore runs in
+  parallel with the engine work rather than behind it.
+- **A good deal of Phase 2 arrived early, in pieces, because each dungeon demanded one of them.**
+  Hold lines came from Zul'Farrak's pyramid, fight anchors from Gahz'rilla's knockback, ground
+  hazards from Maraudon's Noxious Cloud, and the standoff-as-position from Princess Theradras.
+  They were built as separate rules rather than as the arbitration layer Phase 2 describes, which
+  means the arbiter's job is now narrower and better specified than it was: the behaviours exist
+  and what is missing is the thing that ranks them. Today that ranking is an ordered if-chain at
+  the top of the tick, written down in the order it runs and defended comment by comment, which is
+  a stand-in rather than a design.
+- **Facts about a room cannot be derived, only measured.** Repeatedly, the thing a bot needed was
+  not a better rule but a number nobody could compute: where the wall is that absorbs Gahz'rilla's
+  Slam, which of Bly's five escorts opens the end door, that Zul'Farrak's staircase is thirty
+  yards below a landing that any sensible radius covers. This is what the tactics table is for and
+  why it keeps growing a column at a time rather than being designed up front.
 
 ### Test coverage
 
@@ -290,6 +405,13 @@ suites are listed in the companion document.
 | `test_threat_throttling.py` | The tank leading the list when damage is released, no single loss of the target lasting more than fifteen seconds, and the tank holding it for at least 85 percent of the settled fight |
 | `test_spell_population.py` | Every named spell slot on a bot of each of the nine classes, asserting both that the bot knows what is in the slot and that the rank matches its level |
 | `test_totem_and_blessing_choice.py` | That a bot makes the same totem and blessing choice on every spawn, that the choice moves when group composition moves, and that each member holds the blessing suited to it |
+| `test_premade_specs.py` | That a bot's talent build is chosen deliberately and is legal, which is what caught every sub-60 warrior tank being handed an arms build |
+| `test_raid_group.py` | A party bot roster growing past five and stopping at the raid ceiling |
+| `test_molten_core_trash.py` | A forty-man roster sent at Molten Core's first trash pull, required to win it |
+| `test_arugal_line_of_sight.py` | Archmage Arugal fought by bots, to see whether they dodge Void Bolt |
+| `test_shadowfang_arugal_wing.py` | Shadowfang Keep's last wing done in order by a four bot party, including the door state that only `.harness gobject` can read |
+| `test_zulfarrak_pyramid.py` | Zul'Farrak's pyramid event end to end: the cages, the wave releases, Bly's crew held alive through it, and the gossip that turns them |
+| `test_maraudon.py` | Maraudon boss by boss at level 47, including the Noxious Cloud stage that exists to prove bots walk out of ground they cannot otherwise perceive |
 
 ### Build and test loop
 
@@ -428,15 +550,29 @@ Three things already work and need no effort:
 - **Accepting resurrection.** Bots auto-accept `SMSG_RESURRECT_REQUEST` through the proper
   `ResurrectUsingRequestData()` path. This was the seed wipe recovery was built from.
 
-## Two remaining structural blockers
+## One remaining structural blocker
 
-There were three. **No wipe recovery** was the first and is closed: a wiped raid now releases, runs
-back and lets itself in, at forty bots, in every instance in the game. Phase 0 has the detail.
+There were three, and two are closed. **No wipe recovery** was the first: a wiped raid now
+releases, runs back and lets itself in, at forty bots, in every instance in the game. Phase 0 has
+the detail. The tick was the second, below. What is left is the private boss phase, at the end of
+this section.
 
-**The AI tick is 1000ms.** `PB_UPDATE_INTERVAL` in
-[src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) throttles each bot to one
-decision per second. Adequate for a rotation, fatal for Heigan's dance or a Deep Breath, and the
-reason roughly 17 percent of caster throughput is currently lost between casts.
+**The AI tick was 1000ms and is now 250ms** (`6c82a9f34`). This document previously listed it as a
+structural blocker and used it to write off Heigan; both claims were wrong once the constant was
+read rather than remembered. `PB_UPDATE_INTERVAL` in
+[src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) is 250, four ticks to
+the second, which divides the global cooldown exactly.
+
+What that fixed and what it did not: a 2.5 second cast and a 1.5 second global cooldown both land
+on grid points now, so the *systematic* chain-casting loss is gone rather than reduced. What remains
+is up to 250 ms of idle whenever a cast completes off-grid through haste or pushback, which is a
+ceiling of about 10 percent on a single cast rather than a guaranteed 17 percent on every one. The
+action pipeline still wants building; it is now a queue problem rather than a timer problem.
+
+The reaction budget this leaves is worth stating once, because several encounter assessments below
+depend on it: a bot notices a change within 250 ms, and covers ground at 7.0 yd/s
+([src/game/Objects/Unit.cpp](../src/game/Objects/Unit.cpp) line 70). Anything demanding a reaction
+and a move inside three seconds is therefore arithmetic rather than guesswork.
 
 **Boss phases are private.** Onyxia's `m_uiPhase` is a plain member variable on the AI struct.
 Instance-wide progress goes through `ScriptedInstance::SetData/GetData`, which is publicly readable,
@@ -512,6 +648,89 @@ dungeon maps, and the existing behavior where a bot more than 100 yards from the
 them ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 796-817) solves
 continental travel outright, if inelegantly. World boss respawn is `spawntimesecsmin`/`spawntimesecsmax`
 on the `creature` row, three to seven days by default, and can be shortened for testing.
+
+## The dungeon tactics table
+
+`DungeonTactics` ([src/game/PlayerBots/DungeonTactics.h](../src/game/PlayerBots/DungeonTactics.h),
+[.cpp](../src/game/PlayerBots/DungeonTactics.cpp)) is a compiled-in, per-map table of tactical facts
+the AI cannot derive. It is not part of the plan as this document originally wrote it; it grew out
+of the rollout, a column at a time, and it is now the mechanism most of the five-man work runs
+through. It is described here because it is a static, hand-authored precursor to the Phase 3a
+directive layer, and because the boundary between what belongs in it and what belongs in a rule is
+the thing most easily got wrong.
+
+### What goes in it, and what does not
+
+The admission test is whether the fact can be computed from data the server already has. If it can,
+it belongs in a rule; if it cannot, it belongs here. A creature's aggro radius, its faction, whether
+it is casting and what it is casting are all derivable and are never written down. Where the wall is
+that absorbs Gahz'rilla's Slam is not derivable from anything, in any amount of code: it is a
+property of one patch of floor, and the only way to know it is to stand there and read the
+coordinates back.
+
+That test has held up better than expected, and it is also why the table is small. Everything in it
+answers a question a player answers by having run the instance before.
+
+### The vocabulary
+
+Four entries predate the rollout -- a **ranged standoff**, a **break-sight spell**, a **tremor totem
+flag** and a **focusFirst** list. `8224125cd` added the rest:
+
+- **Hold lines.** A point, a radius, a `minZ` floor and a `recoverRadius`. Ground a bot will not
+  fight its way off, and will walk back onto if something threw it clear. This is the gauntlet rule:
+  the fight happens *here*, at a choke, and chasing a target off the spot loses the event however
+  well the chase goes. The `minZ` exists because a radius alone cannot describe a staircase, and the
+  `recoverRadius` exists because a fear at the top of Zul'Farrak's stairs puts bots at the bottom of
+  them, outside every zone, where the refusal correctly stops applying.
+- **Escorts**, as an *ordered* list. The order is the healer's preference when more than one is
+  hurt, and it is a tie-break worth a few points of health rather than an override. Zul'Farrak hands
+  the group five at once and only one of them opens the end door.
+- **Kill order** within `focusFirst`, likewise ordered. Two entries in the same room is the normal
+  case, and without an order the group picks between them on health and then guid.
+- **Ignore lists.** Creatures the group is to leave alone entirely: not peeled, not focused, not
+  gathered. Distinct from `focusFirst`, which only breaks ties between things the group was going to
+  fight anyway.
+- **Fight anchors.** Where melee stand for one particular creature, with a radius they may drift
+  inside. For fights that move the group rather than damage it.
+- **Burn gates.** A summon, and the share of the summoner's health past which killing that summon
+  stops being worth the time. The "adds first, always" rule is written for bosses that cannot undo
+  the delay, and a boss that heals itself can.
+- **Heal watch**, per creature: the health share below which its own heals switch on, and so the
+  point from which an interrupt-holder should stop spending its global cooldown. This replaced a
+  global constant whose value was one boss's Flash Heal threshold.
+- **Ground hazards**, named by spell id. The radius is read off the `DynamicObject` rather than
+  stored, since a second copy of that number is a second thing to get wrong.
+
+### How it is reached
+
+The table is a party bot's business, and the movement and healing helpers that consume it live in
+`CombatBotBaseAI`, shared with the battleground bots. So every consumer goes through a virtual hook
+with a harmless default -- `GetFightAnchor`, `WouldLeaveHeldGround`, `GetApproachAnywayEntries`,
+`GetGuardedEscort` -- which `PartyBotAI` overrides and nothing else does. An instance with no entry
+behaves exactly as it did before the table existed, which is the property that makes adding a row
+safe.
+
+Hold lines are **self-activating by position** rather than driven by the instance script's event
+state: a bot inside the zone holds it, a bot outside is unaffected. That keeps script enums out of
+the table and means the rule switches itself off the moment the leader walks the group out, because
+it constrains combat movement only and never the follow.
+
+### What it cannot express, and why 3a still exists
+
+Everything here is static. The table can say *this creature, always*; it cannot say *after the
+second phase*, *while the shield is up*, or *whoever has the mark*. Two cases already press on that
+boundary:
+
+- Bly's crew are the group's escort for the pyramid event and the group's next fight, because the
+  gossip that ends the event turns all five hostile. The table cannot express "these five, until
+  they turn", so the code asks the faction instead -- which is exactly what the script changes.
+- Zul'Farrak's Sul'lithuz Broodlings appear both as a pre-pull trigger pack and as mid-fight
+  summons, under the same entry. The table cannot separate them, so the crowd-control rule asks
+  whether the summoner is alive and fighting, and whether the add outranks the bot in level.
+
+Both are worked around by asking the world a question at the moment of use. That is the right answer
+twice and would be the wrong answer twenty times; the point at which it stops scaling is the point
+Phase 3a has to exist.
 
 ## Phase 0 - Death and wipe recovery [in progress]
 
@@ -682,8 +901,7 @@ a bot in `CORPSE` while a healer is alive and casting.
 ## Phase 1 - Generic combat correctness [in progress]
 
 No boss knowledge required. These fix behaviour that is wrong in every raid encounter. Threat and
-tanking are done and tested at full raid size; tick responsiveness is folded into the rotation
-engine's action pipeline.
+tanking are done and tested at full raid size; tick responsiveness is done.
 
 - **Tank threat generation.** [done] Every ceiling below is a share of the tank's threat, so the
   tank's own output sets what the whole raid is allowed to do, and it was the thing most wrong.
@@ -821,11 +1039,13 @@ engine's action pipeline.
   One limit remains: the ramp is a fixed eight seconds rather than a wait for the tank to have
   enough. Downranking takes most of the sting out of that, since the hold is quiet rather than
   silent, but an adaptive release would still end it early on a clean pull and late on a messy one.
-- **Tick responsiveness.** Lower `PB_UPDATE_INTERVAL` or, better, add an event-driven wake so a
-  hazard spawn or directive change resets the timer immediately. Event-driven is preferable because
-  39 bots polling at high frequency is the main CPU risk in this project. Do this as part of the
-  rotation engine's action pipeline rather than on its own, since that work has to touch the same
-  timer and doing it twice buys nothing.
+- **Tick responsiveness.** [done] `PB_UPDATE_INTERVAL` is 250 ms as of `6c82a9f34`. An event-driven
+  wake, so that a hazard spawn or directive change resets the timer immediately, is still worth
+  having and is still preferable to polling faster: 39 bots polling at high frequency remains the
+  main CPU risk in this project, and the cost that matters is not the tick body but the
+  `PathFinder` query inside every movement decision. At four ticks a second across 39 bots that is
+  up to ~156 mesh queries a second if every bot re-paths every tick. Short hazard moves over known
+  flat floor should take a straight line and skip the mesh entirely.
 - **Spell reflect avoidance, contingent on there being content that needs it.** The APIs exist:
   `SPELL_AURA_REFLECT_SPELLS` and `SPELL_AURA_REFLECT_SPELLS_SCHOOL` resolved at
   [src/game/Objects/SpellCaster.cpp](../src/game/Objects/SpellCaster.cpp) lines 199-212, checkable
@@ -856,10 +1076,11 @@ Druid, and the entire combat brain for Mage, Priest, and Warlock together is abo
 
 Four framework properties, not the if-chains, are the actual ceiling:
 
-- **The tick is a fixed 1000 ms and each pass casts at most one spell.** `PB_UPDATE_INTERVAL` in
-  [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) gates `UpdateAI`.
-  Nothing GCD-tight is expressible, interrupt reactions land up to a second late, and combinations
-  with tight windows cannot be timed at all.
+- **The tick is a fixed 250 ms and each pass casts at most one spell.** `PB_UPDATE_INTERVAL` in
+  [src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) gates `UpdateAI`. The
+  grid is no longer the binding constraint — it divides the global cooldown exactly — but one spell
+  per pass still means no queue, so a combination whose second half must follow the first inside a
+  global cooldown is expressible only by luck.
 - **Being mid-cast skips the entire tick.** `if (me->IsNonMeleeSpellCasted(false, false, true)) return;`
   means there is no queue and no way to begin the next cast the instant the current one finishes. The
   only self-interrupt is cancelling a heal whose target reached full health.
@@ -1087,27 +1308,25 @@ into two tiers — a fast combat decision pass, and a slow maintenance pass that
 cadence — rather than one uniformly faster loop. Stagger the fast tier across bots so forty of them do not
 land on the same world update.
 
-#### Chain casting: the largest single throughput loss, and the cheapest to fix
+#### Chain casting: mostly closed by the tick change, and worth finishing
 
-Casters currently idle between casts, and it is systematic rather than occasional. The update timer resets
-every time it passes, whether or not the body did anything, so evaluation happens on a fixed 1000 ms grid.
-While a cast is in progress the tick does nothing and returns. A cast that completes between grid points
-therefore leaves the bot idle until the next one.
+Casters used to idle between casts systematically. The update timer resets every time it passes, whether
+or not the body did anything, so evaluation happens on a fixed grid; while a cast is in progress the tick
+does nothing and returns, and a cast completing between grid points left the bot idle until the next one.
 
-Worked through for the spells that matter:
+On the old 1000 ms grid that was severe and, worse, stable: a **2.5 second cast** finished at 2500 ms and
+went unnoticed until 3000 ms, an effective 3.0 second cycle against a 2.5 second ideal and **roughly 17
+percent** lost on every cast rather than on average; a **1.5 second global cooldown** lost **25 percent**
+the same way.
 
-- A **2.5 second cast** — talented Frostbolt, Shadow Bolt, Lightning Bolt — begun on a grid point finishes
-  at 2500 ms and is not noticed until 3000 ms. That is 500 ms idle on every single cast, an effective 3.0
-  second cycle against a 2.5 second ideal, so **roughly 17 percent of casting throughput is lost**, and
-  because the phase is stable it happens every cast rather than on average.
-- A **1.5 second global cooldown** between instants finishes at 1500 ms and is not noticed until 2000 ms,
-  losing **25 percent**.
-- A **3.0 second cast** happens to align with the grid and loses almost nothing, but that is luck rather
-  than design: any jitter that pushes completion a millisecond past a boundary costs nearly a full second.
-  Behavior is bimodal and unpredictable rather than merely suboptimal.
+On the 250 ms grid the arithmetic changes completely, because 2500 and 1500 are both multiples of 250.
+Both of those cases now land exactly on a grid point and lose nothing at all. What survives is the
+off-grid case: haste, pushback or a partial-resist reduction that moves completion off a boundary costs up
+to 250 ms, a ceiling of about **10 percent** on that cast and typically half of it.
 
-Multiply about 17 percent across every caster in a 40-man raid and it is likely the difference between
-beating and missing an enrage timer.
+So this is no longer the largest single throughput loss and no longer the cheapest fix. The remaining
+work is the queue — being able to line the next action up while the current one finishes — which is the
+action pipeline's job rather than the timer's.
 
 **The fix does not need new hooks.** `Spell::GetCastedTime()` returns the remaining timer
 ([src/game/Spells/Spell.h](../src/game/Spells/Spell.h) line 295), and `getState()` distinguishes
@@ -1518,7 +1737,22 @@ The trigger is solved; the behavior is not.
   this way gives the feel of a tank-led raid without per-zone paths.
 - A hold-everything default, so nothing engages without explicit instruction.
 
-## Phase 2 - Movement arbitration and hazard avoidance [not started]
+## Phase 2 - Movement arbitration and hazard avoidance [in progress]
+
+**Status.** The behaviours landed before the arbiter did, one per dungeon, because each instance
+demanded one: held ground and its recovery walk (`f681aab00`), fight anchors (same), the tactical
+standoff held as a position rather than applied as an approach (`a88df345a`), firing positions and
+the searches for a spot clear of an unengaged pack (`8b2c65eab`), stepping out of a persistent area
+aura (`e97090bf6`), and steering round a pull rather than stopping at it (`42f58bd1f`). The
+perception half of the hazard problem is therefore partly solved for the one case that mattered: a
+`DynamicObject` carrying a spell the tactics table names is observable, and Maraudon's Noxious Cloud
+is the instance that forced it.
+
+What has *not* been built is the arbitration. These rules are an ordered if-chain at the top of the
+tick -- hazard step, interrupt, potion, held-ground return, heal line of sight, neighbour step,
+standoff, chase, follow -- with the order defended comment by comment rather than computed. That is
+a stand-in. It works at five bots in a corridor and will not survive a raid mechanic that wants two
+of them at once.
 
 **Only about a quarter of dangerous raid mechanics exist as observable world objects**, so scripts
 declaring hazards is the primary mechanism and perception is the supplement, not the other way
@@ -1599,7 +1833,14 @@ movement call site in `PartyBotAI` needs routing through it.
   area-damage safety ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines
   302-306), so threat-based damage throttling can reuse that pattern directly.
 
-## Phase 3a - Encounter directive layer [not started]
+## Phase 3a - Encounter directive layer [in progress]
+
+**Status.** A static form of this layer exists and is carrying the five-man rollout: see *The
+dungeon tactics table* above. It supplies, per map, most of what the directive channel below was
+meant to supply per phase -- hazard zones, target priority, ground to hold, allies to protect, and
+creatures to leave alone -- with the one difference that it cannot change during a fight. That
+difference is the whole of what is left, and the section above records the two places the boundary
+is already being pressed.
 
 Reordering note: because most raid hazards are not observable world objects, this layer is a
 **prerequisite** for Phase 2 avoidance on the majority of encounters rather than a refinement of it.
@@ -1647,6 +1888,17 @@ dominate 5-man content. Without this, bots stand still through half the game's d
   `CloneFromPlayer` copies spells and gear and not the quest log. Either batch `Player::AddQuest` across
   the roster or grant the outcome and skip the quest machinery, consistent with the companion
   document's attunement decision, which grants the reward rather than running the chain.
+- **Razuvious is a charm-*driving* problem, not a loss-of-control one, and the two get conflated.**
+  On that encounter the bot priest is the charmer and never loses control of itself; the Understudy
+  does. So the early return below is not what blocks it. What blocks it is narrower and entirely
+  fixable: the priest spell struct has `pShackleUndead` and **no Mind Control slot at all**, so
+  population never finds the spell, and nothing in the bot code drives a charmed unit once acquired.
+  The server-side machinery already exists and needs no packets — `Unit::GetCharm`, `CharmInfo`, and
+  the command handling behind `WorldSession::HandlePetAction`
+  ([src/game/Handlers/PetHandler.cpp](../src/game/Handlers/PetHandler.cpp)) — which a bot can call
+  directly. Treat it as three pieces of ordinary work: a spell slot, a directive naming which
+  Understudy to take, and a thin "drive this charmed unit" layer reusable by anything else that
+  charms.
 - **Loss of control is a bigger hole than mind control alone.** `PartyBotAI::UpdateAI` returns at the
   top whenever the bot has `UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL`
   ([src/game/PlayerBots/PartyBotAI.cpp](../src/game/PlayerBots/PartyBotAI.cpp) lines 725-728), attempting
@@ -1659,7 +1911,20 @@ dominate 5-man content. Without this, bots stand still through half the game's d
   than nice to have.
 - Deliberate aggro avoidance is still needed for the Dire Maul tribute run.
 
-## Phase 4 - Content rollout, smallest first [not started]
+## Phase 4 - Content rollout, smallest first [in progress]
+
+**Status.** Running now, and deliberately not waiting for the rotation engine. Six instances have
+tactics-table entries -- Shadowfang Keep, Wailing Caverns, Razorfen Kraul, Razorfen Downs,
+Zul'Farrak and Maraudon -- and three have end-to-end harness suites:
+`test_shadowfang_arugal_wing.py`, `test_zulfarrak_pyramid.py` and `test_maraudon.py`. Blackfathom
+Deeps has had its instance script and its altar fixed (`cf8cebfc5`) without a suite yet.
+
+The reordering is recorded under *Findings that changed the plan*: driving one instance end to end
+finds a class of fault that reading the code does not, and most of them decide the fight. The
+method those runs settled into -- what to read out of the database first, how to scope a search,
+why an attack order has to be re-issued every poll -- is written up in the last section of
+[contrib/harness/README.md](../contrib/harness/README.md) rather than here, because it is test
+practice rather than design.
 
 Build against 5-man dungeons before raids. This is a deliberate reordering: the generic layer is
 identical, but dungeons need 4 bots instead of 39, test cycles run in minutes instead of an hour, and
@@ -1699,11 +1964,37 @@ directive; Nefarian class calls; Sapphiron.
 
 **Tier 7, bespoke and possibly requiring deliberate simplification.** Razorgore, which needs a raid
 member to drive the boss through the orb while others kite adds. Instructor Razuvious, which requires
-mind-controlling Understudies to tank. Gothik, which splits the raid across a closing gate. Heigan,
-whose dance is a sub-second positional check. Four Horsemen, needing an eight-way rotation with mark
-stacks. Kel'Thuzad. Naxxramas is disproportionately represented here because it was designed
-specifically to punish coordination failures, which is what bots are worst at. Expect some of these
-to need a config toggle that softens the mechanic.
+mind-controlling Understudies to tank — see below, since it is not the loss-of-control hole it looks
+like. Gothik, which splits the raid across a closing gate. Four Horsemen, needing an
+eight-way rotation with mark stacks. Kel'Thuzad. Naxxramas is disproportionately represented here
+because it was designed specifically to punish coordination failures — though explicit assignment is
+where a scripted bot is *better* than a raid leader, and the thing bots are actually worst at is
+improvising after something unexpected. Expect some of these to need a config toggle that softens
+the mechanic.
+
+**Heigan is not one of them, and this document used to say otherwise.** The claim was that the dance
+is a sub-second positional check, which was inherited from the 1000 ms tick and never measured. It is
+worth writing out because the same arithmetic settles most positional mechanics:
+
+- Eruptions repeat every **10 s** in the ground phase and every **3 s** during the 45-second dance
+  ([boss_heigan.cpp](../src/scripts/eastern_kingdoms/eastern_plaguelands/naxxramas/boss_heigan.cpp),
+  the `EVENT_ERUPT` repeat).
+- The safe section is `uiArea == (eruptionPhase % 6) || uiArea == 6 - (eruptionPhase % 6)`, which walks
+  **0, 1, 2, 3, 2, 1** — one section at a time, always adjacent, fully deterministic.
+- The script already holds the safe-spot coordinates. Centre to centre the legs are 14.8, 17.2 and 9.8
+  yards, which at 7.0 yd/s is 2.11 s, 2.46 s and 1.41 s.
+
+Worst leg is therefore 2.46 s of running inside a 3.0 s window, and a 250 ms tick spends at most 250 ms
+noticing. It fits with roughly 0.3 s to spare — tight, but tight is not impossible, and two things make
+it comfortable without touching the tick again. **Predict rather than react:** the sequence and the timer
+both live in the script, so a directive publishing the next safe section and its deadline lets bots leave
+before the eruption and makes the margin a design parameter. **Aim at the boundary, not the centre:** the
+script's safe spots are section centres, and a bot that stands at the near edge of the safe section halves
+its travel.
+
+What would actually break Heigan is Phase 2's blocker, not the clock: a dodge issued and then stomped
+250 ms later by the tail-of-tick chase or follow re-assert leaves a bot standing on the floor. That is
+an argument for the movement arbiter, not for a config toggle.
 
 A per-zone audit of intended flow versus what the generic layer covers is worth maintaining as a
 separate living document, since the tier assignments above are first-pass estimates from reading
@@ -1737,11 +2028,24 @@ content that feels earned and content that feels scripted.
 ## Phase 5 - Tooling [in progress]
 
 **Status.** The out-of-band half exists: `.harness exec`, `info`, `createchar` and `login` behind
-`Harness.Enable`, plus a Python SOAP driver and seventeen suites in `contrib/harness`. Added since:
+`Harness.Enable`, plus a Python SOAP driver and twenty-two suites in `contrib/harness`. Added since:
 `path`, `graveyard`, `loadmmaps` and `rewardquest` for the corpse-run work, `spells`, `threat` and
-`despawn` for the combat work. `contrib/harness/README.md` documents every command, its output
-fields and the Python client, and is the reference to read before adding another. The in-game
-debugging commands below are not started.
+`despawn` for the combat work, and `gobject`, `gossip` and `dynobj` for the dungeon rollout
+(`6bb34f26e`). `contrib/harness/README.md` documents every command, its output fields and the
+Python client, and its last section records how a dungeon is driven end to end, which is the
+reference to read before writing another suite. The in-game debugging commands below are not
+started.
+
+- The three added for the rollout each close a hole nothing else could see. `gobject` reports a
+  door's open or shut, which is instance state held in memory and cannot be read out of the
+  database, so an encounter that opens one is only half tested by the boss dying. `gossip` starts
+  the encounters that begin no other way -- Zul'Farrak's last fight begins when Sergeant Bly turns
+  on the group through a gossip option, and that same option is what sends Weegli away to blow the
+  end door rather than fight. `dynobj` is the only way to observe a persistent area aura at all:
+  from outside, a party standing in Maraudon's Noxious Cloud and a party standing in clean air
+  differ only by their health going down. `enemy` also learned to take an entry of zero, because a
+  script that lists the entries it expects waits out its timeout on the ones it did not, with the
+  party standing around out of combat, which reads exactly like bots that will not fight.
 
 - `.harness spells <character>` reports every named spell slot for the bot's class, what
   population put in it, that spell's rank and level, and whether the bot actually knows it.
@@ -1779,8 +2083,21 @@ debugging commands below are not started.
   Healer target selection is quadratic and must be restructured before the tick is shortened.
 - Maintenance coupling: directives keep boss scripts authoritative, but every new directive is still
   an edit inside a boss script. Keep the directive vocabulary small and generic.
-- The 1000ms tick means some mechanics may never be cleanly solvable without a larger movement
-  refactor. Decide per encounter whether to simplify rather than chase precision.
+- The tick is no longer the constraint on positional mechanics; the movement arbiter is. A dodge that
+  is issued and then overwritten by the next tick's chase is worse than no dodge, because the bot stops
+  in the open rather than finishing either intent. Decide per encounter whether to simplify, but decide
+  it after the arbiter exists rather than before.
+- **Per-bot reliability compounds across 39 bodies, and the arithmetic is unforgiving.** A 99 percent
+  per-bot success rate on a mechanic gives a 68 percent chance of a clean attempt at raid size
+  (0.99^39); three nines gives 96 percent. Mechanics that wipe on a single failure — Vaelastrasz's
+  Burning Adrenaline, Thaddius polarity, Gothik's gate — therefore need reliability rather than
+  correctness, and most of that budget goes on unglamorous things: a bot knocked somewhere unexpected,
+  a mesh gap, a cast refused for one tick because line of sight lapsed. Treat "works once" as the start
+  of the work on those encounters rather than the end of it.
+- **CPU at 39 bots has never been measured**, and the tick is now four times faster than when this
+  document's estimates were written. The cost to watch is not the tick body but `PathFinder::calculate`
+  inside every movement decision, plus healer target selection, which is quadratic. Measure before
+  assuming the Pi can carry a 40-bot raid; it changes the plan if it cannot.
 - The rotation engine is now what Phase 0 was: on the critical path for everything after it, and
   large. If it stalls, the coordination mechanisms of Phase 1a have nowhere to be expressed and the
   content rollout has nothing to run on.
