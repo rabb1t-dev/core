@@ -8661,6 +8661,34 @@ void PartyBotAI::UpdateOutOfCombatAI()
     if (UseProvisionConsumables())
         return;
 
+    // Somebody hurt outranks somebody unbuffed. The shaman rotation already learned this against
+    // totems; nothing had taught it to the buff chain, and the priest was logged casting Power
+    // Word: Fortitude on a player sitting at a third health who wanted a heal.
+    //
+    // Above the combat check below, so a healer that has not been hit yet still heals the people
+    // who have.
+    if (GetRole() == ROLE_HEALER && FindAndHealInjuredAlly(90.0f, 90.0f))
+        return;
+
+    // No optional work at all once the fight is on. This whole routine is gated on *this bot*
+    // being out of combat, which during a pull is most of the group: the tank engages, the healer
+    // behind it is on nobody's threat list yet, and it spent that gap starting a seven hundred and
+    // forty four mana buff. The group being in combat is the question worth asking, not whether
+    // this particular bot has been hit yet.
+    if (IsGroupInCombat())
+        return;
+
+    // Out of mana to spare, so stop here and let the next tick drink instead. Clearing the flag
+    // is the point: DrinkAndEat runs earlier in the tick and refuses while a buff is in progress,
+    // so leaving it set strands the bot at low mana rather than recovering it. It drinks to full
+    // and finishes the buffs on a later pass.
+    if (me->GetPowerType() == POWER_MANA &&
+        me->GetPowerPercent(POWER_MANA) < PB_BUFF_MANA_FLOOR)
+    {
+        m_isBuffing = false;
+        return;
+    }
+
     switch (me->GetClass())
     {
         case CLASS_PALADIN:
@@ -9525,6 +9553,8 @@ void PartyBotAI::UpdateOutOfCombatAI_Shaman()
 
 void PartyBotAI::UpdateInCombatAI_Shaman()
 {
+    AbandonFillerForHealing();
+
     if (m_spells.shaman.pManaTideTotem &&
        (me->GetPowerPercent(POWER_MANA) < 50.0f) &&
         CanTryToCastSpell(me, m_spells.shaman.pManaTideTotem))
@@ -9617,6 +9647,14 @@ void PartyBotAI::UpdateInCombatAI_Shaman()
     {
         if (FindAndPreHealTarget())
             return;
+
+        // Every heal and every totem has now been declined, which for a healer used to end the
+        // tick having cast nothing. Same borrowed target as the priest uses: a healer holds no
+        // victim of its own, so the group's is looked up rather than read off, and it is only
+        // ever shot at, never chased.
+        if (Player* pLeader = GetPartyLeader())
+            if (AddFillerDamage(SelectAttackTarget(pLeader)))
+                return;
     }
     else if (me->GetHealthPercent() < 20.0f)
         HealInjuredTarget(me);
@@ -10248,6 +10286,40 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
 // Deliberately no AttackStart. Attack sets a target without asking anything of the movement
 // generators, so the priest keeps its ground and its distance. AttackStart would send it walking
 // into melee, which for a healer is how it dies and how the group loses its healing.
+// The filler pair for this bot's class: one instant damage over time effect and one direct nuke.
+//
+// m_spells is a union, so it may only be read through the arm belonging to the bot's own class.
+// Asking a priest for m_spells.shaman.pLightningBolt returns whichever priest pointer happens to
+// share that offset, which is a real spell and entirely the wrong one. Both spells come from this
+// one place so that the rotation below and the "was that cast a filler" test above cannot end up
+// disagreeing about what a filler is.
+void PartyBotAI::GetFillerDamageSpells(SpellEntry const*& pDot, SpellEntry const*& pNuke) const
+{
+    pDot = nullptr;
+    pNuke = nullptr;
+
+    switch (me->GetClass())
+    {
+        case CLASS_PRIEST:
+            pDot = m_spells.priest.pShadowWordPain;
+            pNuke = m_spells.priest.pSmite;
+            break;
+        case CLASS_SHAMAN:
+            pDot = m_spells.shaman.pFlameShock;
+            pNuke = m_spells.shaman.pLightningBolt;
+            break;
+        case CLASS_DRUID:
+            pDot = m_spells.druid.pMoonfire;
+            pNuke = m_spells.druid.pWrath;
+            break;
+        // A holy paladin has no ranged attack and cannot equip a wand, so the only filler damage
+        // available to it is to walk into melee -- which is the one thing a healer must not do for
+        // the sake of adding damage. It is left with nothing to do here deliberately.
+        default:
+            break;
+    }
+}
+
 bool PartyBotAI::AddFillerDamage(Unit* pTarget)
 {
     if (!pTarget || !IsValidHostileTarget(pTarget) || !me->IsWithinLOSInMap(pTarget))
@@ -10258,21 +10330,25 @@ bool PartyBotAI::AddFillerDamage(Unit* pTarget)
 
     if (manaToSpare)
     {
+        SpellEntry const* pDot = nullptr;
+        SpellEntry const* pNuke = nullptr;
+        GetFillerDamageSpells(pDot, pNuke);
+
         // Cheapest damage per point of mana in the book and instant, so it costs the group no
         // healing latency at all. Only worth applying once: a dot recast on top of itself throws
         // away every tick it had left.
-        if (m_spells.priest.pShadowWordPain &&
-           !pTarget->HasAura(m_spells.priest.pShadowWordPain->Id) &&
-            CanTryToCastSpell(pTarget, m_spells.priest.pShadowWordPain))
+        if (pDot &&
+           !pTarget->HasAura(pDot->Id) &&
+            CanTryToCastSpell(pTarget, pDot))
         {
-            if (DoCastSpell(pTarget, m_spells.priest.pShadowWordPain) == SPELL_CAST_OK)
+            if (DoCastSpell(pTarget, pDot) == SPELL_CAST_OK)
                 return true;
         }
 
-        if (m_spells.priest.pSmite &&
-            CanTryToCastSpell(pTarget, m_spells.priest.pSmite))
+        if (pNuke &&
+            CanTryToCastSpell(pTarget, pNuke))
         {
-            if (DoCastSpell(pTarget, m_spells.priest.pSmite) == SPELL_CAST_OK)
+            if (DoCastSpell(pTarget, pNuke) == SPELL_CAST_OK)
                 return true;
         }
     }
@@ -10291,9 +10367,13 @@ bool PartyBotAI::IsCastingFillerDamage() const
     if (!pSpell || !pSpell->m_spellInfo)
         return false;
 
+    SpellEntry const* pDot = nullptr;
+    SpellEntry const* pNuke = nullptr;
+    GetFillerDamageSpells(pDot, pNuke);
+
     uint32 const id = pSpell->m_spellInfo->Id;
-    return (m_spells.priest.pSmite && id == m_spells.priest.pSmite->Id) ||
-           (m_spells.priest.pShadowWordPain && id == m_spells.priest.pShadowWordPain->Id);
+    return (pNuke && id == pNuke->Id) ||
+           (pDot && id == pDot->Id);
 }
 
 // The wand counts too.
@@ -10310,19 +10390,32 @@ bool PartyBotAI::IsCastingFillerAutoRepeat() const
     return me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr;
 }
 
+// A filler nuke is worth abandoning the instant somebody actually needs healing. Nothing else can
+// be cast while one is going out, so a filler started against a healthy group and left to run holds
+// up the first heal of a fight that has just turned.
+//
+// Shared by every healer that has a filler, rather than sitting inside one class's rotation: the
+// shaman and druid were given the same filler treatment as the priest, and a filler nobody will
+// abandon is worse than no filler at all.
+void PartyBotAI::AbandonFillerForHealing()
+{
+    if (GetRole() != ROLE_HEALER)
+        return;
+
+    if (!IsCastingFillerDamage() && !IsCastingFillerAutoRepeat())
+        return;
+
+    if (!SelectHealTarget(PB_FILLER_ABANDON_HEALTH, PB_FILLER_ABANDON_HEALTH))
+        return;
+
+    // Cancels the wand as well as a cast: InterruptNonMeleeSpells covers
+    // CURRENT_AUTOREPEAT_SPELL, and KeepBusy will not start another while one is running.
+    me->InterruptNonMeleeSpells(false);
+}
+
 void PartyBotAI::UpdateInCombatAI_Priest()
 {
-    // A filler nuke is worth abandoning the instant somebody actually needs healing. Nothing else
-    // can be cast while one is going out, so a Smite started against a healthy group and left to
-    // run holds up the first heal of a fight that has just turned.
-    if (GetRole() == ROLE_HEALER &&
-        (IsCastingFillerDamage() || IsCastingFillerAutoRepeat()) &&
-        SelectHealTarget(PB_FILLER_ABANDON_HEALTH, PB_FILLER_ABANDON_HEALTH))
-    {
-        // Cancels the wand as well as a cast: InterruptNonMeleeSpells covers
-        // CURRENT_AUTOREPEAT_SPELL, and KeepBusy will not start another while one is running.
-        me->InterruptNonMeleeSpells(false);
-    }
+    AbandonFillerForHealing();
 
     // Shielding itself was the first thing this function did, on no condition beyond owning the
     // spell, and it returned, so the tick was spent. A priest standing safely at the back at full
@@ -10338,9 +10431,21 @@ void PartyBotAI::UpdateInCombatAI_Priest()
     // And a healer with somebody genuinely dying has better use for the tick even when it is being
     // hit itself, so the heal block further down now outranks this. The thresholds are that
     // block's own, rather than a second opinion about what counts as urgent.
+    // What counts as worth absorbing is stricter for a healer, because its bar is the group's.
+    //
+    // "Something is attacking me" was the test, and at Antu'sul something is always attacking the
+    // healer -- the Broodlings see to that. The measured result is a three hundred mana shield
+    // thrown on a priest at one hundred percent health in the first second of the fight. A healer
+    // buys an absorb when it is actually losing health; anything else is a heal it will not be
+    // able to cast later.
+    bool const worthAbsorbing = GetRole() == ROLE_HEALER
+        ? me->GetHealthPercent() < PB_HEALER_SELF_SHIELD_HEALTH
+        : (!me->GetAttackers().empty() || me->GetHealthPercent() < 90.0f);
+
     if (m_spells.priest.pPowerWordShield &&
-        (!me->GetAttackers().empty() || me->GetHealthPercent() < 90.0f) &&
+        worthAbsorbing &&
         !(GetRole() == ROLE_HEALER && SelectHealTarget(60.0f, 80.0f)) &&
+        HasManaToSpendOnAbsorbs() &&
         CanTryToCastSpell(me, m_spells.priest.pPowerWordShield))
     {
         if (DoCastSpell(me, m_spells.priest.pPowerWordShield) == SPELL_CAST_OK)
@@ -10380,7 +10485,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
     if (GetRole() == ROLE_HEALER || (!me->GetVictim() && me->GetShapeshiftForm() == FORM_NONE))
     {
         // Shield allies being attacked.
-        if (m_spells.priest.pPowerWordShield)
+        if (m_spells.priest.pPowerWordShield && HasManaToSpendOnAbsorbs())
         {
             if (Player* pTarget = SelectShieldTarget())
             {
@@ -12089,6 +12194,8 @@ void PartyBotAI::UpdateInCombatAI_Druid()
 {
     ShapeshiftForm const form = me->GetShapeshiftForm();
 
+    AbandonFillerForHealing();
+
     if (m_spells.druid.pBarkskin &&
         (form == FORM_NONE || form == FORM_MOONKIN) &&
         (me->GetHealthPercent() < 50.0f) &&
@@ -12160,6 +12267,17 @@ void PartyBotAI::UpdateInCombatAI_Druid()
 
         if (GetRole() == ROLE_HEALER && FindAndPreHealTarget())
             return;
+
+        // Same filler the priest and shaman run, and for the same reason: with the group healthy
+        // a healer reached the end of its tick having cast nothing at all. Caster form only,
+        // because Moonfire and Wrath cannot be cast shapeshifted and a resto druid that has just
+        // declined every heal is standing in caster form anyway.
+        if (GetRole() == ROLE_HEALER && form == FORM_NONE)
+        {
+            if (Player* pLeader = GetPartyLeader())
+                if (AddFillerDamage(SelectAttackTarget(pLeader)))
+                    return;
+        }
 
         if (EnterCombatDruidForm())
             return;

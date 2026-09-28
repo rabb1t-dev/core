@@ -2339,11 +2339,67 @@ bool CombatBotBaseAI::HealInjuredTargetPeriodic(Unit* pTarget)
 
 bool CombatBotBaseAI::HealInjuredTargetDirect(Unit* pTarget)
 {
+    // Far enough down that the question stops being which heal fits and becomes which heal lands.
+    //
+    // SelectMostEfficientHealingSpell matches heal size against health missing, which is the right
+    // objective almost all of the time and exactly the wrong one under burst: the bigger the hole,
+    // the bigger the spell it reaches for, and in this game the bigger spell is the slower one. A
+    // priest taking three hundred and twenty seven a swing was logged answering with Greater Heal
+    // at thirty four percent health -- a three second cast, against something killing it in two --
+    // and died partway through it. Flash Heal was available the whole time.
+    if (pTarget->GetHealthPercent() <= CB_HEAL_EMERGENCY_PERCENT)
+    {
+        if (SpellEntry const* pFastHeal = SelectFastestHealingSpell(pTarget, m_spellListDirectHeal))
+        {
+            if (DoCastSpell(pTarget, pFastHeal) == SPELL_CAST_OK)
+                return true;
+        }
+    }
+
     if (SpellEntry const* pHealSpell = SelectMostEfficientHealingSpell(pTarget, m_spellListDirectHeal))
         if (DoCastSpell(pTarget, pHealSpell) == SPELL_CAST_OK)
             return true;
 
     return false;
+}
+
+// The quickest heal in the list that is worth casting at all.
+//
+// Deliberately ignores overheal. Landing a heal larger than the hole is waste; not landing one is
+// a dead healer and then a dead group, and that trade is not close. The floor keeps it from
+// answering an emergency with a rank one trickle.
+template <class T>
+SpellEntry const* CombatBotBaseAI::SelectFastestHealingSpell(Unit const* pTarget,
+                                                             std::set<SpellEntry const*, T>& spellList) const
+{
+    SpellEntry const* pFastest = nullptr;
+    uint32 fastestCast = UINT32_MAX;
+
+    int32 const missingHealth = int32(pTarget->GetMaxHealth() - pTarget->GetHealth());
+    int32 const floor = missingHealth / 4;
+
+    for (const auto pSpellEntry : spellList)
+    {
+        if (!CanTryToCastSpell(pTarget, pSpellEntry))
+            continue;
+
+        int32 basePoints = 0;
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; i++)
+            if (pSpellEntry->Effect[i] == SPELL_EFFECT_HEAL)
+                basePoints += pSpellEntry->EffectBasePoints[i];
+
+        if (basePoints < floor)
+            continue;
+
+        uint32 const castTime = pSpellEntry->GetCastTime(me);
+        if (castTime < fastestCast)
+        {
+            fastestCast = castTime;
+            pFastest = pSpellEntry;
+        }
+    }
+
+    return pFastest;
 }
 
 template <class T>
@@ -6514,6 +6570,17 @@ SpellEntry const* CombatBotBaseAI::SelectTotemForSlot(TotemSlot slot) const
 
 bool CombatBotBaseAI::SummonShamanTotems()
 {
+    // Nothing optional with the bar this low.
+    //
+    // A totem is a trickle of value to whoever is standing near it; a heal is somebody staying
+    // alive. Logged getting that backwards: a shaman healer at seven percent mana spent its last
+    // hundred and seventy five on Windfury Totem, then reported healgate=power on every tick after
+    // it while the tank died at three percent health. One Lesser Healing Wave was affordable, and
+    // it was the only thing on the list that mattered.
+    if (me->GetPowerType() == POWER_MANA &&
+        me->GetPowerPercent(POWER_MANA) < CB_TOTEM_MANA_FLOOR)
+        return false;
+
     // A totem already down is the case the gate in SelectTotemForSlot cannot reach: the sheep
     // usually arrives after the totem, not before, and a totem that is already standing there is a
     // slot this function skips. So it is pulled up instead. Checked around the totem rather than

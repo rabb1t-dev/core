@@ -113,6 +113,12 @@ static constexpr float CB_HEAL_COMBAT_CEILING_PERCENT = 78.0f;
 // than in bursts, so the cast has to be started earlier to keep ahead of it at all.
 static constexpr float CB_HEAL_TANK_CEILING_BONUS = 7.0f;
 
+// Below this, speed beats efficiency. See HealInjuredTargetDirect.
+static constexpr float CB_HEAL_EMERGENCY_PERCENT = 45.0f;
+
+// Below this the shaman stops laying totems. See SummonShamanTotems.
+static constexpr float CB_TOTEM_MANA_FLOOR = 25.0f;
+
 // Dispelling in combat. The remaining-duration floor keeps a cast off a debuff that will expire
 // before the cast has paid for itself, and the repeat window stops a mob that reapplies faster
 // than the healer can clear from turning dispelling into a mana race.

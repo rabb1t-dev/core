@@ -253,6 +253,8 @@ public:
     void UpdateCorpseLooting();
     bool CanAnyPlayerLoot(Creature* pCreature) const;
     bool LootCorpse(Creature* pCreature);
+    void GetFillerDamageSpells(SpellEntry const*& pDot, SpellEntry const*& pNuke) const;
+    void AbandonFillerForHealing();
     bool IsCastingFillerDamage() const;
     bool IsCastingFillerAutoRepeat() const;
     Player* GetGroupTank() const;
