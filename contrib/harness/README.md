@@ -41,6 +41,75 @@ python3 contrib/harness/vmangos_harness.py --as-character Harnessbot partybot ad
 `--as-character` logs the character in first if it is not already in the world, then routes the
 command through `.harness exec`.
 
+## Restarting the server
+
+**The world server is managed by systemd. Restart it with systemd and nothing else:**
+
+```bash
+sudo systemctl restart vmangos-mangosd     # passwordless for rabb1t
+```
+
+The unit is `/etc/systemd/system/vmangos-mangosd.service`. What matters about it is that
+`ExecStart` is `/home/rabb1t/server/bin/mangosd -c /home/rabb1t/server/etc/mangosd.conf`, so a
+binary copied over that path is what the next start picks up, and that it carries
+`Restart=on-failure` with `RestartSec=10`. There is a matching `vmangos-realmd.service` for the
+login daemon.
+
+That `Restart=` line is why the obvious approach is wrong. Finding the process with `pgrep` and
+killing it, then launching your own copy with `nohup`, does not replace the server: it kills the
+process *systemd owns*, and systemd starts a replacement ten seconds later while your copy is
+still coming up. Both then race for the ports, and the loser cannot bind SOAP. **SOAP is bound
+once at startup and never retried**, so the survivor runs for the rest of its life with a working
+game port and no `7878` at all -- the game looks fine and every tool in this directory is dead.
+This is the real cause of `ERROR: MaNGOSsoap: Couldn't bind to 127.0.0.1:7878`, which was
+misread as a slow port release and "fixed" more than once by waiting longer for the port to
+clear. Waiting does not help, because the two processes are not sequential.
+
+A deploy is therefore: build in `~/build-vmangos`, back up the running binary, copy the new one
+into place, and let systemd cycle it.
+
+```bash
+cd ~/build-vmangos && make -j3
+cp -a ~/server/bin/mangosd ~/server/bin/mangosd.bak-$(date +%Y%m%d-%H%M)
+cp -f ~/build-vmangos/src/mangosd/mangosd ~/server/bin/mangosd
+sudo systemctl restart vmangos-mangosd
+```
+
+Two things about checking whether it came back. The process is named `mangosd-main`, not
+`mangosd`, so `pgrep -x mangosd` finds nothing and `systemctl show -p MainPID --value
+vmangos-mangosd` is the honest answer. And do not test readiness by grepping the log for
+`Bound to http://127.0.0.1:7878/`: that line from the *previous* boot is still in the file and
+will match instantly. Poll the thing you actually need instead, which is SOAP answering:
+
+```bash
+until python3 contrib/harness/vmangos_harness.py server info 2>/dev/null | grep -q uptime; do sleep 2; done
+```
+
+A warm start reaches `World initialized.` in under ten seconds. A cold one, with the maps and
+mmaps not in page cache, takes closer to a minute; `SERVER STARTUP TIME` in the log tells you
+which you got.
+
+Two consequences of a restart worth knowing before you plan around one. **Instance ids are
+repacked at every startup** -- `Packing instances...` followed by `>> Instance numbers
+remapped` -- so an id you wrote down will not be the same id afterwards, though binds and
+`creature_respawn` rows are moved along with it. And **party bots exist only in memory** -- they
+have no `characters` row, so they cannot be found by querying for `online = 1` and a restart ends
+the party outright. Anything a test depends on a bot holding has to be re-established afterwards,
+and a five-man group bind, which lives only in `group_instance` keyed to that group, goes with
+them unless a permanent `character_instance` bind was written first.
+
+Finally, if a shutdown ever appears to hang at `Unloading all maps...` with every thread idle,
+that specific deadlock is fixed and should not recur: a SOAP command still in flight when the
+world loop ended was waiting on a reply nobody was left to send, while `Master::Run` joined the
+world thread before the SOAP thread and so blocked on it forever. The queue is now answered as
+the loop ends (`Cancelled N queued command(s) that arrived while the world was stopping.`) and
+the SOAP wait gives up on its own. A hang there now is a *new* bug, so take the stacks rather
+than assuming this one came back. The unit runs as `rabb1t`, so this needs no `sudo`:
+
+```bash
+gdb -p $(systemctl show -p MainPID --value vmangos-mangosd) -batch -ex 'thread apply all bt'
+```
+
 ## The commands
 
 All are administrator-only and console-enabled. Those that address a character take its
