@@ -115,6 +115,12 @@ void WorldRunnable::operator()()
     }
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "Shutting down world...");
+
+    // The loop above was the only thing running queued commands, so release anyone still waiting on
+    // one now, while this thread can still reach them. Master::Run joins this thread before the
+    // SOAP thread, and a SOAP request left waiting here will not let that second join return.
+    sWorld.CancelQueuedCliCommands();
+
     sWorld.Shutdown();
 
     // unload battleground templates before different singletons destroyed

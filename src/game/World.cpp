@@ -2902,6 +2902,37 @@ void World::ProcessCliCommands()
     }
 }
 
+// Answer every queued CLI/RA/SOAP command with a failure, without running any of them.
+//
+// Commands are executed by the world update loop, so once that loop has ended anything still in
+// the queue is waiting on a reply that will never be produced -- and whoever submitted it is
+// blocked in the meantime. The SOAP thread is the case that bites: Master::Run joins the world
+// thread before the SOAP thread, so a request stranded here holds soap_serve open and the join
+// after it never returns. That hung a shutdown for sixteen minutes with the maps already unloaded
+// and every other thread idle, one stuck futex wait keeping the process alive.
+//
+// The completion callback is what releases the waiter, so it is invoked rather than skipped -- this
+// is the one place that can still do it. Reporting failure is honest, because the command really
+// did not run.
+void World::CancelQueuedCliCommands()
+{
+    CliCommandHolder* command;
+    uint32 cancelledCount = 0;
+
+    while (cliCmdQueue.next(command))
+    {
+        if (command->m_commandFinished)
+            command->m_commandFinished(command->m_callbackArg, false);
+
+        delete command;
+        ++cancelledCount;
+    }
+
+    if (cancelledCount)
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "Cancelled %u queued command(s) that arrived while the world was stopping.", cancelledCount);
+}
+
 void World::InitResultQueue()
 {
 }

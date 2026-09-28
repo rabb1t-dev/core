@@ -8,13 +8,48 @@
 #include "IO/Networking/IpAddress.h"
 #include "IO/Multithreading/CreateThread.h"
 
+// How long to wait between checks on a command that has been handed to the world thread. This only
+// costs anything during a shutdown: a command that finishes normally wakes the wait immediately.
+static constexpr int SOAP_COMMAND_POLL_INTERVAL_MS = 500;
+
+static char const* const SOAP_SHUTTING_DOWN_MESSAGE = "Server is shutting down, the command was not executed.";
+
 class SOAPCommand
 {
  public:
-    /// Blocks until OnCommandFinished is called
-    bool WaitAndGetSuccessStatus()
+    enum class Outcome
     {
-        return m_successStatusPromise.get_future().get();
+        Succeeded,
+        Failed,
+        Abandoned,  // the world stopped without running it, so no reply is ever coming
+    };
+
+    /// Blocks until OnCommandFinished is called, or gives up if the world stops without calling it.
+    ///
+    /// This was a bare get() on the future, which is only correct for as long as something is still
+    /// draining the command queue. Commands run on the world thread, and Master::Run joins the
+    /// world thread before the SOAP thread, so a request that lands in that window waits on a reply
+    /// nobody is left to send -- and because it never leaves soap_serve, the join on this thread
+    /// never returns either. That hung one shutdown for sixteen minutes with the maps already
+    /// unloaded and every other thread parked.
+    ///
+    /// World::CancelQueuedCliCommands now answers the queue as the loop ends, which covers the
+    /// ordinary case promptly. It cannot cover a command queued after it has already run, so the
+    /// wait still has to be able to give up on its own.
+    Outcome Wait()
+    {
+        std::future<bool> future = m_successStatusPromise.get_future();
+
+        while (true)
+        {
+            if (future.wait_for(std::chrono::milliseconds(SOAP_COMMAND_POLL_INTERVAL_MS)) == std::future_status::ready)
+                return future.get() ? Outcome::Succeeded : Outcome::Failed;
+
+            // Only consulted after a wait that timed out, so a command that beat us to completion
+            // is still reported as completed on the next turn of the loop.
+            if (World::IsStopped())
+                return Outcome::Abandoned;
+        }
     }
 
     static void OnPrint(void* opaquePointer, char const* msg)
@@ -113,18 +148,44 @@ int ns1__executeCommand(soap* soap, char* command, char** result)
 
     sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "MaNGOSsoap: Received command '%s'", command);
 
-    // Commands are executed in the world thread. We have to wait for them to be completed
-    SOAPCommand commandHolder;
+    // Refused outright rather than queued, because the world loop that would run it has already
+    // gone and World::~World frees the queue without answering anything left in it.
+    if (World::IsStopped())
+    {
+        char* message = soap_strdup(soap, SOAP_SHUTTING_DOWN_MESSAGE);
+        return soap_sender_fault(soap, message, message);
+    }
+
+    // Commands are executed in the world thread. We have to wait for them to be completed.
+    //
+    // On the heap, because the give-up path below must not destroy it: the world thread can still
+    // be holding this pointer and may complete the command a moment after we stop waiting. A stack
+    // object would turn that race into a write through a dangling pointer.
+    SOAPCommand* commandHolder = new SOAPCommand();
     {
         // CliCommandHolder will be deleted from world, accessing after queueing is NOT safe
-        CliCommandHolder* cmd = new CliCommandHolder(accountId, SEC_CONSOLE, &commandHolder, command, &SOAPCommand::OnPrint, &SOAPCommand::OnCommandFinished);
+        CliCommandHolder* cmd = new CliCommandHolder(accountId, SEC_CONSOLE, commandHolder, command, &SOAPCommand::OnPrint, &SOAPCommand::OnCommandFinished);
         sWorld.QueueCliCommand(cmd);
     }
 
     // Wait for callback to complete command
-    bool wasSuccessful = commandHolder.WaitAndGetSuccessStatus();
+    SOAPCommand::Outcome const outcome = commandHolder->Wait();
 
-    char* printBuffer = soap_strdup(soap, commandHolder.m_printBuffer.c_str());
+    if (outcome == SOAPCommand::Outcome::Abandoned)
+    {
+        // Deliberately leaked. The queued command still points at it, nothing will come back to
+        // tell us when that stops being true, and the alternative is the dangling write described
+        // above. One small allocation per stranded command, in a process that is already exiting.
+        sLog.Out(LOG_RA, LOG_LVL_MINIMAL, "MaNGOSsoap: World stopped before command '%s' could run", command);
+
+        char* message = soap_strdup(soap, SOAP_SHUTTING_DOWN_MESSAGE);
+        return soap_sender_fault(soap, message, message);
+    }
+
+    char* printBuffer = soap_strdup(soap, commandHolder->m_printBuffer.c_str());
+    bool const wasSuccessful = (outcome == SOAPCommand::Outcome::Succeeded);
+    delete commandHolder;
+
     if (!wasSuccessful)
         return soap_sender_fault(soap, printBuffer, printBuffer);
 

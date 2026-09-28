@@ -831,6 +831,9 @@ class World
         std::string const& GetWardenModuleDirectory() const { return m_wardenModuleDirectory; }
 
         void ProcessCliCommands();
+        // Call on the world thread once its update loop has ended, before the shutdown reaches the
+        // thread joins. Anything still queued is waiting on a reply nobody is left to produce.
+        void CancelQueuedCliCommands();
         void QueueCliCommand(CliCommandHolder* commandHolder) { cliCmdQueue.add(commandHolder); }
 
         void UpdateResultQueue();
