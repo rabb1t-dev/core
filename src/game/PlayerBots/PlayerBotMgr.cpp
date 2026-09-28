@@ -1398,7 +1398,12 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
                         // order is accepted and then quietly declined: the route to anything nobody
                         // is fighting yet runs into that mob's own radius, which was enough to
                         // refuse it.
+                        //
+                        // This is the movement exemption only, and it expires when the mob enters
+                        // combat because that is when the bot no longer needs it. What the group is
+                        // to kill is a separate, longer lived instruction, set below.
                         pMember->SetAttackOrders(pTarget->GetObjectGuid());
+                        pAI->SetGroupAttackOrder(pTarget->GetObjectGuid());
                         pAI->AttackStart(pTarget);
                     }
                 }
@@ -1412,11 +1417,20 @@ bool ChatHandler::HandlePartyBotAttackStartCommand(char* args)
 
 void StopPartyBotAttackHelper(PartyBotAI* pAI, Player* pBot)
 {
+    // Told to stop, so the standing instruction goes with it. Left in place it would put the bot
+    // straight back on the same mob on the next tick, which is the order surviving the countermand.
+    pAI->ClearGroupAttackOrder();
+
     pBot->AttackStop(true);
     pBot->InterruptNonMeleeSpells(false);
     if (!pBot->IsStopped())
         pBot->StopMoving();
-    if (pBot->GetMotionMaster()->GetCurrentMovementGeneratorType() == CHASE_MOTION_TYPE)
+    // Chase was the only way a bot in combat used to travel, so clearing it was enough to stop
+    // one. It no longer is: a bot steering round a pack is on a point movement instead, and that
+    // survived this untouched -- the bot kept walking to a destination chosen for a fight it had
+    // just been told to leave, which from the outside is a bot ignoring the order.
+    MovementGeneratorType const moving = pBot->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (moving == CHASE_MOTION_TYPE || moving == POINT_MOTION_TYPE)
         pBot->GetMotionMaster()->Clear();
     if (pAI->m_updateTimer.GetExpiry() < 3000)
         pAI->m_updateTimer.Reset(3000);

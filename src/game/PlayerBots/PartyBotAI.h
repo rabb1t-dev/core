@@ -112,6 +112,11 @@ public:
     bool AttackStart(Unit* pVictim);
     Unit* SelectAttackTarget(Player* pLeader) const;
     Unit* SelectPartyAttackTarget() const;
+    bool CanInterruptWith(SpellEntry const* pSpellEntry, Unit const* pTarget) const;
+    bool IsIgnoredByParty(Unit const* pEnemy) const;
+    bool IsSummonWorthLeavingBossFor(Unit const* pAdd, bool logIt = true) const;
+    Unit* FindSuspendedSummonNearby(float radius) const;
+    Unit* FindFocusTotemForPet(float radius) const;
 
     // Instance tactics, and the generic combat behaviour that measuring one instance exposed as
     // missing everywhere. Only GetTacticalStandoff and the escort pair read m_tactics; the rest are
@@ -300,7 +305,11 @@ public:
 
     std::vector<PartyBotCorpse> m_corpsesToLoot;
     std::vector<RaidTargetIcon> m_marksToCC;
-    std::vector<RaidTargetIcon> m_marksToFocus;
+    // Skull by default, because that is what every group in the game already means by it, and an
+    // empty list meant marking a target did nothing at all until somebody had run .partybot
+    // focusmark first - so the one gesture a player would reach for to redirect the group was
+    // silently inert. Further marks are still added by that command.
+    std::vector<RaidTargetIcon> m_marksToFocus = { RAID_TARGET_ICON_SKULL };
     ShortTimeTracker m_updateTimer;
     // Throttle for the per-tick state line. Mutable because logging is the one thing a const
     // reporting function is allowed to change about the bot.

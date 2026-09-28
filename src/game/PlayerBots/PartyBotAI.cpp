@@ -236,6 +236,17 @@ static constexpr float PB_DOT_WORTH_TARGET_HEALTH = 50.0f;
 // How far out to look for the rest of the pack.
 static constexpr float PB_DOT_PACK_RADIUS = 30.0f;
 
+// How far to look for a controlled mob left over from a finished fight, and how often. The radius
+// is wide because the mob may have wandered while sheeped; the interval keeps the search off every
+// idle tick.
+static constexpr float PB_LEFTOVER_SEARCH_RADIUS = 60.0f;
+static constexpr time_t PB_LEFTOVER_SCAN_INTERVAL = 1;
+
+// Throttle for the pet order log. The order itself is only issued on a target mismatch, but a
+// refused order leaves the mismatch in place, so an order that is not taking effect repeats at
+// tick rate -- which is the case most worth reading and the one that would flood the file.
+static constexpr time_t PB_PET_LOG_INTERVAL = 2;
+
 // How long the current target has left to live, estimated from how fast its health is actually
 // falling rather than from any property of the target itself.
 //
@@ -3005,8 +3016,37 @@ struct PartyBotGroupFocus
     ObjectGuid target;
     uint32 tier = PB_FOCUS_NONE;
     time_t since = 0;
+
+    // What a player last told the group to kill, which is a different thing from what the group
+    // has drifted onto and outlives it.
+    //
+    // Held here, group wide, rather than on each bot, for two reasons. A bot that was out of range
+    // when the command went out still joins in, and more importantly the instruction survives the
+    // movement exemption it used to be carried by: Player::SetAttackOrders does double duty as
+    // "you may walk into an unengaged mob's aggro radius", and that exemption is correctly spent
+    // the moment the mob enters combat - which is one tick after the first bot reaches it. Reading
+    // the instruction off the same field gave every order a lifetime of about a quarter second,
+    // after which the group reverted to whatever it had been on and looked as though it had
+    // ignored the player.
+    ObjectGuid ordered;
 };
 static std::unordered_map<uint32 /*groupId*/, PartyBotGroupFocus> s_groupFocus;
+
+// Point the whole group at something, on a player's say-so.
+void PartyBotAI::SetGroupAttackOrder(ObjectGuid guid)
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return;
+
+    s_groupFocus[pGroup->GetId()].ordered = guid;
+}
+
+void PartyBotAI::ClearGroupAttackOrder()
+{
+    if (Group* pGroup = me->GetGroup())
+        s_groupFocus[pGroup->GetId()].ordered.Clear();
+}
 
 uint32 PartyBotAI::ScoreFocusCandidate(Unit const* pEnemy) const
 {
@@ -3014,8 +3054,12 @@ uint32 PartyBotAI::ScoreFocusCandidate(Unit const* pEnemy) const
         return PB_FOCUS_NONE;
 
     // An order or a mark is a player talking, and it wins from wherever the mob happens to be.
-    if (me->HasAttackOrders() && me->GetAttackOrders() == pEnemy->GetObjectGuid())
-        return PB_FOCUS_ORDERED;
+    if (Group* pGroup = me->GetGroup())
+    {
+        auto const itr = s_groupFocus.find(pGroup->GetId());
+        if (itr != s_groupFocus.end() && itr->second.ordered == pEnemy->GetObjectGuid())
+            return PB_FOCUS_ORDERED;
+    }
 
     if (Group* pGroup = me->GetGroup())
     {
@@ -3028,8 +3072,20 @@ uint32 PartyBotAI::ScoreFocusCandidate(Unit const* pEnemy) const
 
     if (m_tactics)
     {
+        // Promoted only while turning for it is still worth the time. The burn gate was written for
+        // exactly this and was wired into every path except the one that decides what the group
+        // shoots at, so it never applied: Servant of Antu'sul is in focusFirst, focusFirst is tier
+        // five, Antu'sul himself scores tier two, and so the whole party switched to the add the
+        // moment it spawned and never came back. One attempt has the boss dropping to forty three
+        // percent and then not being targeted again by anybody for the rest of the fight.
+        //
+        // Asked every tick rather than latched, so the answer tracks the boss's health: above the
+        // gate the add is worth killing, below it the group stays on the boss, and crossing the
+        // line turns the group round on its own.
         if (Creature const* pCreature = pEnemy->ToCreature())
-            if (m_tactics->IsFocusFirst(pCreature->GetEntry()))
+            if (m_tactics->IsFocusFirst(pCreature->GetEntry()) &&
+                IsSummonWorthLeavingBossFor(pEnemy, false) &&
+                CanEngageFromHeldGround(pEnemy))
                 return PB_FOCUS_TACTICS;
     }
 
@@ -3055,14 +3111,47 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
     if (!pGroup || IsInDuel())
         return nullptr;
 
+    PartyBotGroupFocus& held = s_groupFocus[pGroup->GetId()];
+
     // A pull or an explicit attack order outranks everything, including whatever the group had
     // settled on, and unlike everything below it is about a mob that is not part of any fight yet -
     // so it is answered before the candidate scan, which only looks at mobs that are.
-    if (me->HasAttackOrders())
+    //
+    // The order is written into the focus rather than returned around it. Returning early used to
+    // leave the group's held focus pointing at the previous mob, so the instruction was obeyed
+    // without ever being agreed to: bots that had not received the command stayed where they were,
+    // and the ones that had went back the moment the order lapsed. The group has to actually change
+    // its mind, not merely be overruled for a tick.
+    if (!held.ordered.IsEmpty())
     {
-        if (Unit* pOrdered = me->GetMap()->GetUnit(me->GetAttackOrders()))
-            if (IsValidHostileTarget(pOrdered))
-                return pOrdered;
+        Unit* pOrdered = me->GetMap()->GetUnit(held.ordered);
+
+        // Spent once the thing is dead or is no longer something to hit. Deliberately not spent
+        // when it enters combat, which is what the old movement exemption did and is the whole
+        // bug: entering combat is the order working.
+        if (!pOrdered || !pOrdered->IsAlive() || !IsValidHostileTarget(pOrdered))
+        {
+            held.ordered.Clear();
+        }
+        else
+        {
+            if (held.target != pOrdered->GetObjectGuid())
+            {
+                if (IsCombatLogged())
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] focus bot='%s' group=%u ordered onto '%s' (guid=%u hp=%.0f) "
+                             "from '%s'",
+                             me->GetName(), pGroup->GetId(), pOrdered->GetName(),
+                             pOrdered->GetObjectGuid().GetCounter(), pOrdered->GetHealthPercent(),
+                             held.target ? "a previous focus" : "nothing");
+
+                held.target = pOrdered->GetObjectGuid();
+                held.since = time(nullptr);
+            }
+
+            held.tier = PB_FOCUS_ORDERED;
+            return pOrdered;
+        }
     }
 
     Player* const pTank = GetGroupTank();
@@ -3079,12 +3168,42 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
     // tie still arrive at the same mob rather than one each.
     Unit* pBest = nullptr;
     uint32 bestTier = PB_FOCUS_NONE;
+
+    // Where this creature comes in the instance's own kill order, or zero for one the instance
+    // says nothing about. See DungeonTactics::focusFirst: the list is written in order and the
+    // order is the tactic.
+    auto const focusRank = [&](Unit const* pUnit) -> uint32
+    {
+        if (!m_tactics)
+            return 0;
+
+        Creature const* pCreature = pUnit->ToCreature();
+        return pCreature ? m_tactics->GetFocusRank(pCreature->GetEntry()) : 0;
+    };
+
     auto const better = [&](Unit* pCandidate, uint32 tier)
     {
         if (!pBest)
             return true;
         if (tier != bestTier)
             return tier > bestTier;
+
+        // Ahead of the leader and the tank, because this is the instance answering a question
+        // neither of them was asked. Two entries off the same list standing in front of the group
+        // is the normal case rather than the exception -- Zul'Farrak's third pyramid wave arrives
+        // as Nekrum and Sezz'ziz together, and its last fight is Bly with Oro and Murta beside him
+        // -- and with the tiers equal the comparisons below settle it on health and then on guid,
+        // which is to say the group picks whichever of the two happens to have been hit.
+        //
+        // Only between two ranked entries. A creature with no rank is not ordered against one that
+        // has: tiers are equal here, so the pair are equally worth killing as far as everything
+        // else in this function is concerned, and inventing a preference from the absence of a
+        // table entry would make the list mean something it does not say.
+        uint32 const candidateRank = focusRank(pCandidate);
+        uint32 const heldRank = focusRank(pBest);
+        if (candidateRank && heldRank && candidateRank != heldRank)
+            return candidateRank < heldRank;
+
         if ((pCandidate == pLeaderVictim) != (pBest == pLeaderVictim))
             return pCandidate == pLeaderVictim;
         if ((pCandidate == pTankVictim) != (pBest == pTankVictim))
@@ -3105,6 +3224,16 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
             if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
                 continue;
 
+            // What the dungeon table says to leave alone is not a candidate for the group's
+            // focus either. Filtering the peel alone was half a fix: the tank correctly stayed on
+            // Antu'sul while the hunter and the healer opened on a Broodling anyway -- Shadow
+            // Word: Pain and Smite, four hundred and seventy nine mana, thirteen percent of the
+            // priest's bar, spent before the boss had been touched. An explicit attack order
+            // still overrides this, above, because a player pointing at something outranks the
+            // table.
+            if (IsIgnoredByParty(pAttacker))
+                continue;
+
             uint32 const tier = ScoreFocusCandidate(pAttacker);
             if (better(pAttacker, tier))
             {
@@ -3113,8 +3242,6 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
             }
         }
     }
-
-    PartyBotGroupFocus& held = s_groupFocus[pGroup->GetId()];
 
     // Whatever the group settled on last, if it is still a thing worth hitting.
     Unit* pHeld = held.target ? me->GetMap()->GetUnit(held.target) : nullptr;
@@ -3134,12 +3261,30 @@ Unit* PartyBotAI::SelectGroupFocusTarget() const
         bool const heavy = pHeld->ToCreature() &&
                            pHeld->ToCreature()->GetCreatureInfo()->rank != CREATURE_ELITE_NORMAL;
 
-        if (heavy && bestTier < PB_FOCUS_ORDERED)
+        // The one thing besides a player that moves the group off something heavy: the instance
+        // naming a target that comes earlier in the same kill order.
+        //
+        // Without this the ordering above only decides the first pick of a fight, and whichever of
+        // two simultaneous arrivals happened to swing first would keep the group for the rest of
+        // it -- both of Zul'Farrak's ordered pairs are elites, so both would be heavy, and the
+        // wave three pair arrive within a tick of each other. Which of them the group ends up on
+        // would then be a race rather than a decision.
+        //
+        // Narrow on purpose. It needs both mobs to be on the same instance's focusFirst list, so
+        // it can never drag a group off a boss for an add -- a boss with a tactics entry of its
+        // own is not on that list, and an add with no entry has no rank to outrank anything with.
+        // And it will not move the group down the order, only up it.
+        uint32 const heldRank = focusRank(pHeld);
+        uint32 const bestRank = pBest ? focusRank(pBest) : 0;
+        bool const outrankedByTable = heldRank && bestRank && bestRank < heldRank &&
+                                      bestTier >= heldTier;
+
+        if (heavy && bestTier < PB_FOCUS_ORDERED && !outrankedByTable)
             return pHeld;
 
         // Otherwise: hold unless something is in a strictly higher tier. Equal tiers never move the
         // group, which is what stops it drifting between two mobs as their health crosses over.
-        if (!pBest || bestTier <= heldTier)
+        if (!outrankedByTable && (!pBest || bestTier <= heldTier))
         {
             held.tier = heldTier;
             return pHeld;
@@ -3198,6 +3343,67 @@ bool PartyBotAI::CrowdControlOffFocus()
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return false;
+
+    // The add the burn rule just told the group to walk away from is the best thing in the room to
+    // control. It is alive, it is swinging, and by construction nobody is going to kill it:
+    // Antu'sul sends two Servants at twenty five percent and each carries forty one percent of his
+    // own health bar, so killing them is arithmetic nobody should attempt, and leaving them loose
+    // on the healer is how the attempt ends instead.
+    //
+    // Run ahead of the ordinary scan rather than folded into it, because that scan takes the first
+    // eligible attacker it finds and this is rarely the first.
+    //
+    // Whether any of it lands is still the spell's business. Against a Servant the answer is
+    // narrow: it is immune to root and snare, and its creature type rules out Polymorph, Sap,
+    // Shackle, Banish and Hibernate. Blind and Hammer of Justice are typeless and do work.
+    if (m_tactics)
+    {
+        std::list<Unit*> suspended;
+        me->GetEnemyListInRadiusAround(me, 40.0f, suspended);
+
+        for (Unit* pAdd : suspended)
+        {
+            if (pAdd == pFocus || IsSummonWorthLeavingBossFor(pAdd, false))
+                continue;
+
+            if (pAdd->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
+                continue;
+
+            if (!IsValidHostileTarget(pAdd))
+                continue;
+
+            // Still not the one the tank has hold of. At twenty five percent two arrive, the tank
+            // takes one, and this is how the other stops being everyone's problem.
+            if (Player* pTank = GetGroupTank())
+                if (pTank->GetVictim() == pAdd)
+                    continue;
+
+            if (AreOthersOnSameTarget(pAdd->GetObjectGuid()))
+                continue;
+
+            if (!CanUseCrowdControl(pSpellEntry, pAdd))
+                continue;
+
+            if (!CanTryToCastSpell(pAdd, pSpellEntry))
+                continue;
+
+            if (DoCastSpell(pAdd, pSpellEntry) == SPELL_CAST_OK)
+            {
+                me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+
+                if (IsCombatLogged())
+                {
+                    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                             "[BotCombat] ccsummon bot='%s' role=%s controlled '%s' (lvl %u) with "
+                             "'%s' rather than let it loose while the group burns the boss",
+                             me->GetName(), GetRoleName(GetRole()), pAdd->GetName(),
+                             pAdd->GetLevel(), pSpellEntry->SpellName[0].c_str());
+                }
+
+                return true;
+            }
+        }
+    }
 
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
@@ -3260,15 +3466,42 @@ bool PartyBotAI::CrowdControlOffFocus()
 
 Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
 {
-    // A tank may only be handed something the group is already fighting. Applied here, at the one
+    // Nobody may be handed something the group is not already fighting. Applied here, at the one
     // place every role picks a target, rather than at each of the branches below, so a candidate
     // added later cannot quietly bypass it.
+    //
+    // This was the tank's rule alone, on the reasoning that the tank is the one that charges. It
+    // is not: a mob is pulled by whoever touches it first, and the two branches this gate covers
+    // are a raid mark and the leader's selection - both of which a player sets on the next pack
+    // while the current one is still alive, which is the whole point of marking ahead. So the
+    // damage dealers read the skull on the unpulled pack and opened on it while the tank, correctly
+    // gated, stayed where it was. Every other way into this function is something already hitting
+    // a group member, and those return without passing through here.
+    //
+    // IsTargetInCurrentFight carries the two exemptions that matter - an explicit attack order and
+    // a pull in progress - so the deliberate pull is untouched and only the incidental one stops.
     auto const accept = [this](Unit* pCandidate) -> Unit*
     {
         if (!pCandidate)
             return nullptr;
 
-        if (m_role == ROLE_TANK && !IsTargetInCurrentFight(pCandidate))
+        if (!IsTargetInCurrentFight(pCandidate))
+            return nullptr;
+
+        // And nothing the dungeon table says to leave alone, unless the player has pointed at it.
+        //
+        // Filtering the group's focus scan and the tank's peel collection was not enough, because
+        // neither is how a bot picks a target when something walks up and hits it. The Antu'sul
+        // pull that killed the priest has it cast Shadow Word: Pain three times on Sul'lithuz
+        // Broodlings in the four seconds before the boss was engaged -- nine hundred mana, and
+        // more importantly a threat lead it never lost: top='Rinval' at 1456 against the tank's
+        // 1051, with the tank taunting the boss back off it five times in forty seconds and the
+        // boss walking straight back each time.
+        //
+        // An explicit attack order still wins. "I will worry about them" means the player handles
+        // these, and pointing the group at one is the player handling it.
+        if (IsIgnoredByParty(pCandidate) &&
+            !(me->HasAttackOrders() && me->GetAttackOrders() == pCandidate->GetObjectGuid()))
             return nullptr;
 
         return pCandidate;
@@ -3331,7 +3564,468 @@ Unit* PartyBotAI::SelectAttackTarget(Player* pLeader) const
                 return pPetAttacker;
     }
 
+    // Last resort, and deliberately not put through accept(): that gate asks whether anybody is
+    // currently fighting the candidate, and a controlled mob is by definition fighting nobody, so
+    // the tank would be the one bot in the group that refused the last mob in the room. What the
+    // gate is there to prevent - the tank charging something the group never pulled - is ruled out
+    // more strictly below, by requiring the mob to still hold threat on this group.
+    if (!IsInDuel())
+    {
+        if (Unit* pLeftover = SelectControlledLeftoverTarget())
+            return pLeftover;
+    }
+
     return nullptr;
+}
+
+// The fight is down to a mob somebody controlled, and nothing above will ever offer it.
+//
+// Every candidate in SelectAttackTarget is found by what a mob is doing: it carries a raid mark, it
+// is what the leader is hitting, it is hitting this bot or a party member, or it is on the pet. A
+// sheep does none of those things. It attacks nobody, so it is on no attacker list, and it is not
+// the leader's victim unless the player happens to still have it selected. That is the whole reason
+// the group stands around when the last mob left alive is the one that got polymorphed.
+//
+// Threat is what survives being controlled. Polymorph stops the mob attacking but leaves its threat
+// list intact, which is precisely why it comes straight back to the same target the moment it
+// breaks - so "was this mob part of our fight" is asked of its threat list rather than of who it is
+// swinging at, and that is a stronger answer than the tank gate's, not a weaker one.
+Unit* PartyBotAI::SelectControlledLeftoverTarget() const
+{
+    // Throttled because the caller runs every tick that this bot has no valid target, which
+    // includes every idle tick out of combat, and this is a sixty yard cell visit. A second of
+    // delay before the group turns on a leftover sheep is not noticeable; a cell visit per bot
+    // per tick for the whole time a party stands in an inn is.
+    time_t const now = time(nullptr);
+    if (now - m_lastLeftoverScan < PB_LEFTOVER_SCAN_INTERVAL)
+        return nullptr;
+
+    m_lastLeftoverScan = now;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_LEFTOVER_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy || !pEnemy->IsAlive())
+            continue;
+
+        if (!pEnemy->HasBreakableByDamageCrowdControlAura())
+            continue;
+
+        // IsValidHostileTarget already carries the "is there anything better to hit" question, so
+        // a sheep that is still worth respecting is refused here without asking it twice.
+        if (!IsValidHostileTarget(pEnemy))
+            continue;
+
+        if (!HasThreatOnGroup(pEnemy))
+            continue;
+
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] lastmob bot='%s' role=%s breaking control on '%s' at %.1fy, "
+                     "nothing else left in the fight",
+                     me->GetName(), GetRoleName(m_role), pEnemy->GetName(),
+                     me->GetDistance(pEnemy));
+
+        return pEnemy;
+    }
+
+    return nullptr;
+}
+
+// Whether this mob's threat list still holds anyone from the group.
+//
+// IsEngagedWithGroup reads victims and attacker lists, which is the right question about a mob that
+// is fighting and the wrong one about a mob that has been controlled: the control stops it
+// attacking, so it drops off every attacker list in the group while its threat list is left
+// untouched.
+bool PartyBotAI::HasThreatOnGroup(Unit const* pEnemy) const
+{
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return false;
+
+    // Read-only, but neither the threat lookup nor the container beneath it is marked const.
+    ThreatManager& threat = const_cast<Unit*>(pEnemy)->GetThreatManager();
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || !pMember->IsInWorld() || pMember->GetMap() != me->GetMap())
+            continue;
+
+        // The offline list is searched too: a target the creature cannot currently act against is
+        // moved out of the live list, and being unable to act is the state control puts it in.
+        if (threat.getThreat(pMember, true) > 0.0f)
+            return true;
+
+        if (Pet* pPet = pMember->GetPet())
+            if (threat.getThreat(pPet, true) > 0.0f)
+                return true;
+    }
+
+    return false;
+}
+
+// Whether turning to kill this summon still pays, given how far through its summoner is.
+//
+// Only ever says no about creatures a tactic names as a summon of something with a burn gate, so
+// every add in every other fight, and every totem in this one, is unaffected. See
+// DungeonCreatureTactic::burnBelowPercent for why Antu'sul needs it: above sixty percent he has no
+// heal and the pause is free, below it he undoes whatever the pause cost.
+// The nearest thing the instance says to kill that a pet can reasonably be sent at on its own.
+Unit* PartyBotAI::FindFocusTotemForPet(float radius) const
+{
+    if (!m_tactics || m_tactics->focusFirst.empty())
+        return nullptr;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, radius, nearby);
+
+    for (Unit* pUnit : nearby)
+    {
+        Creature const* pCreature = pUnit->ToCreature();
+        if (!pCreature)
+            continue;
+
+        if (!m_tactics->IsFocusFirst(pCreature->GetEntry()))
+            continue;
+
+        // Elites the group has to handle together, not things to post a pet at.
+        if (m_tactics->IsSummonedAdd(pCreature->GetEntry()))
+            continue;
+
+        // Said explicitly rather than left to the filter below, because the whole of "the pet goes
+        // back to the boss afterwards" rests on this returning nothing once the totems are down.
+        if (!pUnit->IsAlive())
+            continue;
+
+        if (!IsValidHostileTarget(pUnit))
+            continue;
+
+        return pUnit;
+    }
+
+    return nullptr;
+}
+
+// The nearest add the burn rule has told the group to leave alone, or null when there is none.
+Unit* PartyBotAI::FindSuspendedSummonNearby(float radius) const
+{
+    if (!m_tactics)
+        return nullptr;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, radius, nearby);
+
+    for (Unit* pUnit : nearby)
+    {
+        if (IsSummonWorthLeavingBossFor(pUnit, false))
+            continue;
+
+        if (!IsValidHostileTarget(pUnit))
+            continue;
+
+        if (pUnit->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
+            continue;
+
+        return pUnit;
+    }
+
+    return nullptr;
+}
+
+// Whether the dungeon table says to leave this creature alone entirely.
+//
+// Distinct from the burn gate next to it, which asks "is this add worth leaving the boss for right
+// now" and answers from the boss's health. This asks nothing about timing: the answer is the same
+// at the pull and at five percent, because the reason is that the creature is not the group's
+// problem at all.
+// Whether this interrupt can actually take a cast away from this target, or only looks like it.
+//
+// The whole of three nights' worth of missed Healing Waves of Antu'sul is in this one question,
+// and the log could not ask it. Antu'sul carries mechanic_immune_mask 646659935, whose bit 25 is
+// mechanic 26, MECHANIC_INTERRUPT. On the 5086 build of the spell table Kick's interrupt sits in
+// effect two with EffectMechanic 26, and Shield Bash's in effect one with the same, so
+// Unit::IsImmuneToSpellEffect drops the interrupt effect and leaves the rest of the ability
+// alone: the Kick lands, deals its damage, reads as a successful cast, and does nothing to the
+// heal. Counterspell carries mechanic 26 at the spell level and is refused outright.
+//
+// The measured result is four interrupts against two Healing Waves in one fight -- Kick at 900ms
+// and Shield Bash at 299ms on the first, Kick at 799ms and Shield Bash at 298ms on the second --
+// and both heals landing in full. Read as timing it looks like the group was a fraction too slow
+// twice. It was never timing. Nothing this group owns can interrupt him.
+//
+// Checked per effect rather than per spell because that is where the immunity bites, and a spell
+// whose interrupt is not an effect at all -- Gouge, which incapacitates -- is left alone.
+bool PartyBotAI::CanInterruptWith(SpellEntry const* pSpellEntry, Unit const* pTarget) const
+{
+    if (!pSpellEntry || !pTarget)
+        return false;
+
+    if (pTarget->IsImmuneToSpell(pSpellEntry, false))
+        return false;
+
+    for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (pSpellEntry->Effect[i] != SPELL_EFFECT_INTERRUPT_CAST)
+            continue;
+
+        return !pTarget->IsImmuneToSpellEffect(pSpellEntry, SpellEffectIndex(i), false);
+    }
+
+    return true;
+}
+
+bool PartyBotAI::IsIgnoredByParty(Unit const* pEnemy) const
+{
+    if (!m_tactics || !pEnemy)
+        return false;
+
+    Creature const* pCreature = pEnemy->ToCreature();
+    if (!pCreature)
+        return false;
+
+    return m_tactics->IsIgnoredByParty(pCreature->GetEntry());
+}
+
+bool PartyBotAI::IsSummonWorthLeavingBossFor(Unit const* pAdd, bool logIt) const
+{
+    if (!m_tactics || !pAdd)
+        return true;
+
+    Creature const* pCreature = pAdd->ToCreature();
+    if (!pCreature)
+        return true;
+
+    float belowPercent = 0.0f;
+    uint32 const gateEntry = m_tactics->GetBurnGateFor(pCreature->GetEntry(), belowPercent);
+    if (!gateEntry)
+        return true;
+
+    Creature* pGate = me->FindNearestCreature(gateEntry, 100.0f, true);
+    if (!pGate || !pGate->IsAlive())
+        return true;
+
+    if (pGate->GetHealthPercent() > belowPercent)
+        return true;
+
+    if (logIt && IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] burnon bot='%s' role=%s stayed on '%s' (%.0f%%) rather than turn for "
+                 "'%s', because leaving now costs more than the add does",
+                 me->GetName(), GetRoleName(GetRole()), pGate->GetName(),
+                 pGate->GetHealthPercent(), pCreature->GetName());
+    }
+
+    return false;
+}
+
+// The suspended summon close enough to walk onto a trap laid here.
+//
+// Deliberately a short radius. A trap is laid at the hunter's own feet and only springs when
+// something walks over it, so an add on the far side of the room is not a candidate however badly
+// it needs controlling -- it will never reach this patch of floor before the trap times out.
+Unit* PartyBotAI::FindSummonWorthTrapping(float radius) const
+{
+    if (!m_tactics)
+        return nullptr;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, radius, nearby);
+
+    Player* pTank = GetGroupTank();
+
+    for (Unit* pAdd : nearby)
+    {
+        if (!pAdd || !pAdd->IsAlive() || !IsValidHostileTarget(pAdd))
+            continue;
+
+        // Only the ones the burn rule has already told the group to walk away from. Anything the
+        // group is still killing does not want trapping, and the trap breaks on damage anyway.
+        if (IsSummonWorthLeavingBossFor(pAdd, false))
+            continue;
+
+        // Not the one the tank has hold of. At twenty five percent two Servants arrive, the tank
+        // takes one, and the other is what this is for.
+        if (pTank && pTank->GetVictim() == pAdd)
+            continue;
+
+        if (pAdd->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
+            continue;
+
+        if (pAdd->HasBreakableByDamageCrowdControlAura())
+            continue;
+
+        return pAdd;
+    }
+
+    return nullptr;
+}
+
+// Freezing Trap, in the two steps the game insists on.
+//
+// The trap is the only control that works on a Servant of Antu'sul. Its creature type is
+// NOT_SPECIFIED, which rules out Polymorph, Sap, Shackle, Banish and Hibernate outright -- their
+// target masks do not carry that bit -- and its immunity mask rules out root and snare. What is
+// left is the typeless handful: Blind, on a five minute cooldown the rogue gets once a fight;
+// Gouge, four seconds; and Freezing Trap, twenty. Against six thousand one hundred and eighty six
+// health of add that the group cannot afford to kill -- forty seven percent of the boss's own bar,
+// thirty three seconds of damage, two Healing Waves handed back -- twenty seconds of control is
+// the only number here that changes the fight.
+//
+// Feign Death is not decoration on this and not an attempt to use it as control. The trap carries
+// SPELL_ATTR_NOT_IN_COMBAT_ONLY_PEACEFUL: the server refuses it outright while the hunter is in
+// combat, so there is no version of this that does not drop combat first. That is the whole of
+// why it is here.
+//
+// The previous build of this livelocked -- the hunter lay down for sixty nine seconds and never
+// laid the trap -- and the cause was a hold that kept it feigned while it waited for conditions.
+// There is no hold here and no waiting state. Every path either casts something this tick and
+// returns true, or returns false immediately and lets the rotation have the tick. A deadline
+// bounds the whole attempt, and missing it stands the sequence down rather than retrying.
+// End a trap attempt and get the hunter back on its feet.
+//
+// The single thing both previous builds of this were missing, and the whole of the livelock. A
+// feigned hunter cannot act, and "let the rotation have the tick" therefore does nothing at all:
+// the rotation reaches for a shot, the feign refuses it, and the bot sits there. Feign Death has
+// no duration worth waiting out -- six minutes -- so unless something takes the aura off
+// deliberately the hunter stays down for the rest of the fight. One capture has it silent from
+// 23:45:43 to 23:46:46, sixty three seconds, while Antu'sul healed from fifteen percent to
+// thirty six and the kill was lost.
+//
+// Removing the aura here rather than relying on the next action is what makes the deadline real.
+void PartyBotAI::EndTrapAttempt(uint32 now)
+{
+    m_trapAttemptStart = 0;
+    m_trapStandDownUntil = now + PB_TRAP_RETRY_MS;
+
+    if (m_spells.hunter.pFeignDeath && me->HasAura(m_spells.hunter.pFeignDeath->Id))
+        me->RemoveAurasDueToSpell(m_spells.hunter.pFeignDeath->Id);
+
+    HoldPet(false);
+}
+
+bool PartyBotAI::TryFreezingTrapSequence()
+{
+    if (me->GetClass() != CLASS_HUNTER || IsInDuel() || m_holdPosition)
+        return false;
+
+    if (!m_spells.hunter.pFreezingTrap || !m_spells.hunter.pFeignDeath)
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+
+    // Stood down after a failed attempt. Nothing is retried for a while, so a sequence that cannot
+    // complete costs one attempt rather than the fight.
+    if (m_trapStandDownUntil && WorldTimer::getMSTimeDiff(now, m_trapStandDownUntil) > 0 &&
+        m_trapStandDownUntil > now)
+        return false;
+
+    bool const feigned = me->HasAura(m_spells.hunter.pFeignDeath->Id);
+
+    // Step two: feigned already, so the trap is castable. This is the only reason the hunter is
+    // lying down, so it happens now or the attempt is over.
+    if (feigned)
+    {
+        if (CanTryToCastSpell(me, m_spells.hunter.pFreezingTrap) &&
+            DoCastSpell(me, m_spells.hunter.pFreezingTrap) == SPELL_CAST_OK)
+        {
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] trap bot='%s' laid '%s' while feigned, %ums into the attempt",
+                         me->GetName(), m_spells.hunter.pFreezingTrap->SpellName[0].c_str(),
+                         WorldTimer::getMSTimeDiff(m_trapAttemptStart, now));
+            }
+
+            EndTrapAttempt(now);
+            return true;
+        }
+
+        // Could not lay it. The deadline is what ends this: past it the hunter stands up by
+        // getting on with the rotation, which breaks the feign on its own.
+        if (m_trapAttemptStart &&
+            WorldTimer::getMSTimeDiff(m_trapAttemptStart, now) >= PB_TRAP_ATTEMPT_BUDGET_MS)
+        {
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] trapabort bot='%s' gave up laying the trap after %ums and "
+                         "went back to fighting",
+                         me->GetName(), WorldTimer::getMSTimeDiff(m_trapAttemptStart, now));
+            }
+
+            EndTrapAttempt(now);
+        }
+
+        return false;
+    }
+
+    // Step one: worth starting at all. Checked before Feign Death rather than after, because
+    // dropping combat for a trap that is on cooldown is the hunter taking itself out of the fight
+    // for nothing -- which is exactly what the removed version did.
+    if (m_trapAttemptStart)
+    {
+        // Was feigned, is not any more, and never laid it. Resistance, or the feign broke.
+        EndTrapAttempt(now);
+        return false;
+    }
+
+    if (!me->IsSpellReady(m_spells.hunter.pFreezingTrap) ||
+        !me->IsSpellReady(m_spells.hunter.pFeignDeath))
+        return false;
+
+    Unit* pAdd = FindSummonWorthTrapping(PB_TRAP_SUMMON_RADIUS);
+    if (!pAdd)
+        return false;
+
+    // Call the pet off first, and this is the whole reason the sequence has never once worked.
+    //
+    // Feign Death does drop combat -- SetFeignDeath calls CombatStop and deletes every hostile
+    // reference -- and then, four lines later, puts the hunter straight back into it:
+    //
+    //     if (Pet* pPet = GetPet())
+    //         if (pPet->IsInCombat() && pPet->GetVictim())
+    //             SetInCombatWithVictim(pPet->GetVictim(), false, 6000);
+    //
+    // Six seconds, re-applied from the pet's target, which for a hunter bot is always something.
+    // Freezing Trap is flagged non-combat and CheckCast refuses it outright while IsInCombat is
+    // true, so the trap was being rejected with SPELL_FAILED_AFFECTING_COMBAT every single time,
+    // deterministically, for longer than the attempt's own deadline. Not a timing race, which is
+    // what the two failed builds were written to fix: the log shows "feigned but the trap was
+    // refused: ok" -- every precondition passing and the server saying no anyway.
+    //
+    // Stopping the pet's attack clears its victim, so that branch does not fire and the hunter
+    // stays out of combat long enough to plant the trap. UpdatePetCombat sends it back in on the
+    // next tick, which is also when the feign ends.
+    HoldPet(true);
+
+    if (!CanTryToCastSpell(me, m_spells.hunter.pFeignDeath) ||
+        DoCastSpell(me, m_spells.hunter.pFeignDeath) != SPELL_CAST_OK)
+    {
+        HoldPet(false);
+        return false;
+    }
+
+    m_trapAttemptStart = now;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] trapsetup bot='%s' feigned to lay a trap for '%s' (lvl %u) at %.1fy",
+                 me->GetName(), pAdd->GetName(), pAdd->GetLevel(), me->GetDistance(pAdd));
+    }
+
+
+    // Deliberately no trap attempt in this tick. DoCastSpell returning OK means the cast started,
+    // not that the aura is on, so Feign Death has not dropped combat yet and the trap is refused
+    // with SPELL_FAILED_AFFECTING_COMBAT every time -- which is exactly what the log shows,
+    // "feigned but the trap was refused: ok (incombat=1)", three builds running. The feigned
+    // branch at the top of this function takes the next tick, and the deadline bounds it.
+    return true;
 }
 
 Unit* PartyBotAI::SelectPartyAttackTarget() const
@@ -3354,6 +4048,9 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
         if (!IsValidHostileTarget(pAttacker) || !me->IsWithinDist(pAttacker, 50.0f))
             return;
 
+        if (IsIgnoredByParty(pAttacker))
+            return;
+
         if (!pAnyAttacker)
             pAnyAttacker = pAttacker;
 
@@ -3374,7 +4071,9 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
 
         if (!pPreferred && m_tactics)
             if (Creature const* pCreature = pAttacker->ToCreature())
-                if (m_tactics->IsFocusFirst(pCreature->GetEntry()))
+                if (m_tactics->IsFocusFirst(pCreature->GetEntry()) &&
+                    IsSummonWorthLeavingBossFor(pAttacker) &&
+                    CanEngageFromHeldGround(pAttacker))
                     pPreferred = pAttacker;
     };
 
@@ -3393,6 +4092,58 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
 
     if (pMarked)
         return pMarked;
+
+    // Nothing in the group is being hit by a focus target, which is not the same as there being
+    // none. The scan above walks GetAttackers, so it can only ever see creatures that are hitting
+    // somebody -- and the whole reason the worst of these entries are on the list is that they do
+    // not hit anybody. A Greater Healing Ward heals, an Earthgrab Totem roots, a Ward of Zum'rah
+    // raises skeletons; not one of them appears in any player's attacker list, ever. So the
+    // instance's kill-on-sight list silently covered only the half of itself that fights back, and
+    // Antu'sul's ward healed him through three wipes without a bot ever selecting it.
+    //
+    // Only while the group is already fighting, and only within the radius the scan above uses, so
+    // this stays a rule about the fight in progress rather than a licence to wander off and pull
+    // the next room's totem.
+    // Damage dealers only. The first cut of this let any role take the job and the combat log
+    // came back with five lines of the healer walking off to hit a totem, which is a worse outcome
+    // than the totem living: the ward heals the boss, but the healer not healing kills the group.
+    // The tank is excluded for the same reason in reverse -- whatever it is holding goes with it.
+    bool const canLeaveItsPostForThis = (GetRole() != ROLE_HEALER && GetRole() != ROLE_TANK);
+
+    if (!pPreferred && canLeaveItsPostForThis && m_tactics && !m_tactics->focusFirst.empty() &&
+        me->IsInCombat())
+    {
+        std::list<Unit*> nearby;
+        me->GetEnemyListInRadiusAround(me, 50.0f, nearby);
+
+        for (Unit* pUnit : nearby)
+        {
+            Creature const* pCreature = pUnit->ToCreature();
+            if (!pCreature || !m_tactics->IsFocusFirst(pCreature->GetEntry()))
+                continue;
+
+            if (!IsValidHostileTarget(pUnit) || !IsSummonWorthLeavingBossFor(pUnit))
+                continue;
+
+            // The measured failure: this scan is fifty yards and the courtyard floor is forty
+            // seven to fifty from the middle of the landing, so it reached past the hold line for
+            // Acolytes nobody could touch.
+            if (!CanEngageFromHeldGround(pUnit))
+                continue;
+
+            if (IsCombatLogged())
+            {
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] idlefocus bot='%s' role=%s picked '%s' (lvl %u, %.1fy) "
+                         "which is hitting nobody but the instance says kill it first",
+                         me->GetName(), GetRoleName(GetRole()), pCreature->GetName(),
+                         pCreature->GetLevel(), me->GetDistance(pUnit));
+            }
+
+            pPreferred = pUnit;
+            break;
+        }
+    }
 
     if (pPreferred)
         return pPreferred;
@@ -3416,6 +4167,263 @@ void PartyBotAI::RefreshDungeonTactics()
 
     m_tacticsMapId = me->GetMapId();
     m_tactics = GetDungeonTactics(m_tacticsMapId);
+}
+
+bool PartyBotAI::GetFightAnchor(Unit const* pVictim, float& x, float& y, float& z,
+                                float& radius) const
+{
+    if (!m_tactics || !pVictim)
+        return false;
+
+    Creature const* pCreature = pVictim->ToCreature();
+    if (!pCreature)
+        return false;
+
+    return m_tactics->GetFightAnchor(pCreature->GetEntry(), x, y, z, radius);
+}
+
+// Whether stepping to a spot would take the bot off ground it is holding.
+//
+// Asked of where the bot is now as well as of where it is going, so the rule only binds a bot that
+// is already on the ground in question. One that has not reached it yet is not held back from
+// walking to it, and one the leader has walked away is not dragged back to it.
+bool PartyBotAI::WouldLeaveHeldGround(float x, float y, float z) const
+{
+    if (!m_tactics || m_tactics->holdLines.empty())
+        return false;
+
+    DungeonHoldLine const* pHere = m_tactics->GetHoldLineAt(me->GetPositionX(), me->GetPositionY(),
+                                                            me->GetPositionZ());
+    if (!pHere)
+        return false;
+
+    return m_tactics->GetHoldLineAt(x, y, z) != pHere;
+}
+
+// Walk back onto ground the instance says to hold, having been pushed off it.
+//
+// The refusal above is only half of a hold line and this is the half Zul'Farrak needs. A bot that
+// is standing on the landing will not follow a troll down the stairs; a bot that has been *thrown*
+// down them by Shadowpriest Sezz'ziz's Psychic Scream is outside every zone, so by construction
+// nothing holds it any more and it fights out the rest of the event at the bottom, among the
+// trolls that have not been released yet. Which is the same losing position the refusal exists to
+// prevent, arrived at from the other direction.
+//
+// Only in combat, and only from inside the recovery radius. Out of combat the follow already puts
+// the bot wherever the leader is, and dragging it back to a landing the group has deliberately
+// left would strand it there -- the Bly fight is at the foot of these very stairs, so this must
+// not be a rule that says "always be at the top".
+bool PartyBotAI::ReturnToHeldGround()
+{
+    if (!m_tactics || m_tactics->holdLines.empty() || IsInDuel())
+        return false;
+
+    if (!me->IsInCombat() || m_holdPosition || IsPulling() || me->HasAttackOrders())
+        return false;
+
+    // Nothing can be walked anywhere in these states, and a feared bot is still being moved by the
+    // fear -- ordering a walk under it is a fight between two movement generators that the fear
+    // wins. The recovery happens on the tick after it wears off, which is soon enough.
+    if (me->IsMounted() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    if (!CanIssueCombatMovement())
+        return false;
+
+    DungeonHoldLine const* pLine = m_tactics->GetHoldLineToRecover(
+        me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
+    if (!pLine)
+        return false;
+
+    // Only back to ground the party leader is still holding.
+    //
+    // Distance alone cannot tell "thrown off the landing" from "the group has moved on", and in
+    // Zul'Farrak the two are barely thirty yards apart: Bly's crew are moved to the foot of the
+    // stairs for wave three, about fifty three yards from the middle of the landing, and the third
+    // wave itself is spawned down there for the group to come to. A radius wide enough to bring a
+    // feared bot back up the stairway also reaches the fight at the bottom of it.
+    //
+    // The leader and nobody else, which is the correction to the first version of this rule. That
+    // one asked whether *any* party member was still in the zone, and it deadlocked exactly where
+    // it mattered: one bot left on the landing made every other bot recover to the landing, which
+    // kept a bot on the landing. The measured run has the party walked down for wave three and
+    // then dragged back up in forty nine yard legs, over and over, while the healer stood at the
+    // top refusing to follow Nekrum down -- a stable oscillation that cost the whole event with
+    // nobody dying.
+    //
+    // A leader is the right authority anyway. It carries the intent these bots already follow
+    // everywhere else, it cannot be dragged anywhere by this rule because it is not subject to it,
+    // and so a player standing at the choke means hold while a player walking down means go.
+    Player* const pLeader = GetPartyLeader();
+    if (!pLeader || !pLeader->IsInWorld() || pLeader->GetMap() != me->GetMap())
+        return false;
+
+    if (m_tactics->GetHoldLineAt(pLeader->GetPositionX(), pLeader->GetPositionY(),
+                                 pLeader->GetPositionZ()) != pLine)
+        return false;
+
+    // Straight to the middle of it rather than to the nearest edge. The edge of a hold line is the
+    // top step of a staircase, and a bot that stops there is one knockback from being back where
+    // it started.
+    if (!SafeMoveTo(pLine->x, pLine->y, pLine->z))
+        return false;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] holdline bot='%s' role=%s walked %.1fy back onto the ground it is "
+                 "holding at (%.1f %.1f %.1f), from %.1f %.1f %.1f",
+                 me->GetName(), GetRoleName(GetRole()),
+                 me->GetDistance(pLine->x, pLine->y, pLine->z),
+                 pLine->x, pLine->y, pLine->z,
+                 me->GetPositionX(), me->GetPositionY(), me->GetPositionZ());
+    }
+
+    NoteCombatMovement();
+    return true;
+}
+
+// Step into sight of somebody the healer can reach but cannot see.
+//
+// A healer that is in range of a dying party member and blocked only by a corner is the most
+// expensive kind of doing nothing in this file, and it is what ended the first Zul'Farrak run:
+// the priest logged wreason=no_los against a hunter at seventeen point eight yards -- well inside
+// its forty yard reach -- on two consecutive ticks, at thirty seven percent health and then at
+// eighteen, and the hunter died between them.
+//
+// The step already existed. It was unreachable. It sat under `if (!pVictim)` in the movement
+// block, meaning a healer only went looking for line of sight when it had no attack target at
+// all -- and a healer in combat is nearly always wanding something, so the branch never ran in
+// the one situation it was written for. Hoisted out here it is asked on its own terms, every
+// tick, the way RecoverLineOfSight already is for the bot's own target.
+//
+// Deliberately not subject to the hold, for the reason given above RecoverLineOfSight: holding a
+// choke means not closing on the mob, and has never meant standing behind a rock while the group
+// dies. SafeMoveTo still refuses anything that would leave held ground, so a healer on a landing
+// looks for sight on the landing.
+bool PartyBotAI::RecoverHealLineOfSight()
+{
+    if (m_role != ROLE_HEALER || !me->IsInCombat() || IsInDuel())
+        return false;
+
+    if (me->IsMoving() || me->IsMounted() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    if (!CanIssueCombatMovement())
+        return false;
+
+    Unit* const pBlind = SelectHealTargetOutOfReach();
+    if (!pBlind)
+        return false;
+
+    // Only the sight case. Out of range is the follow's job and is answered below in the tick;
+    // stepping ten yards at something forty yards away would be neither.
+    float const reach = GetMaxHealSpellRange();
+    if (!me->IsWithinDist(pBlind, reach) || me->IsWithinLOSInMap(pBlind))
+        return false;
+
+    float x, y, z;
+    if (!FindFiringPosition(pBlind, 0.0f, reach, PB_HEAL_SIGHT_STEP_TRAVEL, x, y, z))
+        return false;
+
+    if (!SafeMoveTo(x, y, z))
+        return false;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] healsight bot='%s' stepped to (%.1f %.1f) to see '%s' at %.1fy on "
+                 "%.0f%% health, which it could reach and not see",
+                 me->GetName(), x, y, pBlind->GetName(), me->GetDistance(pBlind),
+                 pBlind->GetHealthPercent());
+    }
+
+    NoteCombatMovement();
+    return true;
+}
+
+// Whether this bot could actually fight this target without leaving the ground it is holding.
+//
+// The other half of the hold line, and the half the first Zul'Farrak run was missing. Refusing the
+// chase stops a bot walking down the stairs; it does nothing about the bot *choosing* something at
+// the bottom of them, and the two rules met badly. The focus scan reaches fifty yards, the
+// courtyard floor is forty seven to fifty from the middle of the landing, and Sandfury Acolytes
+// are on the instance's kill-first list for their Mana Burn -- so the party repeatedly settled on
+// unreleased Acolytes standing at the foot of the stairs, measured at 49.1, 49.4 and 49.6 yards.
+// A hundred and thirteen of the hundred and thirty chase refusals in that run were Acolytes. The
+// bot then stands there holding a target it may not approach and, at that range, cannot shoot
+// either.
+//
+// A target off the held ground is still allowed when the bot can hit it from where it stands,
+// which is the whole of what a ranged bot on a choke is for. Melee cannot, and so declines it.
+bool PartyBotAI::CanEngageFromHeldGround(Unit const* pTarget) const
+{
+    if (!pTarget)
+        return false;
+
+    if (!WouldLeaveHeldGround(pTarget->GetPositionX(), pTarget->GetPositionY(),
+                              pTarget->GetPositionZ()))
+        return true;
+
+    // Off the ground, so the only question left is whether it can be reached with something that
+    // is not a walk. Melee range is deliberately not counted: a melee bot already within swing
+    // range of something off the line will not stay there, because the target moves and the chase
+    // after it is exactly what this exists to refuse.
+    if (!IsRangedDamageClass(me->GetClass()) ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+        return false;
+
+    // Thirty yards, which is what GetMaxHealSpellRange falls back to for the same reason: there is
+    // no damage-spell list to measure, and thirty is the reach of the long end of a vanilla
+    // spellbook. Being approximate is affordable here because the distances this arbitrates are
+    // not close -- the landing is thirty three yards above the courtyard and forty seven from it,
+    // so nothing the rule refuses was within twenty yards of being shootable.
+    constexpr float RANGED_REACH = 30.0f;
+
+    return me->IsWithinDist(pTarget, RANGED_REACH) && me->IsWithinLOSInMap(pTarget);
+}
+
+// The instance's kill-on-sight list doubles as the list of things worth waking.
+//
+// These two rules were written apart and met badly. Focus-first says a Greater Healing Ward has
+// to die or the boss does not; pull avoidance says do not walk within twenty six yards of an
+// unengaged level forty eight creature. A ward is unengaged by construction -- it has no melee, it
+// never chases, it never enters combat on its own -- so avoidance refused every approach to it
+// permanently, and focus-first silently picked a target no bot would ever walk to. The Zul'Farrak
+// log is unambiguous: eleven refusals to close on wards and totems, and not one bot ever swinging
+// at one.
+//
+// Saying it once here rather than exempting totems by creature type, because the type does not
+// separate them: Earthgrab Totem is CREATURE_TYPE_TOTEM and Greater Healing Ward is
+// CREATURE_TYPE_NOT_SPECIFIED, and both matter for the same reason.
+std::vector<uint32> const* PartyBotAI::GetApproachAnywayEntries() const
+{
+    if (!m_tactics || m_tactics->focusFirst.empty())
+        return nullptr;
+
+    return &m_tactics->focusFirst;
+}
+
+// Whether this creature is one the instance's tactics say to treat as part of the fight even
+// though nothing has engaged it -- the boss's own totems and wards, which are summoned into a
+// fight already in progress and can never be the start of a second one.
+bool PartyBotAI::IsApproachAnywayTarget(Unit const* pTarget) const
+{
+    std::vector<uint32> const* pEntries = GetApproachAnywayEntries();
+    if (!pEntries || !pTarget)
+        return false;
+
+    Creature const* pCreature = pTarget->ToCreature();
+    if (!pCreature)
+        return false;
+
+    return std::find(pEntries->begin(), pEntries->end(), pCreature->GetEntry()) != pEntries->end();
 }
 
 float PartyBotAI::GetTacticalStandoff(Unit const* pTarget) const
@@ -3456,6 +4464,21 @@ bool PartyBotAI::IsEngagedWithGroup(Unit const* pEnemy) const
         for (const auto pAttacker : pMember->GetAttackers())
             if (pAttacker == pEnemy)
                 return true;
+
+        // And the other direction, which this was missing entirely: a mob the group is attacking
+        // is the group's fight whether or not it is hitting anybody back yet.
+        //
+        // Both tests above ask "is this mob on us". In an escort fight the answer is routinely no
+        // while the group is killing it, because it is busy with the escort -- and in Zul'Farrak
+        // that is the entire premise of the event, since the trolls come up the stairs into Bly
+        // and his four. One measured run: two hundred and fourteen of two hundred and fifteen
+        // group focus changes logged "from nothing", two hundred and one of them inside forty
+        // seconds, which is about five target switches a second across the party. The held focus
+        // was being discarded every tick because the mob the group had settled on was swinging at
+        // Bly, so nothing was ever killed, everyone took damage for the full duration, and the
+        // healer emptied its bar holding up a fight that was making no progress.
+        if (pMember->GetVictim() == pEnemy)
+            return true;
 
         // A pet holding the mob counts. A hunter's pet is often the only thing on an add for the
         // first few seconds, and those are the seconds an interrupt is wanted in.
@@ -4228,6 +5251,12 @@ Unit* PartyBotAI::SelectPeelTarget() const
                 if (pCreature->GetCreatureType() == CREATURE_TYPE_CRITTER)
                     continue;
 
+            // And not what the dungeon table says to leave alone. This is the chokepoint for the
+            // whole peel: what is not collected here is not fetched, not shouted at and not
+            // switched to, so one filter covers all three.
+            if (IsIgnoredByParty(pAttacker))
+                continue;
+
             if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
                 continue;
 
@@ -4784,6 +5813,12 @@ void PartyBotAI::CollectLooseEnemies(std::vector<Unit*>& out) const
                 if (pCreature->GetCreatureType() == CREATURE_TYPE_CRITTER)
                     continue;
 
+            // And not what the dungeon table says to leave alone. This is the chokepoint for the
+            // whole peel: what is not collected here is not fetched, not shouted at and not
+            // switched to, so one filter covers all three.
+            if (IsIgnoredByParty(pAttacker))
+                continue;
+
             if ((pAttacker->GetLevel() + PB_PEEL_LEVEL_FLOOR) < me->GetLevel())
                 continue;
 
@@ -5207,7 +6242,16 @@ bool PartyBotAI::GatherLooseEnemies()
         // A tank taking an add by switching to it drops the Sunder stack it has been building and
         // gains nothing a taunt would not have given it. Taunt is what a tank peels with, and the
         // peel logic spends it; the only thing worth breaking that rule for is the healer.
-        if (m_role == ROLE_TANK && !onHealer)
+        //
+        // And even for the healer, only when there is no taunt to spend. A taunt lands from where
+        // the tank is standing; a body peel is a walk out and a walk back, and it cannot work at
+        // all on an add that never closes -- which is precisely the add that ends up on a healer,
+        // because the ones that close are already on the tank. So the body peel waited out its
+        // full timeout on a Sandfury Shadowcaster shooting the healer from range, walked the tank
+        // back, and was re-taken on arrival: the tank covered twenty three yards in eight seconds
+        // and neither mob changed target. PeelForTheHealer runs ahead of this now, so reaching
+        // here with a taunt ready means the taunt was refused for the target rather than missing.
+        if (m_role == ROLE_TANK && (!onHealer || HasTauntReadyFor(pNearest)))
             return false;
 
         // Nearly dead. Finishing it is a few more swings and one less mob in the fight, and the
@@ -5217,7 +6261,7 @@ bool PartyBotAI::GatherLooseEnemies()
 
         // Something on the healer is worth interrupting anything for. Everything else waits its
         // turn, so that collecting cannot become a warrior that changes target every tick.
-        if (!onHealer && (time(nullptr) - m_lastGatherSwitch) < PB_GATHER_SWITCH_INTERVAL)
+        if (!onHealer && (now - m_lastGatherSwitch) < PB_GATHER_SWITCH_INTERVAL)
             return false;
     }
 
@@ -5237,6 +6281,110 @@ bool PartyBotAI::GatherLooseEnemies()
                  "[BotCombat] herd bot='%s' role=%s took '%s' off %s from %.1fy away",
                  me->GetName(), GetRoleName(m_role), pNearest->GetName(),
                  onHealer ? "the healer" : "a caster", bestDistance);
+    }
+
+    return true;
+}
+
+// Get out of the way of something nobody has pulled.
+//
+// Every other aggro rule in this file is a refusal, and a refusal only ever answers the bot moving
+// towards trouble. It has nothing at all to say about trouble arriving: a patrol walks up to a
+// group eating between pulls, a leader parks the party in a doorway, a pack respawns around bots
+// that killed it. In each case the bot is inside an aggro radius, no rule objects because nothing
+// asked one, and whether the group gets a second fight is now up to the creature's own timer.
+//
+// So this is the one rule here that moves a bot for a reason outside the fight it is in.
+//
+// Melee in combat are deliberately excluded, and the exclusion is the important part. A melee bot
+// cannot be both out of a seventeen yard radius and inside its target's melee reach, so the only
+// available step is one that abandons the fight -- and the chase generator would immediately walk
+// it back in, which is a bot turning and running from its target for no visible reason. Where a
+// melee fight happens is the tank's business and DragFightAwayFromNeighbours is how the tank says
+// so: it moves the mob as well, which is the only version of this that works in melee.
+bool PartyBotAI::AvoidUnpulledNeighbours()
+{
+    if (IsInDuel() || m_holdPosition || IsPulling() || me->HasAttackOrders())
+        return false;
+
+    // Mounted means travelling, which is the follow generator's business and already subject to
+    // the route rule; and a cast in progress is worth more than the step.
+    if (me->IsMounted() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    bool const inCombat = me->IsInCombat();
+    if (inCombat && GetRole() != ROLE_RANGE_DPS)
+        return false;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastNeighbourStep < PB_NEIGHBOUR_STEP_INTERVAL)
+        return false;
+
+    if (!CanIssueCombatMovement())
+        return false;
+
+    Creature* const pNeighbour = me->FindUnengagedCreatureAggroedByPosition(
+        me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
+        PB_NEIGHBOUR_STEP_MARGIN, GetApproachAnywayEntries());
+    if (!pNeighbour)
+        return false;
+
+    float x, y, z;
+    bool found = false;
+
+    if (inCombat)
+    {
+        // A step that gives up the fight is not a step worth taking, so in combat this asks for a
+        // firing position rather than for open ground: in range of what the bot is shooting, with
+        // a view of it, and - because FindFiringPosition already refuses anything inside an
+        // unengaged aggro radius - out of the band that prompted the search.
+        //
+        // Capped at the range the bot is already at, so this is sideways and never a retreat out
+        // of range. Same reasoning as the blind-corner step, and the same effect when nothing
+        // sideways is clear: the bot stays where it is rather than walking out of the fight.
+        Unit* const pVictim = me->GetVictim();
+        if (!pVictim)
+            return false;
+
+        float const distance = me->GetDistance(pVictim);
+        float const standoff = std::max(GetTacticalStandoff(pVictim), PB_BLIND_STEP_MIN_DISTANCE);
+        if (distance <= standoff)
+            return false;
+
+        found = FindFiringPosition(pVictim, standoff, distance, PB_NEIGHBOUR_STEP_MAX_TRAVEL,
+                                   x, y, z);
+    }
+    else
+    {
+        found = FindSpotClearOfUnengaged(pNeighbour, PB_NEIGHBOUR_STEP_MAX_TRAVEL, x, y, z);
+    }
+
+    if (!found)
+        return false;
+
+    if (!me->IsStopped())
+        me->StopMoving();
+
+    me->GetMotionMaster()->Clear(false, true);
+    // Idle before the point order, for the reason every other reposition here does it: a movement
+    // stack emptied and then left empty is what killed the world thread once already.
+    me->GetMotionMaster()->MoveIdle();
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+
+    m_lastNeighbourStep = now;
+    NoteCombatMovement();
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] neighbour bot='%s' role=%s stepped %.1fy to (%.1f %.1f) out of '%s' "
+                 "(lvl %u, aggro %.1fy) which it was standing %.1fy from and nobody has pulled",
+                 me->GetName(), GetRoleName(GetRole()), me->GetDistance(x, y, z), x, y,
+                 pNeighbour->GetName(), pNeighbour->GetLevel(),
+                 pNeighbour->GetAttackDistance(me), me->GetDistance(pNeighbour));
     }
 
     return true;
