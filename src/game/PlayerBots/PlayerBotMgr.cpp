@@ -958,6 +958,72 @@ bool ChatHandler::PartyBotAddRequirementCheck(Player const* pPlayer, Player cons
     return true;
 }
 
+// Where to put a bot that is about to appear beside a player.
+//
+// This used to be five yards at a rolled angle, and a rolled angle puts the body on the mob side of
+// the player about as often as not. A bot arriving is a player arriving: it is aggroed on sight,
+// before its AI has had a single tick in which to decide anything. A tank spawned 4.8 yards from a
+// full health Ghostly Raider and its very first tick already read attackers=1 with mythreat=0 and
+// topthreat=0 -- it had done nothing, and was being hit. The rest of the group then joined through
+// the ordinary "a party member is under attack" path, which is correct behaviour, and the player
+// saw a party that spawned and immediately pulled a pack they had been careful to avoid.
+//
+// Nothing in the combat AI was choosing that fight. SelectAttackTarget already refuses anything the
+// group is not fighting; the group was simply put somewhere it would be attacked. So the angle is
+// chosen rather than rolled, using the same question the movement code asks before it steps
+// anywhere: would standing here wake something that is not already fighting us.
+//
+// Rings are tried inside-out from the usual five yards, because the nearer spots are the ones the
+// player expects and a bot appearing eleven yards away looks broken in open ground. If every
+// direction is compromised the player is standing in the pack already, and the honest answer is the
+// first candidate rather than a refusal to spawn -- declining to add the bot would be worse than
+// adding it where the player is standing anyway.
+static void PickPartyBotSpawnPoint(Player* pPlayer, float& x, float& y, float& z)
+{
+    // The margin the bot's own movement checks use, so the spawn agrees with what the bot will
+    // consider a safe place to stand a moment later.
+    static constexpr float SPAWN_AGGRO_MARGIN = 3.0f;
+    static constexpr float SPAWN_RINGS[] = { 5.0f, 7.0f, 9.0f };
+    static constexpr int SPAWN_ANGLE_STEPS = 12;
+
+    // Still randomised, so a party of four does not stack on one bearing; only the search order is.
+    float const baseAngle = frand(0.0f, 2.0f * M_PI_F);
+
+    bool haveFallback = false;
+    float fallbackX = 0.0f, fallbackY = 0.0f, fallbackZ = 0.0f;
+
+    for (float const ring : SPAWN_RINGS)
+    {
+        for (int step = 0; step < SPAWN_ANGLE_STEPS; ++step)
+        {
+            float const angle = baseAngle + (2.0f * M_PI_F * float(step)) / float(SPAWN_ANGLE_STEPS);
+
+            float cx, cy, cz;
+            pPlayer->GetNearPoint(pPlayer, cx, cy, cz, 0, ring, angle);
+
+            if (!haveFallback)
+            {
+                fallbackX = cx;
+                fallbackY = cy;
+                fallbackZ = cz;
+                haveFallback = true;
+            }
+
+            if (!pPlayer->FindUnengagedCreatureAggroedByPosition(cx, cy, cz, SPAWN_AGGRO_MARGIN))
+            {
+                x = cx;
+                y = cy;
+                z = cz;
+                return;
+            }
+        }
+    }
+
+    x = fallbackX;
+    y = fallbackY;
+    z = fallbackZ;
+}
+
 bool ChatHandler::HandlePartyBotAddCommand(char* args)
 {
     Player* pPlayer = m_session->GetPlayer();
@@ -1136,7 +1202,7 @@ bool ChatHandler::HandlePartyBotAddCommand(char* args)
     }
 
     float x, y, z;
-    pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+    PickPartyBotSpawnPoint(pPlayer, x, y, z);
 
     PartyBotAI* ai = new PartyBotAI(pPlayer, nullptr, botRole, botRace, botClass, botLevel, pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
     ai->m_specName = botSpec;
@@ -1177,7 +1243,7 @@ bool ChatHandler::HandlePartyBotCloneCommand(char* args)
     uint8 botClass = pTarget->GetClass();
 
     float x, y, z;
-    pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+    PickPartyBotSpawnPoint(pPlayer, x, y, z);
 
     PartyBotAI* ai = new PartyBotAI(pPlayer, pTarget, ROLE_INVALID, botRace, botClass, pPlayer->GetLevel(), pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
     if (sPlayerBotMgr.AddBot(ai))
@@ -1223,7 +1289,7 @@ bool ChatHandler::HandlePartyBotLoadCommand(char* args)
     }
 
     float x, y, z;
-    pPlayer->GetNearPoint(pPlayer, x, y, z, 0, 5.0f, frand(0.0f, 6.0f));
+    PickPartyBotSpawnPoint(pPlayer, x, y, z);
 
     PartyBotAI* pAI = new PartyBotAI(pPlayer, pPlayer->GetMapId(), pPlayer->GetMap()->GetInstanceId(), x, y, z, pPlayer->GetOrientation());
 
@@ -1758,8 +1824,16 @@ bool HandlePartyBotComeToMeHelper(Player* pBot, Player* pPlayer)
             if (!pAI->SafeMoveTo(pPlayer->GetPositionX(), pPlayer->GetPositionY(),
                                  pPlayer->GetPositionZ()))
             {
-                // No way round at all. Say so rather than appearing to obey and then not moving.
-                return false;
+                // No way round, so straight there. Refusing was wrong: this is not the AI choosing
+                // to close on something, it is a player saying come here, and pull avoidance has
+                // no business overruling that. In a corridor with mobs down both sides no bot
+                // finds a clean leg, so every one of them refused at once and the command reported
+                // that nobody in the group could move -- which read as the bots being broken.
+                //
+                // The player can see what is between them and their group; let them own the call.
+                pBot->GetMotionMaster()->MovePoint(0, pPlayer->GetPositionX(), pPlayer->GetPositionY(),
+                                                   pPlayer->GetPositionZ(),
+                                                   MOVE_PATHFINDING | MOVE_RUN_MODE);
             }
 
             return true;
