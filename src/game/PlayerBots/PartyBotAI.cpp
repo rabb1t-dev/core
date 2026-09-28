@@ -104,8 +104,25 @@ static constexpr float PB_THREAT_PULL_RATIO_RANGED = 1.30f;
 // They are deliberately no wider than that. Room left over here is damage not done, and the aim
 // is a raid that holds its target rather than one whose damage dealers are all idling at half
 // the tank's threat.
-static constexpr float PB_THREAT_HEADROOM_MELEE = 0.20f;
-static constexpr float PB_THREAT_HEADROOM_RANGED = 0.30f;
+//
+// And they were far wider than that, because the paragraph above measures the overshoot in
+// points of threat and the constants are a fraction of the tank's whole pool. Those are not the
+// same quantity and they diverge as the fight runs: against a tank on five thousand threat,
+// "fifteen points" became a thousand. Subtracted from the 1.10 melee pull ratio it left melee
+// capped at ninety percent of the tank forever -- below the tank, not just below the pull.
+//
+// The measured cost, from the Antu'sul attempt that stalled at forty seven percent: the rogue
+// sat at one hundred energy with the global cooldown free, standing behind the boss, and cast
+// nothing. Thirteen Sinister Strikes and five Backstabs in eighty seconds against a rotation
+// that should manage nearer forty. PickRankForThreat was refusing every rank of every ability
+// because the whole rogue was over a ceiling drawn at ninety percent of a rage starved tank.
+// The bot looked idle and was in fact obeying a rule about threat.
+//
+// Set to what melee and ranged actually run at when a real group is holding a boss: just over
+// the tank for melee, comfortably under the 1.30 flip for ranged. The pull ratios above are
+// untouched, so this still cannot take a mob off a tank that is doing its job.
+static constexpr float PB_THREAT_HEADROOM_MELEE = 0.05f;
+static constexpr float PB_THREAT_HEADROOM_RANGED = 0.10f;
 // How long a damage dealer leaves the tank alone at the start of a fight. The ratio above cannot
 // govern the opening, because at the moment of the pull the tank's threat is near zero and any
 // share of near zero is a number a single spell steps straight over. Real raids solve this the
@@ -130,6 +147,10 @@ static constexpr float PB_THREAT_RAMP_HEALTH_RATIO = 5.0f;
 // downranking and is how a real caster opens a fight rather than watching the first ten seconds
 // of it.
 static constexpr float PB_THREAT_RANK_SHARE = 0.5f;
+
+// How often a bot reports that threat is holding its rotation back. The refusals themselves are
+// counted every time; this only governs how often the running total is written out.
+static constexpr time_t PB_THREAT_LOG_INTERVAL = 3;
 // Rage, in the tenths the field is stored in. Below the first a tank has too little to run its
 // list at all and reaches for Bloodrage. The second is a floor under Shield Block, which costs
 // rage without using the global cooldown, and it exists so that spending there can never be what
@@ -140,7 +161,14 @@ static constexpr float PB_THREAT_RANK_SHARE = 0.5f;
 // the wrong tool: sixty rage scaled to forty four at level thirty four and no tank ever came close
 // to it. That floor now comes from the spell costs themselves, at the dump's own call site.
 static constexpr uint32 PB_TANK_RAGE_LOW = 200;
-static constexpr uint32 PB_TANK_RAGE_BLOCK = 300;
+
+// Shield Block waits for a real surplus now, because on a rage starved tank it was eating the
+// threat budget. The Antu'sul attempt that stalled has the tank cast Shield Block seven times
+// and Demoralizing Shout four -- a hundred and ten rage on mitigation and a debuff -- against
+// three Sunder Armors in ninety seconds, finishing on 695 damage and about a thousand threat.
+// Everything downstream of that number was throttled by it: the melee ceiling is a share of the
+// tank's threat, so a tank that cannot build threat caps the whole group's damage.
+static constexpr uint32 PB_TANK_RAGE_BLOCK = 450;
 
 // How often a rogue with nothing to poison its weapons with says so.
 static constexpr time_t PB_POISON_LOG_INTERVAL = 60;
@@ -2533,6 +2561,63 @@ bool PartyBotAI::IsAssignedTankFor(Unit const* pTarget) const
            pMain->GetTargetGuid() != pTarget->GetObjectGuid();
 }
 
+// Whether this bot is carrying enough threat that dropping all of it is the right move.
+//
+// Feign Death's actual job, and the only one it has here. An earlier build used it as pretend
+// crowd control, which it is not -- it holds nothing, controls nothing, and the hunter that cast
+// it spent a whole Antu'sul attempt lying on the floor. What it does do is wipe the caster's own
+// threat, and that is a real problem this group has no other answer to: the threat system can
+// ration what a bot adds from here on, but nothing can take back what it has already built. One
+// attempt has the hunter at 1,971 threat against the tank's 1,624, eating boss melee at 1.9 yards
+// because the rationing arrived long after the lead was gone, and dying with the fight still
+// winnable.
+//
+// Two moments qualify, and both require somebody else who can hold the target afterwards -- the
+// group's main tank, alive and already on it. Without that check this hands the boss to whoever is
+// second on the list, which in a five man is the healer.
+bool PartyBotAI::ShouldDumpThreatWithFeignDeath(Unit* pTarget) const
+{
+    if (IsInDuel() || !pTarget || !pTarget->CanHaveThreatList() || !pTarget->IsInCombat())
+        return false;
+
+    if (m_role == ROLE_TANK)
+        return false;
+
+    Player* pTank = GetGroupMainTank();
+    if (!pTank || pTank == me || !pTank->IsAlive())
+        return false;
+
+    // Not in the opening seconds, whatever the ratio says. Threat is a share of the tank's and the
+    // tank has almost none yet, so for the first few swings every damage dealer in the group reads
+    // as over the line: the first live run fired this one second into the pull at eighteen threat
+    // against the tank's four, which drops nothing worth dropping and wastes the cooldown before
+    // the fight that needs it has started.
+    if (IsInOpeningRamp(pTarget))
+        return false;
+
+    ThreatManager& threat = pTarget->GetThreatManager();
+
+    float const mine = threat.getThreat(me);
+    float const tanks = threat.getThreat(pTank);
+    if (mine <= 0.0f || tanks <= 0.0f)
+        return false;
+
+    // And not for a trivial amount. A dump is worth a thirty second cooldown when there is a real
+    // lead to shed, and the bot's own health is the nearest thing to a scale for that which does
+    // not need to know which encounter this is.
+    if (mine < float(me->GetMaxHealth()))
+        return false;
+
+    // Already pulled it. Late, but the dump is still the fastest way to put it back, and the
+    // alternative is the hunter tanking a boss in cloth-weight mail until it dies.
+    if (pTarget->GetVictim() == me)
+        return true;
+
+    // Or at the line and about to. GetThreatPullRatio is the same number the rationing draws its
+    // ceiling from, so this fires exactly where downranking has already run out of room.
+    return mine >= tanks * GetThreatPullRatio(pTarget);
+}
+
 bool PartyBotAI::IsInOpeningRamp(Unit const* pTarget) const
 {
     Creature const* pCreature = pTarget->ToCreature();
@@ -2714,8 +2799,44 @@ SpellEntry const* PartyBotAI::PickRankForThreat(Unit const* pTarget, SpellEntry 
 SpellCastResult PartyBotAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellEntry)
 {
     SpellEntry const* pRank = PickRankForThreat(pTarget, pSpellEntry);
-    if (!pRank)
-        return SPELL_FAILED_DONT_REPORT;
+
+    // A refusal here returns DONT_REPORT and so never reached the cast log, which made a caster
+    // held back by threat read exactly like a caster with nothing to do. Reading a Scarlet
+    // Monastery run, the mage was idle for 75% of the ticks on which it had a live target, at 70%
+    // mana or better for nearly half of them, and there was no way to tell from the log whether it
+    // was choosing not to cast or being refused. Counted rather than logged line by line, because
+    // at four ticks a second a refused rotation writes faster than anything else in the file.
+    if (!pRank || pRank != pSpellEntry)
+    {
+        if (pRank)
+            ++m_threatDownranks;
+        else
+            ++m_threatRefusals;
+
+        time_t const now = time(nullptr);
+        if (IsCombatLogged() && now - m_lastThreatLog >= PB_THREAT_LOG_INTERVAL)
+        {
+            float const budget = GetThreatHeadroom(pTarget);
+            ThreatManager& threat = pTarget->GetThreatManager();
+            HostileReference const* pTop = threat.getCurrentVictim();
+
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] threathold bot='%s' role=%s refused=%u downranked=%u since last, "
+                     "wanted '%s' on '%s' mythreat=%.0f topthreat=%.0f top='%s' budget=%.0f",
+                     me->GetName(), GetRoleName(m_role), m_threatRefusals, m_threatDownranks,
+                     pSpellEntry->SpellName[0].c_str(), pTarget->GetName(),
+                     threat.getThreat(me), pTop ? pTop->getThreat() : 0.0f,
+                     pTop && pTop->getTarget() ? pTop->getTarget()->GetName() : "none",
+                     budget);
+
+            m_lastThreatLog = now;
+            m_threatRefusals = 0;
+            m_threatDownranks = 0;
+        }
+
+        if (!pRank)
+            return SPELL_FAILED_DONT_REPORT;
+    }
 
     return CombatBotBaseAI::DoCastSpell(pTarget, pRank);
 }
