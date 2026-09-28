@@ -415,19 +415,24 @@ suites are listed in the companion document.
 
 ### Build and test loop
 
-Working on the WSL host, since SOAP binds to loopback. Source at `~/vmangos`, build at
-`~/build-vmangos`, install at `~/server`. `~/bin/vmangos-sync` mirrors the Mac working copy.
+Working on the server host, since SOAP binds to loopback. That host is a Raspberry Pi 5, four
+aarch64 cores and 16 GB, running the world under systemd as `rabb1t`. Source at `~/vmangos`, build
+at `~/build-vmangos`, install at `~/server`. Run from the Mac side, `~/bin/vmangos-sync` mirrors
+the working copy up to the Pi, excluding `.git`, so the Pi's checkout is the files and not the
+history.
 
 - **Fast syntax check on one file**, no link:
   `cd ~/build-vmangos/src/game && make Objects/Player.o`. The convenience target is the source
   path relative to the `CMakeLists.txt` directory with a `.o` suffix.
-- **Full build**: `cd ~/build-vmangos && make -j12 mangosd`. Always start it in the background
-  writing to a log and poll, rather than blocking on it. Piping through `grep` hides all
-  progress and makes a slow build indistinguishable from a hung one.
-- **`Player.cpp` is a single 22,000-line translation unit, so `-j12` buys nothing when it is
+- **Full build**: `cd ~/build-vmangos && make -j3 mangosd`. Three rather than four, so the world
+  the harness is talking to keeps a core. Always start it in the background writing to a log and
+  poll, rather than blocking on it. Piping through `grep` hides all progress and makes a slow
+  build indistinguishable from a hung one.
+- **`Player.cpp` is a single 22,000-line translation unit, so `-j3` buys nothing when it is
   the file that changed.** It serializes the whole build and a genuine edit to it costs
-  minutes on its own. Batch edits to it. Measured points of reference: a full rebuild after a
-  `World.h` change is about 2.5 minutes, and a link-only rebuild is 15 seconds.
+  minutes on its own. Batch edits to it. The old points of reference -- about 2.5 minutes for
+  a full rebuild after a `World.h` change, 15 seconds for a link-only rebuild -- were measured on
+  the previous host at `-j12` and have not been re-measured here. Expect the Pi to be slower.
 - **Touching `World.h` rebuilds almost everything**, so batch config additions rather than
   adding them one at a time.
 - **ccache was silently doing nothing** until `sloppiness` was set: the build has
@@ -443,8 +448,14 @@ Working on the WSL host, since SOAP binds to loopback. Source at `~/vmangos`, bu
 - **`make` is not deployment.** The service runs the installed copy under `~/server/bin`, so a build
   without `make install` and a restart leaves the old binary running and every measurement taken
   against it worthless. This cost several hours once already.
-- **Restarting mangosd** needs an explicit wait for port 7878 to be released and rebound,
-  otherwise the next SOAP call races the restart.
+- **Restarting mangosd goes through systemd and nothing else**, and the procedure is written out
+  in [contrib/harness/README.md](../contrib/harness/README.md) rather than repeated here. This
+  document previously said a restart needs an explicit wait for port 7878 to be released and
+  rebound; that was the wrong diagnosis of a real symptom. The unit carries `Restart=on-failure`,
+  so killing the process by hand and starting your own copy has systemd start a replacement ten
+  seconds later, the two race for the ports, and since SOAP binds once at startup and never
+  retries, the survivor runs with a working game port and no 7878 at all. Waiting longer cannot
+  help, because the two processes are not sequential.
 - **There is a second world, `~/bin/server2`, for when two people are working at once.** A
   restart takes the whole dev server down for a minute or so, which is fatal to a suite like
   `test_corpse_runs_live.py` that runs for five, so two strands of work on one world serialize
