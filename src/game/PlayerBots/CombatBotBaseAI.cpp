@@ -1760,6 +1760,38 @@ void CombatBotBaseAI::PopulateSpellData()
         }
     }
 
+    // The taunt list is consumed first-castable-first, and it was filled straight out of an
+    // unordered spell map, so which rank a tank taunted with came down to hash order. A level 47
+    // warrior is logged using Mocking Blow rank 2, a level 26 ability, with rank 3 and rank 4 both
+    // available to it. The resurrection slot a dozen lines above this already learned the same
+    // lesson and takes the highest rank explicitly; this list never did.
+    //
+    // Two things are wrong and both are fixed by rebuilding it. A spell carrying both
+    // SPELL_EFFECT_ATTACK_ME and SPELL_AURA_MOD_TAUNT was pushed twice, and every rank of every
+    // chain was kept when only the top one is ever wanted. Keyed by chain so the ranks collapse
+    // without the separate abilities collapsing with them: a tank wants Taunt *and* Mocking Blow,
+    // it just does not want four Mocking Blows.
+    //
+    // Ordering by chain head is for determinism rather than tuning -- the previous order varied
+    // from one run to the next, which is its own bug -- though for a warrior it does happen to
+    // yield the order a tank would choose: Taunt (355), then Mocking Blow (694), then Challenging
+    // Shout (1161).
+    if (!m_spellListTaunt.empty())
+    {
+        std::map<uint32, SpellEntry const*> topRankByChain;
+        for (SpellEntry const* pTaunt : m_spellListTaunt)
+        {
+            uint32 const chain = sSpellMgr.GetFirstSpellInChain(pTaunt->Id);
+            auto itr = topRankByChain.find(chain);
+            if (itr == topRankByChain.end() || pTaunt->GetRank() > itr->second->GetRank())
+                topRankByChain[chain] = pTaunt;
+        }
+
+        m_spellListTaunt.clear();
+        for (auto const& entry : topRankByChain)
+            m_spellListTaunt.push_back(entry.second);
+    }
+
     switch (me->GetClass())
     {
         case CLASS_PALADIN:
