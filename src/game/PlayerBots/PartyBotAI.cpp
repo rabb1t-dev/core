@@ -401,6 +401,23 @@ static constexpr float PB_DISTANCING_RANGE = 15.0f;
 // genuinely in the swing and not every time a mob drifts a yard nearer than ideal.
 static constexpr float PB_CASTER_MELEE_FLOOR = 8.0f;
 
+// Where a caster starts backing away, and where it backs away to.
+//
+// BeginChasing already picks the longest standoff that is safe, out of twenty five, twenty,
+// fifteen and ten, and it only ever picks one when a chase begins. Once the bot is anywhere inside
+// twenty five it returns without setting anything, so a caster that started at twenty and had the
+// fight walk onto it simply stayed where it was put. Creeping Sludge walks, and a priest was
+// watched dying without moving while one arrived on top of it and left its cloud there.
+//
+// The floor sits just above PB_CASTER_MELEE_FLOOR so the two rules do not argue: inside eight
+// something is already swinging and BackOutOfMeleeRange has the more urgent version of this.
+static constexpr float PB_CASTER_STANDOFF_FLOOR = 10.0f;
+static constexpr float PB_CASTER_STANDOFF_PREFERRED = 20.0f;
+static constexpr float PB_CASTER_STANDOFF_MAX_TRAVEL = 18.0f;
+// Long enough that a caster is not shuffling instead of casting. Every tick spent walking is a
+// cast not made, so this is deliberately slower than the thing it is reacting to.
+static constexpr uint32 PB_CASTER_STANDOFF_HOLD_MS = 3000;
+
 // How far out HoldTacticalStandoff looks for a creature whose standoff this bot is inside. The
 // largest standoff in the table is twenty five, so this only has to cover that plus the distance
 // a bot could be from something it is not yet outside of.
@@ -7476,6 +7493,125 @@ bool PartyBotAI::HoldTacticalStandoff()
     return true;
 }
 
+// A caster keeping its distance while the fight moves, rather than only when it starts.
+//
+// This is the half of the standoff that was missing. BeginChasing chooses well -- it walks the
+// list of standoff distances and takes the longest one that neither pulls an extra pack nor blinds
+// the bot -- but it is only consulted when a chase is issued, and inside twenty five yards it
+// returns having set nothing at all. So the distance a caster ends up at is whatever the opening
+// of the fight happened to give it, and nothing revisits that for the rest of the fight.
+//
+// Mobs move. A Creeping Sludge walks onto the group at its own pace and drops a five yard cloud
+// where it stands, and a priest that was at a perfectly reasonable eighteen yards when the pull
+// started is in melee and standing in poison a minute later without ever having taken a step. One
+// was watched dying exactly that way, motionless, while the sludge overtook it.
+//
+// The "without pulling anything" half is not reimplemented here: FindSpotClearOfPoint already
+// refuses a spot whose route wakes something unengaged, refuses to leave ground the instance told
+// this bot to hold, and refuses anywhere it cannot walk. The ground hazards are passed in so the
+// retreat does not end in the cloud it is retreating from. What is added on top is sight and
+// reach: a damage dealer that cannot see its target has gained nothing, and a healer out of range
+// of the tank has made the group's problem worse than the one it was solving.
+bool PartyBotAI::KeepCasterStandoff()
+{
+    if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
+        return false;
+
+    if (m_holdPosition || IsInDuel())
+        return false;
+
+    // Same condition BeginChasing uses to decide whether this bot keeps a standoff at all. A
+    // caster with no mana and a wand is a melee character for the rest of the fight.
+    if (!IsRangedDamageClass(me->GetClass()) ||
+        IsAttackSpeedOverridenForm(me->GetShapeshiftForm()))
+        return false;
+
+    if (me->GetPowerPercent(POWER_MANA) <= 10.0f &&
+       !me->GetWeaponForAttack(RANGED_ATTACK, true, true))
+        return false;
+
+    // A heal that is already in the air is worth more than a yard of spacing.
+    if (me->IsNonMeleeSpellCasted())
+        return false;
+
+    MovementGeneratorType const current = me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+    if (current == POINT_MOTION_TYPE || current == DISTANCING_MOTION_TYPE)
+        return false;
+
+    uint32 const now = WorldTimer::getMSTime();
+    if (m_standoffSince &&
+        WorldTimer::getMSTimeDiff(m_standoffSince, now) < PB_CASTER_STANDOFF_HOLD_MS)
+        return false;
+
+    // The nearest thing in this fight, which is not necessarily this bot's own target: what kills
+    // a healer is the mob nobody assigned to it walking into its square.
+    Unit* pCrowder = nullptr;
+    float closest = 0.0f;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_CASTER_STANDOFF_FLOOR, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy || !pEnemy->IsAlive() || !pEnemy->IsCreature())
+            continue;
+
+        if (!IsValidHostileTarget(pEnemy))
+            continue;
+
+        float const distance = me->GetDistance(pEnemy);
+        if (!pCrowder || distance < closest)
+        {
+            pCrowder = pEnemy;
+            closest = distance;
+        }
+    }
+
+    if (!pCrowder)
+        return false;
+
+    std::vector<AvoidCircle> hazards;
+    CollectGroundHazards(hazards);
+
+    float x, y, z;
+    if (!FindSpotClearOfPoint(pCrowder->GetPositionX(), pCrowder->GetPositionY(),
+                              PB_CASTER_STANDOFF_PREFERRED, PB_CASTER_STANDOFF_MAX_TRAVEL,
+                              x, y, z, 0.0f, &hazards))
+        return false;
+
+    // Still able to do the job from there.
+    if (m_role == ROLE_HEALER)
+    {
+        if (Player* pTank = GetGroupMainTank())
+        {
+            float const reach = GetMaxHealSpellRange();
+            if (reach > 0.0f && pTank->GetDistance(x, y, z) > reach)
+                return false;
+        }
+    }
+    else if (Unit* pVictim = me->GetVictim())
+    {
+        if (!PositionSeesTarget(x, y, z, pVictim))
+            return false;
+
+        if (pVictim->GetDistance(x, y, z) > PB_CASTER_STANDOFF_PREFERRED +
+                                            PB_CASTER_STANDOFF_MAX_TRAVEL)
+            return false;
+    }
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] standoff bot='%s' role=%s backed off '%s' at %.1fy, moving %.1fy",
+                 me->GetName(), GetRoleName(m_role), pCrowder->GetName(), closest,
+                 me->GetDistance(x, y, z));
+    }
+
+    me->GetMotionMaster()->MovePoint(0, x, y, z, MOVE_PATHFINDING | MOVE_RUN_MODE);
+    m_standoffSince = now;
+    return true;
+}
+
 bool PartyBotAI::BackOutOfMeleeRange()
 {
     if (m_role != ROLE_RANGE_DPS && m_role != ROLE_HEALER)
@@ -9852,6 +9988,10 @@ void PartyBotAI::UpdateInCombatAI()
     // decides whether a clothed character is standing inside a raid boss's swing is not a rule to
     // leave to nine separate if-chains.
     PB_BAIL_IF(BackOutOfMeleeRange(), "meleebackout");
+
+    // And the wider version of the same idea, behind it because something already swinging at this
+    // bot is the more urgent of the two.
+    PB_BAIL_IF(KeepCasterStandoff(), "standoff");
 
     // And then the wider band, which only exists where an instance named one. Behind the melee
     // backout because something already swinging at this bot is the more urgent of the two, and

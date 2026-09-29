@@ -276,6 +276,9 @@ public:
     // because a stop is not a hold: the pet still defends its owner afterwards.
     void StopPet();
     void CollectGroundHazards(std::vector<AvoidCircle>& out) const;
+    bool KeepCasterStandoff();
+    // When this bot last gave up a cast to reposition, so it does not shuffle instead of casting.
+    uint32 m_standoffSince = 0;
     // Throttle for the line explaining a pet held back from an unsafe route.
     mutable time_t m_lastPetHoldLog = 0;
     void CommandPetAttack(Pet* pPet, Unit* pTarget);
