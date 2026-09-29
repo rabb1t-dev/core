@@ -217,6 +217,17 @@ constexpr float MARA_TEN_YARD_AOE_STANDOFF = 12.0f;
 // down as a floor is what stops the fallback.
 constexpr float MARA_THERADRAS_STANDOFF = 25.0f;
 
+// Molten Core.
+//
+// The first raid entry in this table, and the two things in it worth writing down are both things
+// a bot cannot reach from a creature's own data: one add that cannot be killed and must not be
+// moved, and one trash mob that heals the pack from the moment it is pulled.
+enum MoltenCoreCreatures
+{
+    NPC_FLAMEWAKER_PRIEST       = 11662,
+    NPC_CORE_RAGER              = 11672,
+};
+
 DungeonTactics const g_dungeonTactics[] =
 {
     {
@@ -954,6 +965,73 @@ DungeonTactics const g_dungeonTactics[] =
         // Noxious Cloud, from Noxious Slime's death and from Creeping Sludge on a timer. See the
         // field's own comment in DungeonTactics.h for why this is the instance that needed it.
         /* groundHazardSpellIds */ { SPELL_NOXIOUS_CLOUD },
+    },
+
+    {
+        MAP_MOLTEN_CORE,
+        "Molten Core",
+
+        // No, and the instance's reputation says otherwise for a reason that is not true here.
+        // Every guide to Molten Core answers Lucifron's Dominate Mind with Tremor Totem, and
+        // boss_lucifron.cpp on this server has exactly one event in it -- Impending Doom, a
+        // self-cast forty yard shadow hit on a twenty second repeat -- and no charm at all.
+        // Nothing else in the instance's scripts sleeps, fears or charms often enough to spend
+        // the earth totem slot on for a whole run, so it stays with Strength of Earth.
+        /* wantsTremorTotem */ false,
+
+        /* escortNpcEntries */ {},
+        /* escortGuardRadius */ 0.0f,
+
+        // The Flamewaker Priest is this instance's Druid of the Fang: a healer standing in a pack
+        // of things that are not healers, and the one mob in it that undoes the group's work on
+        // whatever is beside it. Read off its spell list, 116620, rather than off the boss it
+        // belongs to -- boss_sulfuron_harbinger.cpp says "Adds NYI" and does not drive them at all.
+        /* focusFirst */ { NPC_FLAMEWAKER_PRIEST },
+
+
+        /* creatures */
+        {
+            {
+                NPC_FLAMEWAKER_PRIEST,
+                // No standoff and no sight break. Dark Mending is the cast worth stopping and it
+                // is stopped by interrupting it, not by standing somewhere else.
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                // A hundred, because it heals from the pull rather than from a threshold. Dark
+                // Mending is the first slot of its list on a flat five second repeat with no
+                // health gate anywhere in it, so there is no point below which the interrupt
+                // reserve should switch on: it is worth holding a global from the opening cast.
+                /* healsBelowPercent */ 100.0f,
+            },
+        },
+
+        // None, and this is the field it was tempting to use.
+        //
+        // Golemagg's Core Ragers leash him: boss_golemagg.cpp checks every three seconds whether
+        // a Rager has been taken more than a hundred yards from him and sends him to evade if one
+        // has, which resets the encounter. A hold line centred on his spawn at (793.2 -998.3
+        // -206.8) would bound that, and it is not written here because a hold line is a measured
+        // patch of floor and this one has not been measured -- an unmeasured radius in a room
+        // this size pens bots against a wall or off a ledge, which costs more than it saves. The
+        // ignore list below removes the only way a bot was going to move a Rager in the first
+        // place, so the leash is covered until the room is walked.
+        /* holdLines */ {},
+
+        // Core Ragers, which cannot be killed and must not be dragged.
+        //
+        // The clearest case for this field in the game so far. boss_golemagg.cpp zeroes all
+        // incoming damage on a Rager below fifty percent and heals it back to full for as long as
+        // Golemagg is alive, and when he dies KillAdds despawns both of them -- so a Rager is
+        // never worth a single global cooldown at any point in the encounter. A group left to its
+        // own target selection parks on one: it is an elite standing next to the boss, it is
+        // hitting people, and every rule the bots have for picking a target says fight it.
+        //
+        // The second half is worse than the wasted damage. Moving one is what resets the fight,
+        // and a bot that has decided to fight a Rager is a bot that will chase it.
+        /* ignoreEntries */ { NPC_CORE_RAGER },
     },
 };
 
