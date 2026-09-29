@@ -1204,6 +1204,22 @@ void PartyBotAI::UpdatePetCombat()
     if (!pPet->GetCharmInfo())
         return;
 
+    // A bot's pet never picks its own fights, asserted every tick rather than assumed.
+    //
+    // Nothing here ever set the react state when the pet arrived. HoldPet sets it, but only when a
+    // hold is taken or released, so a pet that was never held keeps whatever it was created with --
+    // and Pet::LoadPetFromDB restores that from the saved record rather than defaulting it. An
+    // aggressive pet is exactly the free agent it sounds like: PetAI lets one choose its own
+    // target whenever it is not under a command attack, so it runs at whatever wanders into its
+    // radius. A warlock's voidwalker was watched walking into the dungeon by itself and pulling
+    // packs with it while its owner stood still.
+    //
+    // Defensive, not passive, and not aggressive: it fights what this file tells it to fight and
+    // whatever comes for its owner, and it starts nothing on its own. The hold below is the one
+    // case that wants passive, and it is applied after this.
+    if (!m_holdPosition && !pPet->HasReactState(REACT_DEFENSIVE))
+        pPet->GetCharmInfo()->SetReactState(REACT_DEFENSIVE);
+
     // Holding means the pet holds too: sending it in is the same pull as going in person, taken by
     // proxy. HoldPet has already made it passive, so this only needs to not undo that.
     if (m_holdPosition)

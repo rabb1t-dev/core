@@ -6350,7 +6350,18 @@ void CombatBotBaseAI::BeginChasing(Unit* pVictim) const
         if (distance <= CB_CASTER_CHASE_DISTANCES[0] &&
             distance >= minimumDistance &&
             me->IsWithinLOSInMap(pVictim))
+        {
+            // Still say what distance to hold. Returning without setting it leaves whatever the
+            // bot had, and a caster that has never had one set has zero -- which the chase
+            // generator reads as melee and walks it to the target's feet. That is how a warlock
+            // ended up yo-yoing: something backed it out to twenty, the chase pulled it straight
+            // back to two, and its pet, which follows the owner, kept exceeding its own leash to
+            // the target and being recalled before it landed a hit.
+            if (!me->HasDistanceCasterMovement())
+                me->SetCasterChaseDistance(std::max(distance, minimumDistance));
+
             return;
+        }
 
         // Take the longest distance that is actually safe instead of the longest distance. The spot
         // tested is the point that far from the victim along the bearing the bot is already on,
