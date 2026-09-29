@@ -178,6 +178,7 @@ public:
     void ClearGroupAttackOrder();
     bool HasThreatOnGroup(Unit const* pEnemy) const;
     Unit* SelectControlledLeftoverTarget() const;
+    bool IsUnderOrdersAgainst(Unit const* pTarget) const;
     bool IsTargetInCurrentFight(Unit const* pTarget) const;
     Unit* SelectGroupFocusTarget() const;
     bool CrowdControlOffFocus();

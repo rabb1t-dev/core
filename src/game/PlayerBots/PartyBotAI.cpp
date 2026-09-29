@@ -4988,6 +4988,20 @@ bool PartyBotAI::IsEngagedWithGroup(Unit const* pEnemy) const
 // Deliberately a single answer rather than a list. A bot gets one attempt per tick and the choice
 // between two interrupts is never interesting: what matters is that the bot has one at all, and
 // most of them do not.
+
+// Whether this bot has been told to attack this particular target.
+//
+// Every pull rule carries an exemption for an explicit order, and they were not all asking the same
+// question. ShouldCloseOn, the rogue's dispatch and the path check in the chase and follow
+// generators asked only whether an order existed, which turns one order into a standing exemption
+// covering every mob in the room for as long as it lasts -- the opposite of what naming a target
+// means, and a licence a bot kept until the order was spent on something else.
+bool PartyBotAI::IsUnderOrdersAgainst(Unit const* pTarget) const
+{
+    return pTarget && me->HasAttackOrders() &&
+           me->GetAttackOrders() == pTarget->GetObjectGuid();
+}
+
 // Whether this target belongs to the fight the group is actually having.
 //
 // The rule a tank has to obey and did not: never bring in something nobody has pulled. A tank that
@@ -5006,7 +5020,7 @@ bool PartyBotAI::IsTargetInCurrentFight(Unit const* pTarget) const
     if (IsInDuel())
         return true;
 
-    if (me->HasAttackOrders() && me->GetAttackOrders() == pTarget->GetObjectGuid())
+    if (IsUnderOrdersAgainst(pTarget))
         return true;
 
     if (IsPulling())
@@ -12437,7 +12451,11 @@ bool PartyBotAI::ShouldCloseOn(Unit const* pVictim, float castingRange) const
     // the designated puller, a bot under an explicit attack order, and the tank. Everybody else
     // closes on things that are already fights. The rogue rotation has asked exactly this before
     // committing since it was written; it simply was never asked here, where the walking happens.
-    if (!IsEngagedWithGroup(pVictim) && !IsPulling() && !me->HasAttackOrders() &&
+    //
+    // The order is matched against this victim rather than merely counted, which is the difference
+    // between "I was told to fight that" and "I was told to fight something, once". Unscoped, a bot
+    // holding one order was free to close on every other mob in the room until the order expired.
+    if (!IsEngagedWithGroup(pVictim) && !IsPulling() && !IsUnderOrdersAgainst(pVictim) &&
         m_role != ROLE_TANK)
         return false;
 
@@ -13169,7 +13187,7 @@ void PartyBotAI::UpdateOutOfCombatAI_Rogue()
     // been hit yet. Anything else waits, which is what a rogue at the anchor should be doing.
     if (Unit* pVictim = me->GetVictim())
     {
-        if (IsPulling() || me->HasAttackOrders() || IsEngagedWithGroup(pVictim))
+        if (IsPulling() || IsUnderOrdersAgainst(pVictim) || IsEngagedWithGroup(pVictim))
             UpdateInCombatAI_Rogue();
     }
 }

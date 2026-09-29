@@ -49,7 +49,7 @@ static constexpr float PULL_CHECK_MARGIN = 3.0f;
 // Applies to nothing that has not asked for it. Real players never reach these generators for their
 // own movement, so the Player instantiation is bots and charmed units, and the flag narrows it again
 // to the party bots that want the rule.
-static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path,
+static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path, Unit const* pMoveTarget,
                                 float& outX, float& outY, float& outZ)
 {
     Player const* pPlayer = owner.ToPlayer();
@@ -59,7 +59,17 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path,
     // Under orders, so the rule steps aside. Told to go and fight something, a bot that stops short
     // because the way there is not clean has refused the instruction while looking like it accepted
     // it, and there is no route to most things in a dungeon that passes nothing else.
-    if (pPlayer->HasAttackOrders())
+    //
+    // For the route to the mob the order names, and no further. This asked the bare question -- does
+    // this bot hold an order at all -- and so suspended the whole rule, for every creature in the
+    // room and every move the bot made, for as long as one order stood. An order names one mob. It
+    // is not a licence to walk through the rest of the instance on the way somewhere else, and a bot
+    // still holding a spent order was exempt without anybody having asked it to approach anything.
+    // IsTargetInCurrentFight has scoped its copy of this exemption to the named target since it was
+    // written; this is the same question and wants the same answer.
+    ObjectGuid const orderedGuid = pPlayer->GetAttackOrders();
+
+    if (!orderedGuid.IsEmpty() && pMoveTarget && pMoveTarget->GetObjectGuid() == orderedGuid)
         return nullptr;
 
     PointsArray const& points = path.getPath();
@@ -88,6 +98,13 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path,
     {
         Creature* pCreature = pEnemy->ToCreature();
         if (!pCreature)
+            continue;
+
+        // Never the mob the order names, wherever the bot happens to be going. It is the one
+        // creature it has been told to go and wake, so objecting to it standing on the route is
+        // objecting to the instruction -- and it is also the puller's walk home, which runs back
+        // past exactly the thing it just pulled.
+        if (!orderedGuid.IsEmpty() && pCreature->GetObjectGuid() == orderedGuid)
             continue;
 
         if (pIgnoredEntries)
@@ -142,7 +159,8 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path,
 // and no position is safe for a character standing on its own in a dungeon.
 static float const FOLLOW_PULL_RULE_LEASH = 40.0f;
 
-static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, char const* movement)
+static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, Unit const* pMoveTarget,
+                                    char const* movement)
 {
     // Where on the route the objection was, filled in by FindPullOnPath. Without it the diagnostic
     // reports how far the creature is from the bot, which is the one distance the decision does not
@@ -151,7 +169,7 @@ static bool RefusePathThatWouldPull(Unit& owner, PathFinder const& path, char co
     float pullX = 0.0f;
     float pullY = 0.0f;
     float pullZ = 0.0f;
-    Creature* pCreature = FindPullOnPath(owner, path, pullX, pullY, pullZ);
+    Creature* pCreature = FindPullOnPath(owner, path, pMoveTarget, pullX, pullY, pullZ);
     if (!pCreature)
         return false;
 
@@ -364,8 +382,21 @@ void ChaseMovementGenerator<T>::_setTargetLocation(T &owner)
     // still while its target is right in front of it -- the rogue staring at a mob a few yards
     // away that was not moving because an adjacent unengaged mob sat inside the path's margin.
     // Following does not get this exemption because the leader can be anywhere.
-    bool const botIsChasing = i_target.getTarget() && owner.GetVictim() == i_target.getTarget();
-    if (!botIsChasing && RefusePathThatWouldPull(owner, path, "chase"))
+    //
+    // The combat half of that was written in the comment and left out of the code, which made the
+    // exemption unconditional and the refusal below unreachable. A chase generator is only ever
+    // created for the bot's own victim -- AttackStart attacks and then chases the same unit, and
+    // every rotation site passes GetVictim() straight into BeginChasing -- so "the chase target is
+    // my victim" is true of every chase there has ever been. The one guard that sees a finished
+    // path, and so the only one that can judge the ground a bot crosses rather than the spot it
+    // aims at, was therefore dead code in the generator whose whole job is closing on enemies.
+    //
+    // That is how a warlock walked a Barbed Lasher down from thirty six yards to seventeen with
+    // nobody fighting it: not a target it should not have had, but a route nothing was checking.
+    // Out of combat the rule applies again, which is the state every unordered pull starts from.
+    bool const botIsChasing = owner.IsInCombat() && i_target.getTarget() &&
+                              owner.GetVictim() == i_target.getTarget();
+    if (!botIsChasing && RefusePathThatWouldPull(owner, path, i_target.getTarget(), "chase"))
         return;
 
     m_bRecalculateTravel = false;
@@ -828,7 +859,7 @@ void FollowMovementGenerator<T>::_setTargetLocation(T &owner)
     bool const beingLeftBehind =
         !i_target->IsWithinDist(&owner, FOLLOW_PULL_RULE_LEASH, false);
 
-    if (!beingLeftBehind && RefusePathThatWouldPull(owner, path, "follow"))
+    if (!beingLeftBehind && RefusePathThatWouldPull(owner, path, i_target.getTarget(), "follow"))
         return;
 
     m_bRecalculateTravel = false;
