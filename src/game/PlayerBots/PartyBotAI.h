@@ -275,6 +275,9 @@ public:
     // Take a pet out of the fight its owner has just been ordered out of. Separate from HoldPet
     // because a stop is not a hold: the pet still defends its owner afterwards.
     void StopPet();
+    void CollectGroundHazards(std::vector<AvoidCircle>& out) const;
+    // Throttle for the line explaining a pet held back from an unsafe route.
+    mutable time_t m_lastPetHoldLog = 0;
     void CommandPetAttack(Pet* pPet, Unit* pTarget);
     void UpdatePetCombat();
     uint32 GetRangedAttackSpellId() const;

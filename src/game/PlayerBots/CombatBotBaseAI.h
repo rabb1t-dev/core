@@ -417,6 +417,8 @@ public:
     // camp between it and the target rather than through it.
     bool PositionWouldAggroUnengaged(float x, float y, float z, float extraMargin = 0.0f) const;
     bool PathWouldAggroUnengaged(float x, float y, float z) const;
+    bool PathWouldAggroUnengagedFrom(float startX, float startY, float startZ,
+                                     float x, float y, float z) const;
 
     // A way to somewhere that the direct line cannot reach safely: the same destination approached
     // off a bearing, the way a player steers a few degrees wide of a camp rather than stopping.
@@ -467,9 +469,18 @@ public:
     // stepping out of a five yard cloud does not care; a caster walking out to a twenty five yard
     // standoff does, because its own spells reach thirty and a spot at forty is a spot where it
     // has stopped fighting.
+    // A circle on the floor a candidate spot must not land in. Used where more than one patch is
+    // down at once and clearing the worst of them lands the bot in the next.
+    struct AvoidCircle
+    {
+        float x;
+        float y;
+        float radius;
+    };
     bool FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
                               float& outX, float& outY, float& outZ,
-                              float keepWithin = 0.0f) const;
+                              float keepWithin = 0.0f,
+                              std::vector<AvoidCircle> const* avoid = nullptr) const;
 
     // Whether landing this spell would drag something in that nobody is fighting.
     //

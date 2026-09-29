@@ -1235,6 +1235,38 @@ void PartyBotAI::UpdatePetCombat()
     if (!pVictim->IsInCombat() && me->GetDistance(pVictim) > PB_PET_PULL_LEASH)
         return;
 
+    // And not through anything on the way.
+    //
+    // The leash above stops the pet being sent at something across the room; it does nothing about
+    // what the pet walks past getting to something nearby. Every route rule in this file governs
+    // the bot and none of them has ever governed the pet, so the one body in the group with no
+    // path checks at all is the one that runs in a straight line the moment it is told to. A
+    // warlock was watched pulling a pack this way with its target only a few yards off.
+    //
+    // Sampled from the pet rather than from the owner, which is the whole point: they are in
+    // different places, and it is the pet's line that wakes things.
+    if (PathWouldAggroUnengagedFrom(pPet->GetPositionX(), pPet->GetPositionY(),
+                                    pPet->GetPositionZ(),
+                                    pVictim->GetPositionX(), pVictim->GetPositionY(),
+                                    pVictim->GetPositionZ()))
+    {
+        if (IsCombatLogged())
+        {
+            time_t const now = time(nullptr);
+            if (now - m_lastPetHoldLog >= PB_PET_LOG_INTERVAL)
+            {
+                m_lastPetHoldLog = now;
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] pethold bot='%s' pet='%s' not sent at '%s' (%.1fy): the "
+                         "route would wake something nobody has pulled",
+                         me->GetName(), pPet->GetName(), pVictim->GetName(),
+                         pPet->GetDistance(pVictim));
+            }
+        }
+
+        return;
+    }
+
     CommandPetAttack(pPet, pVictim);
 }
 
@@ -7072,6 +7104,44 @@ DynamicObject* PartyBotAI::FindGroundHazardUnderfoot() const
 // Reports true while the walk is under way so the rest of the tick is left alone, and ages the
 // walk out rather than trusting it: a bot shoved or rooted halfway out has to be released back to
 // fighting rather than left holding a point move that will never arrive.
+// Every hostile patch within scanning range, as circles to keep out of.
+//
+// The margin is included here rather than at the call site so that a spot which merely grazes the
+// edge of another cloud is rejected too: standing one yard inside a patch and standing in the
+// middle of it cost the same per second.
+void PartyBotAI::CollectGroundHazards(std::vector<AvoidCircle>& out) const
+{
+    out.clear();
+
+    if (!m_tactics || m_tactics->groundHazardSpellIds.empty())
+        return;
+
+    std::list<WorldObject*> found;
+    MaNGOS::AllWorldObjectsInRange check(me, PB_GROUND_HAZARD_SCAN);
+    MaNGOS::WorldObjectListSearcher<MaNGOS::AllWorldObjectsInRange> searcher(found, check);
+    Cell::VisitAllObjects(me, searcher, PB_GROUND_HAZARD_SCAN);
+
+    for (WorldObject* pObject : found)
+    {
+        if (!pObject || pObject->GetTypeId() != TYPEID_DYNAMICOBJECT)
+            continue;
+
+        DynamicObject* pDynObj = static_cast<DynamicObject*>(pObject);
+        if (!m_tactics->IsGroundHazard(pDynObj->GetSpellId()))
+            continue;
+
+        if (!pDynObj->IsHostileTo(me))
+            continue;
+
+        float const radius = pDynObj->GetRadius();
+        if (radius <= 0.0f)
+            continue;
+
+        out.push_back({ pDynObj->GetPositionX(), pDynObj->GetPositionY(),
+                        radius + PB_GROUND_HAZARD_MARGIN });
+    }
+}
+
 bool PartyBotAI::StepOutOfGroundHazard()
 {
     if (!m_tactics || m_tactics->groundHazardSpellIds.empty())
@@ -7100,9 +7170,22 @@ bool PartyBotAI::StepOutOfGroundHazard()
 
     float const clear = pHazard->GetRadius() + PB_GROUND_HAZARD_MARGIN;
 
+    // Every other patch on the floor, so the step does not simply swap one for another.
+    //
+    // FindGroundHazardUnderfoot already knows there can be several -- it picks the one the bot is
+    // deepest inside -- but the step it feeds only ever cleared that one. In a Creeping Sludge
+    // pack, where the comment on the tactic says a five yard cloud lands every twenty two seconds
+    // and lasts twenty, the clouds overlap as a matter of course, and the bot stepped out of the
+    // worst into the next one and back again. It never escaped, and because the step consumes the
+    // tick it never fought either: one tank ran sixty one percent to four taking a hundred and
+    // fifty a second, its rotation never once reaching a Sunder, shuffling between one and six
+    // yards the whole time. gate=groundhazard on every tick of it.
+    std::vector<AvoidCircle> otherHazards;
+    CollectGroundHazards(otherHazards);
+
     float x, y, z;
     if (!FindSpotClearOfPoint(pHazard->GetPositionX(), pHazard->GetPositionY(), clear,
-                              PB_GROUND_HAZARD_MAX_TRAVEL, x, y, z))
+                              PB_GROUND_HAZARD_MAX_TRAVEL, x, y, z, 0.0f, &otherHazards))
     {
         if (IsCombatLogged())
         {

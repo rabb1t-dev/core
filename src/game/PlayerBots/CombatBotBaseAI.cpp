@@ -5612,9 +5612,16 @@ bool CombatBotBaseAI::WouldPathPullExtraEnemies(float x, float y, float z) const
 
 bool CombatBotBaseAI::PathWouldAggroUnengaged(float x, float y, float z) const
 {
-    float const startX = me->GetPositionX();
-    float const startY = me->GetPositionY();
-    float const startZ = me->GetPositionZ();
+    return PathWouldAggroUnengagedFrom(me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
+                                       x, y, z);
+}
+
+// The same sampling from somewhere that is not this bot, because the bot is not the only thing in
+// the group that walks. A pet sent at something crosses whatever is between it and the target and
+// wakes all of it, and none of the route rules that govern the bot have ever applied to the pet.
+bool CombatBotBaseAI::PathWouldAggroUnengagedFrom(float startX, float startY, float startZ,
+                                                  float x, float y, float z) const
+{
 
     float const dx = x - startX;
     float const dy = y - startY;
@@ -5946,7 +5953,8 @@ bool CombatBotBaseAI::FindSpotClearOfUnengaged(Unit const* pAwayFrom, float maxT
 // alone guarantees on sloped ground.
 bool CombatBotBaseAI::FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
                                            float& outX, float& outY, float& outZ,
-                                           float keepWithin) const
+                                           float keepWithin,
+                                           std::vector<AvoidCircle> const* avoid) const
 {
     if (maxTravel <= 0.0f)
         return false;
@@ -5986,6 +5994,30 @@ bool CombatBotBaseAI::FindSpotClearOfPoint(float px, float py, float clearRadius
 
                 if (keepWithin > 0.0f && fromPoint > (keepWithin * keepWithin))
                     continue;
+
+                // Clear of every other patch as well, not merely of the one being stepped out of.
+                // Without this a bot in overlapping clouds steps out of the deepest straight into
+                // the next, steps out of that one back towards the first, and shuffles between
+                // them for the rest of the fight taking the damage from whichever it is standing
+                // in. A tank went sixty one percent to four that way without its rotation running
+                // once, because every tick was spent on the step.
+                if (avoid)
+                {
+                    bool landsInAnother = false;
+                    for (AvoidCircle const& circle : *avoid)
+                    {
+                        float const ax = x - circle.x;
+                        float const ay = y - circle.y;
+                        if ((ax * ax + ay * ay) <= (circle.radius * circle.radius))
+                        {
+                            landsInAnother = true;
+                            break;
+                        }
+                    }
+
+                    if (landsInAnother)
+                        continue;
+                }
 
                 if (fabs(z - me->GetPositionZ()) > CB_BREAK_SIGHT_MAX_STEP)
                     continue;
