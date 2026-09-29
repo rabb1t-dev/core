@@ -1252,20 +1252,23 @@ void PartyBotAI::UpdatePetCombat()
     if (pPet->GetVictim() == pVictim)
         return;
 
-    // Not across the room at something nobody has touched yet.
+    // A pet never opens a fight. Ever.
     //
-    // CommandPetAttack carries no distance bound of its own, so whatever the owner happened to
-    // hold as a victim was dispatched to regardless of where it was. A warlock whose focus landed
-    // on a Barbed Lasher seventy six yards away sent its voidwalker the whole way, and the pull
-    // that followed was one nobody ordered: the owner itself never moved, because the tank lead
-    // and the aggro rules held it exactly where it was meant to be. The pet is subject to none of
-    // those, which is the point of this check -- it is the only body in the group that can start a
-    // fight without any of the rules that decide whether a fight should start.
+    // This was a distance bound and the distance was measured from the wrong body: the owner's,
+    // not the pet's. A warlock standing twenty eight yards from an unengaged Barbed Lasher passed
+    // the check while its voidwalker, thirty seven yards out, was sent at it and pulled it --
+    // fifteen seconds before anybody ordered an attack on anything. The owner had simply acquired
+    // a target nobody had touched, and the pet turned that into a pull.
     //
-    // Something already in combat is a different case and stays allowed at any range: the fight
-    // exists, the pet is joining it rather than causing it, and a pet that refused to help because
-    // the mob was far away would be useless in exactly the fights where it is needed.
-    if (!pVictim->IsInCombat() && me->GetDistance(pVictim) > PB_PET_PULL_LEASH)
+    // So the rule is no longer about how far. Something already in combat is a fight that exists,
+    // and the pet is joining it; something not in combat is a fight that does not exist yet, and
+    // whether it starts is a decision for the tank, the pull rules and the player -- none of which
+    // the pet consults. The leash stays underneath it as a second bound, now measured from the pet,
+    // because the distance that matters is the one the pet actually travels.
+    if (!pVictim->IsInCombat())
+        return;
+
+    if (pPet->GetDistance(pVictim) > PB_PET_PULL_LEASH)
         return;
 
     // And not through anything on the way.
@@ -12422,6 +12425,22 @@ bool PartyBotAI::ShouldCloseOn(Unit const* pVictim, float castingRange) const
     // given a target. A condition that turns on which generator is current rather than on where
     // the bot is standing fails exactly that intermittently.
     //
+    // And not a step towards something nobody is fighting.
+    //
+    // Closing on an unengaged mob is a pull, whoever does it and whatever they meant by it. A
+    // warlock was watched walking a Barbed Lasher's full health bar down from thirty six yards to
+    // seventeen under its own chase generator, fifteen seconds before anybody ordered an attack on
+    // anything, and its pet went with it. The pet took the blame because the pet is what arrives
+    // first, but the bot had already chosen the target and started walking.
+    //
+    // Who is allowed to start a fight is a question this file answers elsewhere and consistently:
+    // the designated puller, a bot under an explicit attack order, and the tank. Everybody else
+    // closes on things that are already fights. The rogue rotation has asked exactly this before
+    // committing since it was written; it simply was never asked here, where the walking happens.
+    if (!IsEngagedWithGroup(pVictim) && !IsPulling() && !me->HasAttackOrders() &&
+        m_role != ROLE_TANK)
+        return false;
+
     // Chase is excluded because it is already doing this, and distancing because it is a move away
     // that the rotation deliberately asked for and must not be cut short.
     MovementGeneratorType const current =
