@@ -3823,8 +3823,16 @@ void CombatBotBaseAI::LearnPremadeSpecForClass()
         // tank was handed the level 19 arms twink and finished with two of its thirty-six ability
         // slots filled: no Defensive Stance, no Taunt, no Sunder Armor, none of them a talent and
         // all of them things a real level 20 warrior simply has.
-        if (me->GetLevel() != pSpec->level)
-            LearnClassSpellsForLevel();
+        //
+        // Run unconditionally, where this used to be skipped when the levels matched. A template
+        // lists spell ids, and an id is a *rank*, so a template with a stale rank in it is wrong
+        // for the level it was written at and there is nothing left to catch it. The level sixty
+        // fire mage template lists Pyroblast rank 1 and Blast Wave rank 1, and the level sixty
+        // warlock lists Siphon Life rank 1; a level sixty bot matched the template level exactly,
+        // skipped this, and kept them. Levelling the spellbook here costs a bot nothing it should
+        // not already have -- it only ever learns what the level allows -- and it means a wrong
+        // row in the template data degrades to a missing talent rather than a broken rotation.
+        LearnClassSpellsForLevel();
     }
     else
     {
@@ -3868,8 +3876,42 @@ void CombatBotBaseAI::LearnClassSpellsForLevel()
         if (!me->IsSpellFitByClassAndRace(pSpellEntry->Id))
             continue;
 
+        // Talents decide whether the bot has the ability. Its level decides which rank, which is
+        // how the game works and was not how this worked.
+        //
+        // Skipping every talent chain outright left each of them frozen at whatever rank the
+        // premade spec happened to list, for the whole of the bot's life. The fire mage template
+        // lists Pyroblast rank 1 and Blast Wave rank 1 -- and it is the level *sixty* template --
+        // so every fire mage in the game opened with a level 20 nuke on a six second cast. Every
+        // Pyroblast in the logs, at bot levels 39 through 47, is rank 1 against a best available
+        // rank of 4 or 5. Fireball and Scorch were correct in the same fights, which is what makes
+        // this read as a rank problem rather than a rotation one: they are not talents, so they
+        // passed this filter and were levelled normally.
+        //
+        // It is not a mage problem. Hunters take the level 39 template at level 47 and keep Aimed
+        // Shot rank 3; Siphon Life, Blast Wave, and by the same mechanism Mortal Strike, Shield
+        // Slam, Conflagrate and every other talent-granted rank chain, all stop wherever their
+        // template stopped.
+        //
+        // So the chain is skipped only when the bot holds no rank of it at all, which is the bot
+        // that genuinely did not take the talent. Once it holds one, the ranks its level allows
+        // are learned like any other spell, and Player::addSpell supersedes the lower one.
         if (GetTalentSpellCost(sSpellMgr.GetFirstSpellInChain(pSpellEntry->Id)) > 0)
-            continue;
+        {
+            bool holdsLowerRank = false;
+            for (uint32 prev = sSpellMgr.GetPrevSpellInChain(pSpellEntry->Id); prev;
+                 prev = sSpellMgr.GetPrevSpellInChain(prev))
+            {
+                if (me->HasSpell(prev))
+                {
+                    holdsLowerRank = true;
+                    break;
+                }
+            }
+
+            if (!holdsLowerRank)
+                continue;
+        }
 
         if (!SpellMgr::IsSpellValid(pSpellEntry, me, false))
             continue;
