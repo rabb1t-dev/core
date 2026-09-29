@@ -971,12 +971,19 @@ DungeonTactics const g_dungeonTactics[] =
         MAP_MOLTEN_CORE,
         "Molten Core",
 
-        // No, and the instance's reputation says otherwise for a reason that is not true here.
-        // Every guide to Molten Core answers Lucifron's Dominate Mind with Tremor Totem, and
-        // boss_lucifron.cpp on this server has exactly one event in it -- Impending Doom, a
-        // self-cast forty yard shadow hit on a twenty second repeat -- and no charm at all.
-        // Nothing else in the instance's scripts sleeps, fears or charms often enough to spend
-        // the earth totem slot on for a whole run, so it stays with Strength of Earth.
+        // No, and this one is keyed to a gap in the server rather than to the encounter.
+        //
+        // Every guide to Molten Core answers Lucifron's Dominate Mind with Tremor Totem, and it
+        // would be the right answer to the fight Blizzard shipped: a charm on up to three players
+        // is exactly what the totem is for. It is not the fight that runs here. Dominate Mind
+        // (20604) exists in spell_template and nothing in the entire source casts it;
+        // boss_lucifron.cpp schedules Impending Doom, Lucifron's Curse and Shadow Shock, and no
+        // charm. Nothing else in the instance sleeps, fears or charms either, so the earth totem
+        // slot is worth more as Strength of Earth for the whole run.
+        //
+        // **Flip this the day Lucifron is completed.** The reasoning above is a fact about an
+        // unimplemented ability, not about Molten Core, and it expires silently: a group would
+        // simply start losing its casters mid-fight with nothing in this table to explain why.
         /* wantsTremorTotem */ false,
 
         /* escortNpcEntries */ {},
