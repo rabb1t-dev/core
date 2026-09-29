@@ -281,6 +281,11 @@ static constexpr float PB_DOT_WORTH_TARGET_HEALTH = 50.0f;
 // How far out to look for the rest of the pack.
 static constexpr float PB_DOT_PACK_RADIUS = 30.0f;
 
+// How long a target has to have left before a damage over time effect is worth its mana and its
+// global cooldown. Eight seconds is two or three ticks of anything the classes here cast, which
+// is where a dot overtakes the direct damage spell it was cast instead of.
+static constexpr float PB_DOT_MIN_TICK_SECONDS = 8.0f;
+
 // How far to look for a controlled mob left over from a finished fight, and how often. The radius
 // is wide because the mob may have wandered while sheeped; the interval keeps the search off every
 // idle tick.
@@ -684,6 +689,11 @@ static constexpr time_t PB_BACKOUT_INTERVAL = 3;
 // How often a caster that has decided to stand and take it says so. Once per fight is the useful
 // rate; the decision itself is remade every tick.
 static constexpr time_t PB_STAND_LOG_INTERVAL = 5;
+
+// How long a bot may hold a target while its rotation declines everything, before the log says so.
+// Long enough that a caster waiting out a global cooldown or walking into range is never reported,
+// short enough that a bot which sat out a whole fight cannot hide inside one interval.
+static constexpr uint32 PB_ROTATION_STALL_MS = 10000;
 // What being first and second on an instance's escort list is worth, in health percentage points,
 // when the healer is choosing between several hurt escorts. Enough to reach the one the encounter
 // turns on before it is critical; far too little to ignore one that is dying.
@@ -1356,7 +1366,13 @@ bool PartyBotAI::KeepBusy()
 {
     Unit* pVictim = me->GetVictim();
     if (!pVictim || !IsValidHostileTarget(pVictim))
+    {
+        // Each target re-earns the hold. The mana test that clears it below stays true across a
+        // whole session for both roles it applies to -- a damage dealer above the floor, a healer
+        // below the ceiling -- so without this the ten second bound is spent once and never again.
+        m_wandHoldSince = 0;
         return false;
+    }
 
     // Already committed to something this tick.
     if (me->IsNonMeleeSpellCasted(false, false, true) ||
@@ -8394,6 +8410,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (!me->IsInWorld() || me->IsBeingTeleported())
         return;
 
+    // Cleared here and set by the class dispatch, so that "did a rotation run this tick" is a
+    // question the end of this function can actually answer.
+    m_rotationRan = false;
+
     if (!m_initialized)
     {
         // Running the AI ungrouped is not survivable, so bail out rather than
@@ -8602,6 +8622,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (me->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL))
     {
         BreakCrowdControlEffects();
+        LogIdleBail("controlled");
         return;
     }
 
@@ -8686,7 +8707,10 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (IsPulling())
     {
         if (UpdatePullSequence())
+        {
+            LogIdleBail("pulling");
             return;
+        }
     }
     else if (m_holdPosition && ShouldBreakHold())
         ReleaseHold();
@@ -8712,9 +8736,12 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         // The same note above already records this happening to a priest -- "a priest that had
         // started wanding stopped healing until the wand stopped" -- and the cancellation added
         // then only covered hunters and bots with no target. This is the rest of that fix.
+        // The mana test is the bounded one rather than the bare question, so that a wand KeepBusy
+        // deliberately started after its hold ran out is left alone. Asking HasManaWorthCastingWith
+        // directly here cancelled exactly the shots the other rule had just decided to take.
         if (!me->GetVictim() ||
             (me->GetClass() == CLASS_HUNTER && me->GetCombatDistance(me->GetVictim()) < 8.0f) ||
-            HasManaWorthCastingWith())
+            IsWandHeldBackByMana())
             me->InterruptSpell(CURRENT_AUTOREPEAT_SPELL, true);
     }
 
@@ -8756,6 +8783,7 @@ void PartyBotAI::UpdateAI(uint32 const diff)
                 m_updateTimer.Reset(remaining);
         }
 
+        LogIdleBail("casting");
         return;
     }
 
@@ -8816,11 +8844,40 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     {
         UpdateOutOfCombatAI();
 
+        // A target to kill ends the buffing, whatever left the flag on.
+        //
+        // It is set by every buff cast and cleared only inside the per-class out-of-combat
+        // function, below branches that return -- so any buff branch that returns before the clear
+        // leaves it set, and the return below then holds the bot above its own rotation for as
+        // long as that lasts. Two mages froze for an entire fight directly after buffing and
+        // fought the next one normally once the buffs were done.
+        //
+        // Clearing it here rather than chasing each branch: buffing is something a bot does when
+        // it has nothing to fight, so the presence of something to fight is the end of it by
+        // definition, and that holds for every class without knowing which branch latched it.
         if (m_isBuffing)
+        {
+            if (Unit const* pVictim = me->GetVictim())
+            {
+                if (pVictim->IsAlive() && IsValidHostileTarget(pVictim))
+                    m_isBuffing = false;
+            }
+        }
+
+        if (m_isBuffing)
+        {
+            // The last unlogged return above the rotation. Both mages in one group froze for a
+            // whole fight immediately after buffing and fought normally in the next one, once the
+            // buffs were done, which is the shape of this flag outliving the casts that set it.
+            LogIdleBail("buffing");
             return;
+        }
 
         if (me->IsNonMeleeSpellCasted())
+        {
+            m_lastBailGate = "casting";
             return;
+        }
     }
 
     Unit* pVictim = me->GetVictim();
@@ -9028,8 +9085,27 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     // owns that keeps working while the bot itself is busy casting.
     UpdatePetCombat();
 
-    if (me->IsInCombat())
+    // A live hostile target is the question, not whether this bot has personally been hit yet.
+    //
+    // Asking IsInCombat here deadlocked every ranged bot ordered into a fight already in progress.
+    // The bot takes the victim and starts closing, but it has landed nothing, so it is not in
+    // combat; UpdateAI therefore sends it to UpdateOutOfCombatAI, which returns at its
+    // IsGroupInCombat guard -- and that guard sits above the per-class dispatch, so the
+    // "if (me->GetVictim()) UpdateInCombatAI_X()" fallback inside those functions is never
+    // reached. No rotation runs on either path. The bot cannot cast, so it never enters combat,
+    // so the state sustains itself for the rest of the fight, and the only escape is being hit by
+    // something -- which a mage standing at twenty two yards never is.
+    //
+    // Two mages froze for a whole Rock Borer at full mana, chasing, with no cast attempted and no
+    // refusal logged, because no code that could have attempted one ran. It is intermittent only
+    // in that a bot which lands a single cast before the tank engages is in combat from then on
+    // and fights the rest of the fight normally.
+    if (me->IsInCombat() || (me->GetVictim() && IsValidHostileTarget(me->GetVictim())))
         UpdateInCombatAI();
+
+    // Immediately after the dispatch, while m_rotationRan and m_lastBailGate still describe this
+    // tick. This is the report that would have turned fifteen passes over the log into one.
+    LogRotationStall();
 
     // Last, so that it reads the global cooldown the rotation above has just started rather than
     // the one it inherited. Same argument as the cast timer: a chain of instants is governed by the
@@ -9052,21 +9128,39 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 }
 
 
+// Every early return that sits above a rotation, recording which one it was.
+//
+// The returns themselves are all justified -- stepping out of a hazard really is worth more than
+// a Fireball. What was not justified is that they were indistinguishable in the log from each
+// other and from a rotation that ran and chose nothing. A bot holding a target and doing nothing
+// produced the same empty file whichever of the twenty three it was sitting on.
+#define PB_BAIL_IF(cond, name)          \
+    do {                                \
+        if (cond)                       \
+        {                               \
+            m_lastBailGate = (name);    \
+            return;                     \
+        }                               \
+    } while (0)
+
 void PartyBotAI::UpdateOutOfCombatAI()
 {
+    // The wand hold is per fight, and this is the only place that sees a fight end. KeepBusy
+    // re-arms it between targets, but a bot that leaves combat altogether never reaches KeepBusy
+    // again, so without this the bound would survive to the next pull.
+    m_wandHoldSince = 0;
+
     // Before everything, and out of combat as much as in it. A Noxious Slime casts its cloud as
     // it dies, so the patch this exists for is most often laid down at the exact moment the
     // fight ends -- under the party, which is then standing in it eating and drinking while a
     // rule that only ran in combat would never be asked.
-    if (StepOutOfGroundHazard())
-        return;
+    PB_BAIL_IF(StepOutOfGroundHazard(), "groundhazard");
 
     // A feigned hunter is out of combat by definition, so this is where the second half of the
     // trap sequence lands. It has to come before everything below, all of which would read the
     // hunter as idle and send it off to buff, drink or walk back to the group while the fight it
     // just stepped out of is still running.
-    if (TryFreezingTrapSequence())
-        return;
+    PB_BAIL_IF(TryFreezingTrapSequence(), "freezingtrap");
 
     if (!IsInDuel())
     {
@@ -9076,18 +9170,15 @@ void PartyBotAI::UpdateOutOfCombatAI()
                     if (DoCastSpell(pTarget, m_resurrectionSpell) == SPELL_CAST_OK)
                         return;
 
-        if (m_role != ROLE_TANK && me->GetVictim() && CrowdControlMarkedTargets())
-            return;
+        PB_BAIL_IF(m_role != ROLE_TANK && me->GetVictim() && CrowdControlMarkedTargets(), "ccmarked");
     }
 
-    if (CheckForDispelTargets())
-        return;
+    PB_BAIL_IF(CheckForDispelTargets(), "dispel");
 
     // Elixirs, scrolls and weapon stones, below the class rotations because those hold the buffs
     // the rest of the group depends on and above nothing that matters: a bot with a full set of
     // consumables already up falls straight through this.
-    if (UseProvisionConsumables())
-        return;
+    PB_BAIL_IF(UseProvisionConsumables(), "consumables");
 
     // Somebody hurt outranks somebody unbuffed. The shaman rotation already learned this against
     // totems; nothing had taught it to the buff chain, and the priest was logged casting Power
@@ -9095,16 +9186,14 @@ void PartyBotAI::UpdateOutOfCombatAI()
     //
     // Above the combat check below, so a healer that has not been hit yet still heals the people
     // who have.
-    if (GetRole() == ROLE_HEALER && FindAndHealInjuredAlly(90.0f, 90.0f))
-        return;
+    PB_BAIL_IF(GetRole() == ROLE_HEALER && FindAndHealInjuredAlly(90.0f, 90.0f), "healinjured");
 
     // No optional work at all once the fight is on. This whole routine is gated on *this bot*
     // being out of combat, which during a pull is most of the group: the tank engages, the healer
     // behind it is on nobody's threat list yet, and it spent that gap starting a seven hundred and
     // forty four mana buff. The group being in combat is the question worth asking, not whether
     // this particular bot has been hit yet.
-    if (IsGroupInCombat())
-        return;
+    PB_BAIL_IF(IsGroupInCombat(), "groupincombat");
 
     // Out of mana to spare, so stop here and let the next tick drink instead. Clearing the flag
     // is the point: DrinkAndEat runs earlier in the tick and refuses while a buff is in progress,
@@ -9114,6 +9203,7 @@ void PartyBotAI::UpdateOutOfCombatAI()
         me->GetPowerPercent(POWER_MANA) < PB_BUFF_MANA_FLOOR)
     {
         m_isBuffing = false;
+        m_lastBailGate = "buffmanafloor";
         return;
     }
 
@@ -9165,6 +9255,22 @@ void PartyBotAI::LogCombatTick() const
         return;
 
     m_lastTickLog = now;
+
+    // Displacement since the previous line, because the movement *flag* lies in exactly the case
+    // worth reading. "moving" is !IsStopped, which stays 1 for a bot holding a chase generator
+    // whose spline has already finished -- the frozen case precisely -- so captures of two
+    // motionless mages were reported here as moving=1 and argued from as though they were walking.
+    // A person watching the game could see they were not. This is the number that agrees with them.
+    float moved = 0.0f;
+    if (m_haveLastTickPos)
+    {
+        float const dx = me->GetPositionX() - m_lastTickX;
+        float const dy = me->GetPositionY() - m_lastTickY;
+        moved = sqrt(dx * dx + dy * dy);
+    }
+    m_lastTickX = me->GetPositionX();
+    m_lastTickY = me->GetPositionY();
+    m_haveLastTickPos = true;
 
     Unit* pVictim = me->GetVictim();
 
@@ -9228,7 +9334,7 @@ void PartyBotAI::LogCombatTick() const
         // on the main hand timer.
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=tank lvl=%u hp=%.0f rage=%u victim='%s' vguid=%u "
-                 "vhp=%.0f vdist=%.1f pos=%.1f %.1f %.1f moving=%u melee=%u swing=%u attackers=%u "
+                 "vhp=%.0f vdist=%.1f pos=%.1f %.1f %.1f moving=%u moved=%.1f melee=%u swing=%u attackers=%u "
                  "nearby=%u mythreat=%.0f topthreat=%.0f top='%s' hasaggro=%u gcd=%u stance=%u "
                  "dmg=%u",
                  me->GetName(), me->GetLevel(), me->GetHealthPercent(), power,
@@ -9237,7 +9343,7 @@ void PartyBotAI::LogCombatTick() const
                  pVictim ? pVictim->GetHealthPercent() : 0.0f,
                  pVictim ? me->GetDistance(pVictim) : 0.0f,
                  me->GetPositionX(), me->GetPositionY(), me->GetPositionZ(),
-                 uint32(me->IsStopped() ? 0 : 1),
+                 uint32(me->IsStopped() ? 0 : 1), moved,
                  uint32(me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) ? 1 : 0),
                  me->GetAttackTimer(BASE_ATTACK),
                  uint32(me->GetAttackers().size()),
@@ -9272,7 +9378,8 @@ void PartyBotAI::LogCombatTick() const
 
         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                  "[BotCombat] tick bot='%s' role=%s class=%u lvl=%u hp=%.0f pw=%u victim='%s' "
-                 "vguid=%u vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u "
+                 "vguid=%u vhp=%.0f vdist=%.1f melee=%u autorepeat=%u casting=%u moving=%u moved=%.1f "
+                 "pos=%.1f %.1f mgen=%u buffing=%u gate=%s "
                  "holding=%u cp=%u cpmine=%u front=%u stealth=%u gcd=%u ttl=%.1f dmg=%u",
                  me->GetName(), GetRoleName(m_role), uint32(me->GetClass()), me->GetLevel(),
                  me->GetHealthPercent(), power,
@@ -9282,7 +9389,24 @@ void PartyBotAI::LogCombatTick() const
                  pVictim ? me->GetDistance(pVictim) : 0.0f,
                  uint32(meleeOn ? 1 : 0), autoRepeat,
                  uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
-                 uint32(me->IsStopped() ? 0 : 1),
+                 uint32(me->IsStopped() ? 0 : 1), moved,
+                 me->GetPositionX(), me->GetPositionY(),
+                 // Which generator is driving, and whether its spline has actually finished.
+                 // moving= is !IsStopped, which is a claim about intent rather than motion: a
+                 // mage was watched standing perfectly still while reporting moving=1, casting
+                 // nothing, with the global cooldown free and its target twenty four yards away.
+                 // The rotation returns above every nuke while a distancing generator is current,
+                 // so a generator that outlives its own spline stops the bot casting for the rest
+                 // of the fight and the log said only that it was "moving". These two separate
+                 // the generator still running from the generator merely still on the stack.
+                 uint32(me->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                 // Whether the buffing flag is still set. It gates an unlogged return in UpdateAI
+                 // that sits above the rotation, so a bot stuck with it on stands in a fight doing
+                 // nothing and every other field on this line looks healthy.
+                 uint32(m_isBuffing ? 1 : 0),
+                 // Which early return took the previous tick, so a line with no cast beside it
+                 // names the rule responsible instead of leaving twenty candidates open.
+                 m_lastBailGate,
                  uint32(m_holdPosition ? 1 : 0),
                  comboPoints, uint32(comboOnVictim ? 1 : 0),
                  uint32(m_chasingInFront ? 1 : 0),
@@ -9379,13 +9503,19 @@ void PartyBotAI::LogCombatTick() const
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] tick bot='%s' role=healer lvl=%u hp=%.0f mana=%.0f worst='%s' whp=%.0f "
-             "wdist=%.1f reach=%.0f wreason=%s ration=%s incoming=%d casting=%u autorepeat=%u "
+             "wdist=%.1f reach=%.0f wreason=%s pos=%.1f %.1f mgen=%u "
+             "ration=%s incoming=%d casting=%u autorepeat=%u "
              "healgate=%s attackers=%u gcd=%u healed=%u dmg=%u",
              me->GetName(), me->GetLevel(), me->GetHealthPercent(),
              me->GetPowerPercent(POWER_MANA),
              pWorst ? pWorst->GetName() : "none",
              pWorst ? pWorst->GetHealthPercent() : 0.0f,
-             pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason, ration,
+             pWorst ? me->GetDistance(pWorst) : 0.0f, reach, reason,
+             // Where it is and what is moving it. A healer held by the tank-lead rule and a healer
+             // walking a detour are both "not healing" in every other field on this line.
+             me->GetPositionX(), me->GetPositionY(),
+             uint32(me->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+             ration,
              pWorst ? GetIncomingdamage(pWorst) : 0,
              uint32(me->IsNonMeleeSpellCasted() ? 1 : 0),
              uint32(me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) ? 1 : 0),
@@ -9415,22 +9545,19 @@ void PartyBotAI::UpdateInCombatAI()
     // lands, and a tick spent elsewhere is a tick where that decision was not made. Reports true
     // only when it actually cancelled, so a cast being held reads as no decision and falls through
     // to everything below.
-    if (ReconsiderHealInFlight())
-        return;
+    PB_BAIL_IF(ReconsiderHealInFlight(), "healinflight");
 
     // Ahead of the step below and of everything under it, because this is the only damage in a
     // dungeon that nothing else in the tick can even see. A held attacker's swings are healable
     // and a bad standoff is survivable; a hundred and fifty a second from a patch of floor with
     // no attacker attached to it is neither, and the bot is taking it while every other rule
     // reports that nothing is wrong.
-    if (StepOutOfGroundHazard())
-        return;
+    PB_BAIL_IF(StepOutOfGroundHazard(), "groundhazard");
 
     // Before the rotation, because standing in the swing radius of something that has been frozen
     // in place specifically to get it off this bot is free damage taken, and every tick spent
     // casting instead of stepping is another swing of it.
-    if (StepAwayFromHeldAttacker())
-        return;
+    PB_BAIL_IF(StepAwayFromHeldAttacker(), "heldattacker");
 
     // The tank deciding where the fight happens, which is upstream of every other bot's
     // positioning problem: move the fight and the rogue's rear, the healer's range and the
@@ -9453,14 +9580,12 @@ void PartyBotAI::UpdateInCombatAI()
     //
     // A peel that happens a quarter of a second later costs almost nothing. A heal of two and a
     // half thousand health that lands because nobody looked costs the attempt.
-    if (InterruptHostileCasters())
-        return;
+    PB_BAIL_IF(InterruptHostileCasters(), "interrupt");
 
     // Then the potion, below the interrupt because a Healing Wave landing is worse than a tick of
     // drinking, and above the rotations because by the time a healer is empty the casts the potion
     // was going to buy have already been missed.
-    if (TryUseRestorePotion())
-        return;
+    PB_BAIL_IF(TryUseRestorePotion(), "potion");
 
     // The tank's taunt, ahead of the collecting below rather than after it.
     //
@@ -9469,20 +9594,17 @@ void PartyBotAI::UpdateInCombatAI()
     // it was holding, walked to the add, and the taunt path was never reached that tick because
     // collecting commits it. So the expensive tool was chosen while the free one sat unused, and
     // on an add that stays at range the expensive one cannot work at all.
-    if (!IsInDuel() && m_role == ROLE_TANK && PeelForTheHealer())
-        return;
+    PB_BAIL_IF(!IsInDuel() && m_role == ROLE_TANK && PeelForTheHealer(), "peel");
 
     // Warriors collecting whatever is loose onto themselves and walking it back to the group.
     // Above the rotation because a caster being chewed on is worth more than this warrior's next
     // ability, and it commits the tick only when it actually did something.
-    if (GatherLooseEnemies())
-        return;
+    PB_BAIL_IF(GatherLooseEnemies(), "gather");
 
     // The hunter dropping combat to lay a trap under a summon the group has been told to leave
     // alone. Costs the tick when it fires and nothing at all otherwise, and it cannot run long:
     // the sequence carries its own deadline and stands itself down for thirty seconds afterwards.
-    if (TryFreezingTrapSequence())
-        return;
+    PB_BAIL_IF(TryFreezingTrapSequence(), "freezingtrap");
 
     if (!IsInDuel())
     {
@@ -9557,27 +9679,27 @@ void PartyBotAI::UpdateInCombatAI()
     //
     // So healers dispel from below the rotation, where a real heal has already had the tick. Every
     // other role keeps it here: they have no healing for it to displace.
-    if (m_role != ROLE_HEALER && CheckForDispelTargets())
-        return;
+    PB_BAIL_IF(m_role != ROLE_HEALER && CheckForDispelTargets(), "dispel");
 
     // Behind the interrupt, which is the better answer to the same cast, and ahead of everything
     // that would rather stand still. See TakeCoverFromCast.
-    if (TakeCoverFromCast())
-        return;
+    PB_BAIL_IF(TakeCoverFromCast(), "takecover");
 
     // Ahead of every class rotation, because half of them have their own version of this rule and
     // the other half have none, and the ones that have it disagree about the distance. A rule that
     // decides whether a clothed character is standing inside a raid boss's swing is not a rule to
     // leave to nine separate if-chains.
-    if (BackOutOfMeleeRange())
-        return;
+    PB_BAIL_IF(BackOutOfMeleeRange(), "meleebackout");
 
     // And then the wider band, which only exists where an instance named one. Behind the melee
     // backout because something already swinging at this bot is the more urgent of the two, and
     // ahead of every rotation for the same reason that one is: a cast made from inside a twenty
     // yard area effect is a cast paid for twice.
-    if (HoldTacticalStandoff())
-        return;
+    PB_BAIL_IF(HoldTacticalStandoff(), "standoff");
+
+    // Past every gate, so whatever the rotation decides from here is a decision rather than a
+    // tick somebody else took. The stall report at the end of UpdateAI reads this.
+    m_rotationRan = true;
 
     switch (me->GetClass())
     {
@@ -9966,8 +10088,7 @@ void PartyBotAI::UpdateInCombatAI_Paladin()
                 if (DoCastSpell(pVictim, m_spells.paladin.pHolyWrath) == SPELL_CAST_OK)
                     return;
             }
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-                && !me->CanReachWithMeleeAutoAttack(pVictim))
+            if (ShouldCloseOn(pVictim, 0.0f))
             {
                 BeginChasing(pVictim);
             }
@@ -10195,8 +10316,7 @@ void PartyBotAI::UpdateInCombatAI_Hunter()
 
     if (Unit* pVictim = me->GetVictim())
     {
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && me->GetDistance(pVictim) > 30.0f)
+        if (ShouldCloseOn(pVictim, 30.0f))
         {
             BeginChasing(pVictim);
         }
@@ -10468,8 +10588,10 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
         m_isBuffing = false;
     }
 
-    if (me->GetVictim())
-        UpdateInCombatAI_Mage();
+    // The "fight it if I have one" fallback that used to sit here is gone: UpdateAI now runs the
+    // full in-combat rotation for any bot holding a live hostile target, so this was a second,
+    // narrower copy of that rule which fired first and left the real one casting into a spell
+    // already in progress.
 }
 
 void PartyBotAI::UpdateInCombatAI_Mage()
@@ -10500,8 +10622,7 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && me->GetDistance(pVictim) > 30.0f)
+        if (ShouldCloseOn(pVictim, 30.0f))
         {
             BeginChasing(pVictim);
         }
@@ -10626,37 +10747,98 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (m_spells.mage.pFrostbolt &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFrostbolt))
+        // The nuke, chosen by the tree the mage actually spent its points in.
+        //
+        // This was a fixed chain -- Frostbolt, then Fire Blast, then Fireball -- for every mage
+        // alive, and the order rather than the spec decided what got cast. A fire mage with
+        // Combustion, Blast Wave and Pyroblast on its bar opened with Pyroblast and then spent the
+        // fight casting Frostbolt, because Frostbolt sat at the top of the chain and always
+        // succeeded; one Maraudon run has forty Frostbolts against sixteen Fireballs from a mage
+        // talented into fire. Every point in Improved Fireball, Fire Power and Ignite was being
+        // spent on the spell they do not touch, and the Frostbolts were landing without a single
+        // point of frost damage talent behind them either.
+        //
+        // The two chains are otherwise the same shape: the school's main nuke, then its instant,
+        // then the cheap fast one. The off-school spell stays at the bottom of each as a last
+        // resort rather than being removed, because a mage that cannot cast its own nuke -- silenced
+        // school, immune target -- is better off casting the wrong one than standing there.
+        SpellEntry const* nukes[4] = {};
+        if (IsFireSpecMage())
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pFrostbolt) == SPELL_CAST_OK)
-                return;
+            nukes[0] = m_spells.mage.pFireball;
+            nukes[1] = m_spells.mage.pFireBlast;
+            nukes[2] = m_spells.mage.pScorch;
+            nukes[3] = m_spells.mage.pFrostbolt;
+        }
+        else
+        {
+            nukes[0] = m_spells.mage.pFrostbolt;
+            nukes[1] = m_spells.mage.pFireBlast;
+            nukes[2] = m_spells.mage.pFireball;
+            nukes[3] = m_spells.mage.pScorch;
         }
 
-        if (m_spells.mage.pFireBlast &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFireBlast))
+        for (SpellEntry const* pNuke : nukes)
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pFireBlast) == SPELL_CAST_OK)
-                return;
+            if (pNuke && CanTryToCastSpell(pVictim, pNuke))
+            {
+                if (DoCastSpell(pVictim, pNuke) == SPELL_CAST_OK)
+                    return;
+            }
         }
 
-        if (m_spells.mage.pFireball &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pFireball))
+        // Nothing fired, which is the state the log could not explain.
+        //
+        // CanTryToCastSpell refuses silently: it returns false and DoCastSpell is never reached, so
+        // LogCombatCast -- which records every attempt and its failure code -- has nothing to say.
+        // A mage standing still, global cooldown free, mana full, target seventeen yards away and
+        // alive in front of it, casting nothing for a whole fight, produced no line explaining any
+        // of it. This says which of the four candidates were refused and, where it is cheap to
+        // tell, what refused them.
+        if (IsCombatLogged())
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pFireball) == SPELL_CAST_OK)
-                return;
-        }
+            time_t const now = time(nullptr);
+            if (now - m_lastNukeRefusalLog >= PB_STAND_LOG_INTERVAL)
+            {
+                m_lastNukeRefusalLog = now;
 
-        // Below the two main nukes, and no longer carrying a twenty percent health gate it has no
-        // use for. Scorch is a cheap fast filler, not an execute; up where it used to sit it fired
-        // only in the last fifth of a fight, and ungating it in place would have replaced every
-        // Frostbolt the mage ever cast. Here it is what gets cast when the nukes above could not
-        // be, which is what a filler is for.
-        if (m_spells.mage.pScorch &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pScorch))
-        {
-            if (DoCastSpell(pVictim, m_spells.mage.pScorch) == SPELL_CAST_OK)
-                return;
+                std::string detail;
+                for (SpellEntry const* pNuke : nukes)
+                {
+                    if (!detail.empty())
+                        detail += ", ";
+                    if (!pNuke)
+                    {
+                        detail += "(absent)";
+                        continue;
+                    }
+
+                    char const* why = "refused";
+                    if (!pNuke->IsTargetInRange(me, pVictim))
+                        why = "range";
+                    else if (!me->IsWithinLOSInMap(pVictim))
+                        why = "los";
+                    else if (pVictim->IsImmuneToSpell(pNuke, false))
+                        why = "immune";
+                    else if (me->GetPower(me->GetPowerType()) <
+                             Spell::CalculatePowerCost(pNuke, me))
+                        why = "mana";
+                    else if (!me->IsSpellReady(pNuke))
+                        why = "cooldown";
+
+                    detail += pNuke->SpellName[0];
+                    detail += "=";
+                    detail += why;
+                }
+
+                sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                         "[BotCombat] nukehold bot='%s' role=%s spec=%s cast nothing at '%s' "
+                         "(%.1fy, hp %.0f%%): %s",
+                         me->GetName(), GetRoleName(m_role),
+                         IsFireSpecMage() ? "fire" : "frost",
+                         pVictim->GetName(), me->GetDistance(pVictim),
+                         pVictim->GetHealthPercent(), detail.c_str());
+            }
         }
 
         if (m_spells.mage.pEvocation &&
@@ -10739,8 +10921,10 @@ void PartyBotAI::UpdateOutOfCombatAI_Priest()
         FindAndHealInjuredAlly())
         return;
 
-    if (me->GetVictim())
-        UpdateInCombatAI_Priest();
+    // The "fight it if I have one" fallback that used to sit here is gone: UpdateAI now runs the
+    // full in-combat rotation for any bot holding a live hostile target, so this was a second,
+    // narrower copy of that rule which fired first and left the real one casting into a spell
+    // already in progress.
 }
 
 // Damage a healer can add without costing the group any healing, and the wand it should be firing
@@ -11066,8 +11250,7 @@ void PartyBotAI::UpdateInCombatAI_Priest()
                 return;
         }
 
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && me->GetDistance(pVictim) > 30.0f)
+        if (ShouldCloseOn(pVictim, 30.0f))
         {
             BeginChasing(pVictim);
         }
@@ -11144,8 +11327,10 @@ void PartyBotAI::UpdateOutOfCombatAI_Warlock()
     }
 
     // The pet is UpdatePetCombat's business now, which unlike this runs in combat too.
-    if (me->GetVictim())
-        UpdateInCombatAI_Warlock();
+    // The "fight it if I have one" fallback that used to sit here is gone: UpdateAI now runs the
+    // full in-combat rotation for any bot holding a live hostile target, so this was a second,
+    // narrower copy of that rule which fired first and left the real one casting into a spell
+    // already in progress.
 }
 
 // Whether a damage-over-time spell will live long enough on this target to earn back the cast that
@@ -11256,8 +11441,31 @@ float PartyBotAI::EstimateSecondsPerComboPoint() const
     return wait + PB_ROGUE_GCD_SECONDS;
 }
 
-bool PartyBotAI::IsWorthDotting(Unit const* pVictim) const
+bool PartyBotAI::IsWorthDotting(Unit const* pVictim, SpellEntry const* pSpellEntry) const
 {
+    // How long the thing has left, which is the actual question a damage over time effect asks and
+    // the one everything below only approximated. A health pool is a proxy for a long fight and it
+    // is the wrong proxy as soon as the group hits hard: a mob with four times the bot's health
+    // that the party removes in four seconds passes every test underneath this one, and the dot
+    // lands for one tick and the full mana. The rank check below made it worse rather than better,
+    // because it exempted exactly the targets a geared group deletes fastest.
+    //
+    // Asked of the spell where there is one, so the bar is the effect's own length rather than a
+    // number picked once for all of them: Corruption wants twelve seconds to be worth casting and
+    // Curse of Agony twenty four, and requiring the longer of those from both would give up the
+    // cheaper dot on precisely the fights it pays off on. Capped, because no dot needs its whole
+    // duration to be worth the global cooldown it costs -- most of the value is in the first ticks.
+    //
+    // EstimateSecondsToLive answers PB_TTL_UNKNOWN_SECONDS before it has watched the target long
+    // enough to know, so an opening cast is never refused by this.
+    int32 const durationMs = pSpellEntry ? pSpellEntry->GetDuration() : 0;
+    float const needed = durationMs > 0
+        ? std::min(float(durationMs) / 1000.0f, PB_DOT_MIN_TICK_SECONDS)
+        : PB_DOT_MIN_TICK_SECONDS;
+
+    if (EstimateSecondsToLive(pVictim) < needed)
+        return false;
+
     // Anything that is not an ordinary mob lives long enough for anything.
     if (Creature const* pCreature = pVictim->ToCreature())
     {
@@ -11330,7 +11538,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         // keeping the pet is the better of the two guesses by a long way.
 
         if (m_spells.warlock.pImmolate &&
-            IsWorthDotting(pVictim) &&
+            IsWorthDotting(pVictim, m_spells.warlock.pImmolate) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pImmolate))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pImmolate) == SPELL_CAST_OK)
@@ -11345,7 +11553,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
         if (m_spells.warlock.pCorruption &&
-            IsWorthDotting(pVictim) &&
+            IsWorthDotting(pVictim, m_spells.warlock.pCorruption) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pCorruption))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pCorruption) == SPELL_CAST_OK)
@@ -11358,7 +11566,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         // on anything that lives long enough to be worth a curse it wants to be up in the first
         // few seconds alongside Immolate and Corruption, not after the fight has turned.
         if (m_spells.warlock.pCurseofAgony &&
-            IsWorthDotting(pVictim) &&
+            IsWorthDotting(pVictim, m_spells.warlock.pCurseofAgony) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pCurseofAgony))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pCurseofAgony) == SPELL_CAST_OK)
@@ -11367,7 +11575,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
 
         if (m_spells.warlock.pSiphonLife &&
            (me->GetHealthPercent() < 80.0f) &&
-            IsWorthDotting(pVictim) &&
+            IsWorthDotting(pVictim, m_spells.warlock.pSiphonLife) &&
             CanTryToCastSpell(pVictim, m_spells.warlock.pSiphonLife))
         {
             if (DoCastSpell(pVictim, m_spells.warlock.pSiphonLife) == SPELL_CAST_OK)
@@ -11408,8 +11616,7 @@ void PartyBotAI::UpdateInCombatAI_Warlock()
         }
 
 
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && me->GetDistance(pVictim) > 30.0f)
+        if (ShouldCloseOn(pVictim, 30.0f))
         {
             BeginChasing(pVictim);
         }
@@ -11739,6 +11946,213 @@ bool PartyBotAI::HasManaWorthCastingWith() const
         return false;
 
     return me->GetPowerPercent(POWER_MANA) >= PB_WAND_MANA_FLOOR;
+}
+
+// Two reports, both about a bot that is present at a fight and contributing nothing to it.
+//
+// The first is the one this was written for. A bot holding a live hostile target whose rotation
+// did not run at all is always a bug -- not a tuning question, not a mana question, a bug -- and
+// until now it was invisible. Two mages sat in that state for a whole Rock Borer at full mana:
+// they had a victim, so they were not idle; they were not in combat, because they had never
+// landed anything; so UpdateAI sent them to the out-of-combat path, which returned at its
+// IsGroupInCombat guard above the class dispatch, and the in-combat path was never reached
+// either. No rule refused them. No code that could have refused them ran. The log recorded a
+// per-tick line that looked exactly like a healthy one, and the absence of any cast read as a
+// rotation choosing nothing rather than as a rotation that was never asked.
+//
+// Naming the gate is what makes this actionable rather than merely visible: "gate=groupincombat"
+// points at one line of one function, and every other value points somewhere equally specific.
+//
+// The second catches the softer version -- the rotation ran, the global cooldown is free, nothing
+// is being cast, the bot has not moved, and this has been true for ten seconds. That is a bot
+// whose rules all declined, which is a tuning problem rather than a structural one, but it has
+// the same symptom in the game and deserves to be separable from this one in the file.
+void PartyBotAI::LogRotationStall() const
+{
+    if (!IsCombatLogged())
+        return;
+
+    Unit* pVictim = me->GetVictim();
+    if (!pVictim || !pVictim->IsAlive() || !IsValidHostileTarget(pVictim))
+    {
+        m_idleSince = 0;
+        return;
+    }
+
+    uint32 const now = WorldTimer::getMSTime();
+
+    if (!m_rotationRan)
+    {
+        time_t const stamp = time(nullptr);
+        if (stamp - m_lastNoRotationLog >= PB_STAND_LOG_INTERVAL)
+        {
+            m_lastNoRotationLog = stamp;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] norotation bot='%s' role=%s victim='%s' vdist=%.1f gate=%s "
+                     "incombat=%u groupincombat=%u hp=%.0f pw=%u casting=%u buffing=%u mgen=%u",
+                     me->GetName(), GetRoleName(m_role), pVictim->GetName(),
+                     me->GetDistance(pVictim), m_lastBailGate,
+                     uint32(me->IsInCombat() ? 1 : 0), uint32(IsGroupInCombat() ? 1 : 0),
+                     me->GetHealthPercent(), me->GetPower(me->GetPowerType()),
+                     uint32(me->IsNonMeleeSpellCasted() ? 1 : 0), uint32(m_isBuffing ? 1 : 0),
+                     uint32(me->GetMotionMaster()->GetCurrentMovementGeneratorType()));
+        }
+        return;
+    }
+
+    // Acting, in any of the senses that mean this bot is not stuck.
+    bool const busy = me->IsNonMeleeSpellCasted() ||
+                      me->HasGCD(nullptr) ||
+                      me->GetCurrentSpell(CURRENT_AUTOREPEAT_SPELL) != nullptr ||
+                      (m_haveLastTickPos &&
+                       (fabs(me->GetPositionX() - m_lastTickX) > 0.5f ||
+                        fabs(me->GetPositionY() - m_lastTickY) > 0.5f));
+
+    if (busy)
+    {
+        m_idleSince = 0;
+        return;
+    }
+
+    if (!m_idleSince)
+    {
+        m_idleSince = now;
+        return;
+    }
+
+    if (WorldTimer::getMSTimeDiff(m_idleSince, now) < PB_ROTATION_STALL_MS)
+        return;
+
+    time_t const stamp = time(nullptr);
+    if (stamp - m_lastStuckLog < PB_STAND_LOG_INTERVAL)
+        return;
+    m_lastStuckLog = stamp;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] stalled bot='%s' role=%s victim='%s' vdist=%.1f for=%ums "
+             "(rotation ran and chose nothing) hp=%.0f pw=%u mgen=%u los=%u facing=%u",
+             me->GetName(), GetRoleName(m_role), pVictim->GetName(), me->GetDistance(pVictim),
+             WorldTimer::getMSTimeDiff(m_idleSince, now), me->GetHealthPercent(),
+             me->GetPower(me->GetPowerType()),
+             uint32(me->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+             uint32(me->IsWithinLOSInMap(pVictim) ? 1 : 0),
+             uint32(me->HasInArc(pVictim, 2.0f * M_PI_F / 3.0f) ? 1 : 0));
+}
+
+void PartyBotAI::LogIdleBail(char const* reason) const
+{
+    // While there is a fight to be taking part in, which is not the same question as whether this
+    // bot is in one. Gating this on IsInCombat -- which is how it was first written -- reproduced
+    // the exact blind spot it was added to close: a bot held here never lands anything, so it
+    // never enters combat, so the line explaining why it is idle is suppressed by the idleness it
+    // is reporting. A mage stood through two pulls in that state and produced nothing at all.
+    //
+    // Having a target it is not fighting is the interesting half, so that is what is asked.
+    if (!IsCombatLogged() || (!me->IsInCombat() && !me->GetVictim()))
+        return;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastIdleBailLog < PB_STAND_LOG_INTERVAL)
+        return;
+    m_lastIdleBailLog = now;
+
+    // Everything that could explain a bot standing in a fight doing nothing, because the reason
+    // this needed writing is that the log went silent in exactly the state worth reading.
+    // UpdateInCombatAI is what emits the per-tick line, and every one of these returns sits above
+    // it, so a bot held here produces no output at all: it does not look like a stalled bot, it
+    // looks like a bot that is not there. One mage spent an entire Ambershard Destroyer encounter
+    // in this state, in combat, holding its casting animation, and the whole fight is a blank in
+    // the file.
+    Spell const* pSpell = me->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (!pSpell)
+        pSpell = me->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] idlebail bot='%s' role=%s reason=%s victim='%s' hp=%.0f pw=%u "
+             "spell='%s' remaining=%u state=%u moving=%u",
+             me->GetName(), GetRoleName(m_role), reason,
+             me->GetVictim() ? me->GetVictim()->GetName() : "none",
+             me->GetHealthPercent(), me->GetPower(me->GetPowerType()),
+             pSpell ? pSpell->m_spellInfo->SpellName[0].c_str() : "none",
+             pSpell ? pSpell->GetCastedTime() : 0,
+             pSpell ? uint32(pSpell->getState()) : 0,
+             uint32(me->IsMoving() ? 1 : 0));
+}
+
+bool PartyBotAI::ShouldCloseOn(Unit const* pVictim, float castingRange) const
+{
+    if (!pVictim)
+        return false;
+
+    // Far enough away to be worth moving for. A range of zero asks the melee question instead.
+    bool const tooFar = castingRange > 0.0f
+        ? me->GetDistance(pVictim) > castingRange
+        : !me->CanReachWithMeleeAutoAttack(pVictim);
+
+    if (!tooFar)
+        return false;
+
+    // Every rotation used to ask for IDLE_MOTION_TYPE here, which is the one generator a bot in a
+    // moving group is almost never running.
+    //
+    // Between pulls every bot follows the leader, so the current generator is FOLLOW; under an
+    // attack order that detours round something it is POINT. A bot handed a target while either
+    // was current simply carried on with it -- victim set, forty to sixty five yards away, every
+    // nuke refused for range, for an entire fight -- and only reached IDLE once the follow or the
+    // detour had finished, which is usually after the fight. Two mages did this on one pull out of
+    // four in the same run, the other three having happened to be idle at the moment they were
+    // given a target. A condition that turns on which generator is current rather than on where
+    // the bot is standing fails exactly that intermittently.
+    //
+    // Chase is excluded because it is already doing this, and distancing because it is a move away
+    // that the rotation deliberately asked for and must not be cut short.
+    MovementGeneratorType const current =
+        me->GetMotionMaster()->GetCurrentMovementGeneratorType();
+
+    return current != CHASE_MOTION_TYPE && current != DISTANCING_MOTION_TYPE;
+}
+
+bool PartyBotAI::IsFireSpecMage() const
+{
+    // Which tree the points went into, read from the talents the bot came out of
+    // LearnPremadeSpecForClass holding. Only talents count: Fireball, Frostbolt, Fire Blast, Scorch
+    // and Cone of Cold are all baseline and say nothing about the spec, which is exactly why the
+    // rotation below could not tell one mage from another.
+    //
+    // Counted rather than keyed off a single spell because a fire mage picks up Pyroblast eleven
+    // points in and can still have points left for Ice Barrier, and reading either one alone gets
+    // that mage wrong.
+    uint32 const fire = (m_spells.mage.pCombustion ? 1 : 0) +
+                        (m_spells.mage.pBlastWave ? 1 : 0) +
+                        (m_spells.mage.pPyroblast ? 1 : 0);
+
+    uint32 const frost = (m_spells.mage.pIceBlock ? 1 : 0) +
+                         (m_spells.mage.pIceBarrier ? 1 : 0);
+
+    return fire > frost;
+}
+
+bool PartyBotAI::IsWandHeldBackByMana() const
+{
+    if (!HasManaWorthCastingWith())
+        return false;
+
+    // Not armed yet, so nothing has been decided and the refusal stands.
+    if (!m_wandHoldSince)
+        return true;
+
+    // The refusal in KeepBusy is bounded: after PB_WAND_HOLD_MAX_MS it gives up the principle and
+    // shoots. That decision has to be visible here too, or the two rules disagree and the bot is
+    // left doing neither.
+    //
+    // Both sites used to ask HasManaWorthCastingWith on its own. While the hold was running they
+    // agreed -- one declined to start a wand, the other cancelled any that was somehow running --
+    // but the moment the hold expired KeepBusy started shooting and this went on cancelling, once
+    // per tick, four times a second. A mage in Mauradon fired six wand starts in three seconds at
+    // 21:24:40 with autorepeat=0 on every tick between them: the shot was cancelled before it could
+    // ever go off, so the bot paid the cast and got nothing, indefinitely. The same loop is what
+    // made priests look like they were jabbing at the wand button rather than toggling it on.
+    return WorldTimer::getMSTimeDiff(m_wandHoldSince, WorldTimer::getMSTime()) < PB_WAND_HOLD_MAX_MS;
 }
 
 bool PartyBotAI::ShouldTauntTarget(Unit const* pVictim) const
@@ -12258,8 +12672,7 @@ void PartyBotAI::UpdateInCombatAI_Warrior()
                 return;
         }
 
-        if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-            && !me->CanReachWithMeleeAutoAttack(pVictim))
+        if (ShouldCloseOn(pVictim, 0.0f))
         {
             BeginChasing(pVictim);
         }
@@ -12893,8 +13306,10 @@ void PartyBotAI::UpdateOutOfCombatAI_Druid()
             return;
     }
 
-    if (me->GetVictim())
-        UpdateInCombatAI_Druid();
+    // The "fight it if I have one" fallback that used to sit here is gone: UpdateAI now runs the
+    // full in-combat rotation for any bot holding a live hostile target, so this was a second,
+    // narrower copy of that rule which fired first and left the real one casting into a spell
+    // already in progress.
 }
 
 void PartyBotAI::UpdateInCombatAI_Druid()
@@ -13010,8 +13425,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
             if (me->HasDistanceCasterMovement())
                 me->SetCasterChaseDistance(0.0f);
 
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-                && !me->CanReachWithMeleeAutoAttack(pVictim))
+            if (ShouldCloseOn(pVictim, 0.0f))
             {
                 BeginChasing(pVictim);
             }
@@ -13114,8 +13528,7 @@ void PartyBotAI::UpdateInCombatAI_Druid()
             if (me->HasDistanceCasterMovement())
                 me->SetCasterChaseDistance(0.0f);
 
-            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() == IDLE_MOTION_TYPE
-                && !me->CanReachWithMeleeAutoAttack(pVictim))
+            if (ShouldCloseOn(pVictim, 0.0f))
             {
                 BeginChasing(pVictim);
             }

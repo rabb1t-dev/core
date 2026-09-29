@@ -88,7 +88,44 @@ public:
     bool IsWorthALongCooldownCC(SpellEntry const* pSpellEntry, Unit const* pTarget) const;
     bool HasManaToSpendOnAbsorbs() const;
     bool HasManaWorthCastingWith() const;
+    bool IsWandHeldBackByMana() const;
+    bool IsFireSpecMage() const;
+    bool ShouldCloseOn(Unit const* pVictim, float castingRange) const;
     mutable time_t m_lastWandHoldLog = 0;
+    // Last time this bot reported bailing out of its tick before the rotation ran.
+    mutable time_t m_lastIdleBailLog = 0;
+    // Throttle for the line explaining a rotation that reached its nukes and cast none.
+    mutable time_t m_lastNukeRefusalLog = 0;
+    void LogIdleBail(char const* reason) const;
+
+    // -- the "why did this bot do nothing" instrumentation --------------------------------------
+    //
+    // Two mages froze for a whole fight and it took fifteen passes over the log to find out why,
+    // because every one of the twenty odd early returns above a rotation returned in silence and
+    // the per-tick line looked identical whether the rotation had run or not. These three members
+    // close that: the gate that took the tick records its own name, the rotation records that it
+    // ran, and the end of UpdateAI compares the two.
+
+    // The name of the last gate to consume a tick before the rotation. A literal, never freed.
+    mutable char const* m_lastBailGate = "none";
+    // Set by the class dispatch, cleared at the top of every tick. False at the end of a tick in
+    // which the bot held a live hostile target means no rotation ran at all, which is a bug every
+    // time: that is the state where a bot stands at full mana next to a fight it never joins.
+    mutable bool m_rotationRan = false;
+    // Throttle for that report.
+    mutable time_t m_lastNoRotationLog = 0;
+    // How long the bot has been holding a target without casting, swinging or moving, so a stall
+    // reads as a stall in the log rather than as an absence of lines.
+    mutable uint32 m_idleSince = 0;
+    mutable time_t m_lastStuckLog = 0;
+    // Where the bot was on the previous tick line, so the log can report displacement rather than
+    // the movement *flag*. IsStopped reads 1 for a bot with a chase generator whose spline has
+    // finished, which is exactly the frozen case, so "moving=1" was reported for bots that a
+    // person watching the game could see standing still.
+    mutable float m_lastTickX = 0.0f;
+    mutable float m_lastTickY = 0.0f;
+    mutable bool m_haveLastTickPos = false;
+    void LogRotationStall() const;
     // When the current wand refusal began, so it can be bounded rather than held for ever.
     uint32 m_wandHoldSince = 0;
     bool TryFreezingTrapSequence();
@@ -243,7 +280,7 @@ public:
     bool FirePullAttack(Unit* pTarget);
     bool AddFillerDamage(Unit* pTarget);
     bool KeepBusy();
-    bool IsWorthDotting(Unit const* pVictim) const;
+    bool IsWorthDotting(Unit const* pVictim, SpellEntry const* pSpellEntry = nullptr) const;
     void SampleVictimHealth();
     float EstimateSecondsToLive(Unit const* pVictim) const;
     float EstimateSecondsPerComboPoint() const;

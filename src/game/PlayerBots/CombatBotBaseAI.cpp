@@ -3092,6 +3092,27 @@ Player* CombatBotBaseAI::SelectBuffTarget(SpellEntry const* pSpellEntry) const
     if (!pGroup)
         return nullptr;
 
+    // Not while this bot has something to kill.
+    //
+    // Every class buffs out of the same shape: pick a target, cast, set m_isBuffing, ClearTarget,
+    // return -- and the return is above the damage rotation, so a bot with buffs still to hand out
+    // spends the fight handing them out. It clears its own target each time, so it never engages,
+    // never enters combat, and until the tick line was moved out of UpdateInCombatAI it wrote
+    // nothing at all while doing it.
+    //
+    // Two mages in the same group, same pull, made it plain: one had finished buffing before the
+    // pull and cast Fireball, Fireball, Fire Blast; the other was three members into Arcane
+    // Intellect when the tank charged, and cast one more buff and no damage for the whole fight.
+    // The group's buffs are worth a few seconds before a pull and nothing whatsoever during one.
+    //
+    // Asked of this bot's own victim rather than the group's combat state, because a bot that has
+    // not been given a target yet is exactly the one that should still be topping the buffs up.
+    if (Unit const* pVictim = me->GetVictim())
+    {
+        if (pVictim->IsAlive() && IsValidHostileTarget(pVictim))
+            return nullptr;
+    }
+
     // Ranked rather than taken first-past-the-post. First-past-the-post is the same answer for
     // every buffer in the raid, which is how five priests came to cast the same three thousand
     // four hundred mana buff at the same member in the same second.
