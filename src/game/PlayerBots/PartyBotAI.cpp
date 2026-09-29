@@ -716,6 +716,12 @@ static constexpr time_t PB_STAND_LOG_INTERVAL = 5;
 // Long enough that a caster waiting out a global cooldown or walking into range is never reported,
 // short enough that a bot which sat out a whole fight cannot hide inside one interval.
 static constexpr uint32 PB_ROTATION_STALL_MS = 10000;
+
+// How far back a stall report looks for a refused route when deciding whether the bot is standing
+// still because it was held there. Wider than a tick so a refusal one or two ticks old still
+// attaches to the stall it caused, and far short of the ten second stall window so a single
+// refusal cannot mark the rest of a fight.
+static constexpr uint32 PB_STALL_REFUSAL_WINDOW_MS = 2000;
 // What being first and second on an instance's escort list is worth, in health percentage points,
 // when the healer is choosing between several hurt escorts. Enough to reach the one the encounter
 // turns on before it is critical; far too little to ignore one that is dying.
@@ -12365,13 +12371,21 @@ void PartyBotAI::LogRotationStall() const
 
     sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
              "[BotCombat] stalled bot='%s' role=%s victim='%s' vdist=%.1f for=%ums "
-             "(rotation ran and chose nothing) hp=%.0f pw=%u mgen=%u los=%u facing=%u",
+             "(rotation ran and chose nothing) hp=%.0f pw=%u mgen=%u los=%u facing=%u "
+             "combat=%u pullrefused=%u",
              me->GetName(), GetRoleName(m_role), pVictim->GetName(), me->GetDistance(pVictim),
              WorldTimer::getMSTimeDiff(m_idleSince, now), me->GetHealthPercent(),
              me->GetPower(me->GetPowerType()),
              uint32(me->GetMotionMaster()->GetCurrentMovementGeneratorType()),
              uint32(me->IsWithinLOSInMap(pVictim) ? 1 : 0),
-             uint32(me->HasInArc(pVictim, 2.0f * M_PI_F / 3.0f) ? 1 : 0));
+             uint32(me->HasInArc(pVictim, 2.0f * M_PI_F / 3.0f) ? 1 : 0),
+             // The two fields that tell the two stalls apart, and without them a stall in chase
+             // motion is unattributable. A bot out of combat is one the chase pull rule still
+             // applies to and one RecoverLineOfSight declines to help; a bot whose route was just
+             // refused is being held deliberately. Neither is visible from the rest of this line,
+             // and reading mgen=6 alone has already supported two incompatible explanations.
+             uint32(me->IsInCombat() ? 1 : 0),
+             uint32(me->WasPullRouteRefusedRecently(PB_STALL_REFUSAL_WINDOW_MS) ? 1 : 0));
 }
 
 void PartyBotAI::LogIdleBail(char const* reason) const
