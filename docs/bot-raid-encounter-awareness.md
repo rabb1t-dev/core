@@ -32,6 +32,7 @@ changed the plan.
 | 4 - Content rollout, smallest first | **in progress** | Most of it. Tier 0 and Tier 2 five-mans are being driven end to end one at a time, ahead of the rotation engine rather than after it. Six instances have tactics-table entries -- Shadowfang Keep, Wailing Caverns, Razorfen Kraul, Razorfen Downs, Zul'Farrak, Maraudon -- and three of those have end-to-end suites. The rest of the 5-man list has neither |
 | 4b - Difficulty tuning | **not started** | All of it, built alongside 1a rather than after it |
 | 5 - Tooling | **in progress** | Hazard and directive inspection, attempt logging |
+| 6 - Measured behaviour and a reference corpus | **not started** | All of it. The attempt-logging bullet in Phase 5, specified and grown into a measurement loop, plus a real-player reference corpus for the raid content |
 
 ### Landed
 
@@ -180,6 +181,13 @@ returns nothing.
 
 Recorded because each one cost real investigation and would otherwise be re-derived.
 
+- **A real-player log corpus is worth nothing for the five-mans and a great deal for the 40-mans,
+  and the reason is coverage rather than data shape.** WarcraftLogs Classic ranks every raid this
+  project is aiming at and carries no low-level dungeon at all, because nobody logs a level 20
+  instance. Beyond that, the two kinds of content fail differently: a trash pull in Maraudon goes
+  wrong through emergent spatial reasoning, which no event stream records, while a raid boss is a
+  scripted timeline, which an event stream reconstructs exactly. The corpus is therefore scheduled
+  against the raid content and deliberately not against the rollout. See *Phase 6*.
 - **The 110 and 130 percent pull thresholds are real here, and the melee test is the creature's
   reach rather than the attacker's class.** `ThreatContainer::selectNextVictim` keeps the current
   victim while the best candidate is within 110 percent of it, and switches above 130 percent
@@ -2081,7 +2089,158 @@ started.
   it chooses from is not.
 - Debug commands to visualize the hazard list, dump current directives, and inspect encounter phase.
 - Attempt logging so wipes can be analyzed: which bot died to what, whether avoidance fired, whether
-  a directive was published but ignored.
+  a directive was published but ignored. Specified in *Phase 6* below, which is this bullet grown
+  into a measurement loop once it became clear what it was actually for.
+
+## Phase 6 - Measured behaviour and a reference corpus [not started]
+
+**Status.** Not started. Phase 5's attempt-logging bullet is the first half of this, and it was
+written as a debugging convenience; the arithmetic in *Risks and open items* is what turns it into a
+prerequisite for the 40-man content.
+
+### Why this is not optional
+
+A 99 percent per-bot success rate on a mechanic gives a 68 percent chance of a clean attempt across
+39 bodies. Three nines gives 96 percent. That number is already recorded as a risk, and the response
+to it -- treat "works once" as the start of the work -- cannot be carried out, because **nothing here
+can measure a per-bot success rate at all.** There are roughly a hundred distinct `[BotCombat]` event
+kinds and they answer "what happened in this run" very well. They cannot answer "how often does this
+bot fail this mechanic", because they are prose lines in `Server.log`, and the harness wrapper
+archives and truncates that file per run.
+
+So the gap is not instrumentation. The instrumentation is the asset, and it is a better one than any
+real combat log, for two reasons worth stating plainly because they decide the shape of everything
+below:
+
+- **It records refusals and their reasons.** `pullblock`, `threathold`, `nointerrupt`, `nukehold`,
+  `idlebail`, `stalled`, `norotation`, `holdline`, `standfast`, `fearblock`, `spellblock`. A client
+  combat log has never contained a declined decision; it only ever contained what was done. Most of
+  what makes a dungeon go well is what a group declines to do, and that is the half only this side
+  can see.
+- **It has threat.** `.harness threat` reads the live list with the 110 and 130 percent ratios and
+  the per-hostile `melee` flag. Threat was never client-visible, so no WarcraftLogs report in
+  existence contains it.
+
+What is missing is a machine-readable way out of the instrumentation, and an identity to group events
+by so that fifty attempts aggregate into a rate.
+
+### 6a - A structured event channel
+
+- A `LOG_BOTEVENTS` entry in `LogType`, wired in `Log::OpenWorldLogFiles` alongside the others as
+  `LogFile.BotEvents` defaulting to `BotEvents.log`. Its own file rather than a prefix in
+  `Server.log`, because the aggregate has to outlive the per-run archive and truncation that
+  `contrib/harness/README.md` documents. **Done, not yet built or deployed.**
+
+  Two things in `Log` had to move for this to be parseable at all, and both are the kind of detail
+  that is cheaper to read here than to rediscover. Every channel is prefixed with a timestamp by
+  `LOG_TO_FILE_HELPER` and `OutFile`, which puts text in front of the opening brace and fails every
+  JSON reader; and the mirror into `Server.log` lives *inside* `LOG_TO_CONSOLE_HELPER`, so any
+  channel that reaches the console is duplicated into the basic log. `LOG_DBERRFIX` and
+  `LOG_PERFORMANCE` were each exempt from one of the two by an inline type comparison. Those
+  comparisons are now two named predicates, `IsMachineReadableLog` and `IsFileOnlyLog`, and
+  `LOG_BOTEVENTS` is in both -- otherwise the stream would be unparseable *and* would double the
+  size of the file the suites grep.
+- **JSON Lines, not key=value.** The existing lines are already nearly key=value and it is tempting
+  to keep that, but creature and boss names in this game are full of apostrophes -- Antu'sul,
+  Zul'Farrak, C'Thun, Ossirian the Unscarred's crystals -- and a naive parser breaks on the first
+  one. One object per line, read with `json.loads`, no quoting rules to get wrong.
+- A fixed key prefix on every event: `run`, `attempt`, `t` in milliseconds since attempt start,
+  `map`, `encounter`, `phase`, `bot`, `cls`, `role`, `lvl`, `ev`. Event-specific keys after it.
+- **One emit helper, not a hundred edits.** The prose lines stay exactly as they are. They are the
+  better artifact for reading a single run, which is what the standing rule sends an agent to do
+  first, and rewriting them would cost the thing that already works. Structured emission is a second
+  consumer: route the event families that reliability turns on -- deaths, mechanic outcomes,
+  refusals, casts -- and leave the rest until something wants them.
+
+### 6b - Attempt identity
+
+Without this, fifty Chromaggus pulls are one undifferentiated log and no rate can be computed.
+
+- Hang attempt boundaries off `EncounterState` (`NOT_STARTED`, `IN_PROGRESS`, `FAIL`, `DONE`) where a
+  scripted instance provides one, and off a `.harness attempt begin|end <label>` for everything that
+  does not -- trash, outdoor content, and the whole five-man rollout, none of which have encounter
+  scripts to hang off.
+- Record the roster and each bot's spec at attempt start. A reliability number means nothing without
+  knowing which bodies were in the room, and a premade spec is rolled per spawn, so the same named
+  bot is not the same bot across two runs.
+
+### 6c - The aggregator
+
+- `contrib/harness/bot_events.py`: read the stream, group by attempt, report per-bot per-mechanic
+  outcome rates. The output that matters is mechanic against failure count per bot, which is what
+  turns the compounding-reliability risk from a worry into a number and points at either the body or
+  the rule to fix.
+- It belongs beside the suites because the suites should be able to assert on it. "No bot failed the
+  polarity swap in twenty attempts" is a test, and it is the only kind of test that can hold an
+  encounter like Thaddius closed.
+
+### 6d - The reference corpus
+
+Deliberately last. A comparison needs both halves, and ours is the half we control; building the
+external half first would produce reference numbers with nothing to compare them against.
+
+- WarcraftLogs v2 API: GraphQL at `/api/v2/client`, OAuth2 client credentials, a points-per-hour
+  budget. Cache to disk permanently -- these reports never change, and the published guidance leads
+  with caching for a reason.
+- Classic Era covers exactly the target content: Molten Core, Onyxia, Blackwing Lair, Zul'Gurub,
+  AQ20, AQ40 and Naxxramas are all ranked zones with heavy volume. It covers **no** low-level
+  five-man dungeon -- there is no zone, no ranking and no discovery path for Wailing Caverns or
+  Maraudon, because nobody logs a level 20 dungeon. That coverage fact, not any property of the data,
+  is why this is Phase 6 and not Phase 5 tooling.
+- Three extraction targets, in value order:
+  1. **Encounter timelines into the tactics table.** Boss cast periodicity, add spawn times and
+     entries for `summonEntries`, phase transitions by health percent for `burnBelowPercent`, and
+     which casts real raids spent interrupts on versus ate. That last is ground truth for
+     `GetWorstKnownCastPriority`, which is a judgement call today. Roughly forty bosses across BWL,
+     AQ40 and Naxxramas need entries, and hand-authoring each from wiki prose is the alternative.
+  2. **Raid-wide coordination.** Dispel counts and targets per fight, taunt and tank-swap timing,
+     and -- if the position fields are exposed, see below -- how clustered the raid was when an area
+     effect landed.
+  3. **Per-class uptime and cast-mix benchmarks at 60 in raid gear**, as the target metric for the
+     rotation engine rather than the eyeballed tick log.
+- **Metric definitions are written once and computed identically on both sides.** This is where the
+  comparison is won or lost. "DoT uptime" has to mean the same union of aura windows over the same
+  denominator in the aggregator and in the extractor, or the diff is noise that looks like a finding.
+- **Structure and timing, not absolute numbers.** Classic Era is 1.14 with Classic-era balance and
+  late-phase gear; this server is 1.12, and 2019 Classic deviated from it in places including spell
+  batching and some boss scripting. Mechanic order and cadence transfer. Damage values do not.
+- **Do not upload bot logs to WarcraftLogs.** A 1.12 client's combat log predates the format their
+  uploader parses, private-server reports sit poorly with their terms, and the comparison does not
+  need it -- both halves are computed locally. Check the terms on bulk retrieval before building the
+  corpus regardless.
+
+### First test case: Chromaggus
+
+Chosen because it exercises the parts of the extraction that are hard and the parts of the tactics
+table that are thin.
+
+- Each instance of him rolls **two of five** breaths, so a timeline has to be read per report and
+  reconciled across several rather than assumed from one. An extractor that quietly generalises from
+  a single log will produce a confidently wrong tactics entry here, which makes him a good first
+  subject rather than a bad one.
+- **Frenzy** wants a Tranquilizing Shot. That is an interrupt-duty assignment rather than a rotation
+  rule, so it lands in Phase 3a's raid-role vocabulary -- "interrupt duty" is already named there as
+  a role the directive layer needs.
+- **Brood Affliction** stacking to a fifth debuff mutates the target. A "stop doing the obvious
+  thing" rule of exactly the kind logs show only as an absence, and therefore the honest test of how
+  far log extraction reaches.
+
+If the extractor produces a usable `DungeonCreatureTactic` for Chromaggus it will produce one for
+most bosses. If it cannot, the finding is cheap and arrives before forty bosses of effort.
+
+### Open questions
+
+- **Whether the v2 `events` payload exposes position for Classic Era reports.** Advanced combat
+  logging does exist in 1.14 -- `/console advancedCombatLogging 1` appends a 19-field block carrying
+  `positionX`, `positionY`, `facing`, current and maximum health and power, and power cost -- and the
+  site's replay feature implies the data is held. Whether the API returns coordinates per event is
+  one query to settle, and the answer decides whether extraction target 2 is possible at all. Note
+  that those coordinates are per-UI-map and need `MAP_CHANGE` bounds to interpret, with the y value
+  before the x, so consuming them means mapping client UI map space onto this server's world frame.
+- **Query cost.** A 40-man Naxxramas clear is a large event volume and raw `events` is the expensive
+  shape. Prefer the `table` and `graph` aggregates where a summary answers the question, fetch per
+  encounter, and take three to five clean kills per boss for structure work -- population statistics
+  only matter for the uptime benchmarks.
 
 ## Risks and open items
 
