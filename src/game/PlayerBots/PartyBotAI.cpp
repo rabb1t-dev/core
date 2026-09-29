@@ -262,6 +262,11 @@ static constexpr float PB_BUFF_MANA_FLOOR = 55.0f;
 // the owner is usually not, and a pet that will not cross the room is no use for this.
 static constexpr float PB_PET_TOTEM_RADIUS = 40.0f;
 
+// How far a pet may be sent at something nobody is fighting yet. Past this the order is a pull
+// taken by proxy, and it is the owner's positioning rules -- the tank lead, the aggro radius, the
+// chase gate -- being bypassed by a second body that has none of them.
+static constexpr float PB_PET_PULL_LEASH = 30.0f;
+
 static constexpr float PB_FILLER_PARTY_HEALTH = 90.0f;
 // When a filler cast already under way is worth throwing away. Smite is two and a half seconds and
 // nothing else can be cast during it, so without this the group's healing waits on damage nobody
@@ -1101,6 +1106,38 @@ void PartyBotAI::HoldPet(bool hold)
     pPet->GetCharmInfo()->SetCommandState(COMMAND_FOLLOW);
 }
 
+// Everything a player's countermand has to reach, which until now stopped at the bot itself.
+//
+// A stop order cleared the bot's target, its casts and its movement and said nothing whatsoever
+// about its pet, so a warlock told to stop stood still while its voidwalker carried on chewing on
+// the mob -- and kept it in combat, kept its threat, and from the outside read as the order being
+// ignored. Same shape as the pull: the pet is a second body, it takes its orders separately, and
+// every instruction that reaches only the owner reaches only half the problem.
+//
+// Defensive rather than passive, which is the difference between this and HoldPet. A hold means
+// the group is deliberately not fighting, so the pet goes passive and stays out of it. A stop
+// means this fight is over for you; the pet should still hit back if something comes for its
+// owner.
+void PartyBotAI::StopPet()
+{
+    Pet* pPet = me->GetPet();
+    if (!pPet || !pPet->GetCharmInfo())
+        return;
+
+    CharmInfo* pCharmInfo = pPet->GetCharmInfo();
+
+    pPet->AttackStop();
+    pPet->InterruptNonMeleeSpells(false);
+
+    pCharmInfo->SetIsCommandAttack(false);
+    pCharmInfo->SetIsAtStay(false);
+    pCharmInfo->SetIsFollowing(false);
+    pCharmInfo->SetIsCommandFollow(false);
+    pCharmInfo->SetIsReturning(true);
+    pCharmInfo->SetCommandState(COMMAND_FOLLOW);
+    pCharmInfo->SetReactState(REACT_DEFENSIVE);
+}
+
 // Keep a pet working, asked every tick rather than once before the fight.
 //
 // Both pet classes used to command their pet from UpdateOutOfCombatAI_Hunter and _Warlock, and the
@@ -1180,6 +1217,22 @@ void PartyBotAI::UpdatePetCombat()
     // Only on a mismatch, so this is not an order re-sent four times a second, but it is re-sent
     // the moment the pet's target dies or the group's focus moves.
     if (pPet->GetVictim() == pVictim)
+        return;
+
+    // Not across the room at something nobody has touched yet.
+    //
+    // CommandPetAttack carries no distance bound of its own, so whatever the owner happened to
+    // hold as a victim was dispatched to regardless of where it was. A warlock whose focus landed
+    // on a Barbed Lasher seventy six yards away sent its voidwalker the whole way, and the pull
+    // that followed was one nobody ordered: the owner itself never moved, because the tank lead
+    // and the aggro rules held it exactly where it was meant to be. The pet is subject to none of
+    // those, which is the point of this check -- it is the only body in the group that can start a
+    // fight without any of the rules that decide whether a fight should start.
+    //
+    // Something already in combat is a different case and stays allowed at any range: the fight
+    // exists, the pet is joining it rather than causing it, and a pet that refused to help because
+    // the mob was far away would be useless in exactly the fights where it is needed.
+    if (!pVictim->IsInCombat() && me->GetDistance(pVictim) > PB_PET_PULL_LEASH)
         return;
 
     CommandPetAttack(pPet, pVictim);
@@ -3360,6 +3413,32 @@ void PartyBotAI::SetGroupAttackOrder(ObjectGuid guid)
     Group* pGroup = me->GetGroup();
     if (!pGroup)
         return;
+
+    // Logged because a standing kill order turned up that nobody remembered giving.
+    //
+    // A warlock's focus landed on a Barbed Lasher seventy six yards away and its pet was sent the
+    // whole distance, and the focus line read "ordered onto", which is the tier that only an
+    // explicit attack order produces. The player says they issued none. Reading the code cannot
+    // settle that: this function is the only writer of the field, the command is the only caller
+    // of this function, and the map's object store is keyed by the full ObjectGuid so a stale guid
+    // cannot quietly resolve to a different creature. Every static answer says it should not have
+    // happened, and it happened twice in forty seconds on two different mobs.
+    //
+    // So the order now says where it came from. If the next "ordered onto" has no line like this
+    // in front of it, the field is being written by something that is not this function and the
+    // search moves elsewhere; if it does, the command was issued and the question is by what.
+    if (IsCombatLogged())
+    {
+        Unit const* pTarget = me->GetMap()->GetUnit(guid);
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] setorder bot='%s' group=%u -> '%s' (guid=%u) was='%s'",
+                 me->GetName(), pGroup->GetId(),
+                 pTarget ? pTarget->GetName() : "unknown",
+                 guid.GetCounter(),
+                 s_groupFocus[pGroup->GetId()].ordered.IsEmpty()
+                     ? "nothing"
+                     : "a previous order");
+    }
 
     s_groupFocus[pGroup->GetId()].ordered = guid;
 }

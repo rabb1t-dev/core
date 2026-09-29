@@ -272,6 +272,9 @@ public:
     bool UpdatePullSequence();
     void LogPull(char const* what) const;
     void HoldPet(bool hold);
+    // Take a pet out of the fight its owner has just been ordered out of. Separate from HoldPet
+    // because a stop is not a hold: the pet still defends its owner afterwards.
+    void StopPet();
     void CommandPetAttack(Pet* pPet, Unit* pTarget);
     void UpdatePetCombat();
     uint32 GetRangedAttackSpellId() const;

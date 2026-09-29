@@ -1421,6 +1421,11 @@ void StopPartyBotAttackHelper(PartyBotAI* pAI, Player* pBot)
     // straight back on the same mob on the next tick, which is the order surviving the countermand.
     pAI->ClearGroupAttackOrder();
 
+    // And the pet, which took none of this. A stopped warlock used to stand still while its
+    // voidwalker carried on, holding the mob in combat and its own threat on it, which reads from
+    // the outside as the order being ignored.
+    pAI->StopPet();
+
     pBot->AttackStop(true);
     pBot->InterruptNonMeleeSpells(false);
     if (!pBot->IsStopped())
@@ -2040,6 +2045,12 @@ bool HandlePartyBotPauseApplyHelper(Player* pTarget, uint32 duration)
             {
                 pTarget->StopMoving();
                 pTarget->GetMotionMaster()->MoveIdle();
+
+                // The pet too, and this one matters more here than anywhere else: pausing stops
+                // the bot's tick, so UpdatePetCombat never runs again to call the pet off. A
+                // paused warlock's voidwalker would fight on by itself for the whole five minutes
+                // with nothing left able to recall it.
+                pAI->StopPet();
             }
 
             return true;
