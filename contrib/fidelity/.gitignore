@@ -1,0 +1,7 @@
+# Cached API responses. Regenerable, large, and they record which encounters
+# were looked at, so they stay out of history.
+cache/
+
+# Credentials never belong in the tree. They live in ~/.wcl.env, matching how
+# the harness keeps its SOAP credentials in ~/.vmangos-harness.env.
+*.env
