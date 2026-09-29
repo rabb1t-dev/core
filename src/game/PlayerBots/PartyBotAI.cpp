@@ -9325,7 +9325,20 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (RecoverHealLineOfSight())
         return;
 
-    if (me->IsInCombat() && RecoverLineOfSight())
+    // Not gated on being in combat, and that gate is what this fixes.
+    //
+    // It excluded exactly the bots that need the step. A ranged bot holding a target it cannot see
+    // casts nothing, and a bot that casts nothing never enters combat, so the one condition that
+    // would have let it move to where it can shoot is the one condition it can never reach. One
+    // measured Maraudon stage logged thirty one stalls and every one of them was the same bot
+    // shape: role=ranged, los=0, combat=0, standing in chase motion at its own standoff with full
+    // mana while the rotation chose nothing.
+    //
+    // Nothing is loosened by dropping it. RecoverLineOfSight answers false for any role but ranged
+    // damage and for any bot without a live target on its own map, and the spot it walks to comes
+    // from the firing position search, which already refuses ground inside somebody else's aggro
+    // radius. RecoverHealLineOfSight directly above was never gated this way for the same reasons.
+    if (RecoverLineOfSight())
         return;
 
     // Ahead of the follow and the chase below, because both of them will walk a bot straight back
