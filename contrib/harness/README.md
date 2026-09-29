@@ -49,6 +49,10 @@ command through `.harness exec`.
 sudo systemctl restart vmangos-mangosd     # passwordless for rabb1t
 ```
 
+In practice, prefer the wrapper `~/bin/vmangos-restart`: it installs the freshly built binary,
+archives the log first, and stops the world in the way that keeps killed mobs dead. See
+"Restarting without throwing away what the session killed" below for why that matters.
+
 The unit is `/etc/systemd/system/vmangos-mangosd.service`. What matters about it is that
 `ExecStart` is `/home/rabb1t/server/bin/mangosd -c /home/rabb1t/server/etc/mangosd.conf`, so a
 binary copied over that path is what the next start picks up, and that it carries
@@ -109,6 +113,87 @@ than assuming this one came back. The unit runs as `rabb1t`, so this needs no `s
 ```bash
 gdb -p $(systemctl show -p MainPID --value vmangos-mangosd) -batch -ex 'thread apply all bt'
 ```
+
+## Restarting without throwing away what the session killed
+
+A person testing bots spends an hour clearing a wing, and a restart to pick up a build must not
+put those mobs back. It does not, provided the shutdown is a clean one, and the reason is worth
+stating because the obvious shortcut breaks it silently.
+
+**Use the wrapper, which does this correctly:**
+
+```bash
+~/bin/vmangos-restart          # on the Pi; runs as rabb1t, calls sudo itself
+```
+
+What preserves the state is that it stops the world with `systemctl stop`, which sends **SIGTERM**
+and lets mangosd's own shutdown handler run. That handler is what flushes the world to the
+character database -- `creature_respawn` above all, which is the table holding "this creature is
+dead until this timestamp" for every mob killed. Those rows are what a returning player sees as
+the same mobs still dead. A `kill -9`, or anything that takes the process down without giving the
+handler a chance, loses whatever had not already been written and the wing comes back populated.
+The wrapper is careful about this in both places: the stray-process branch uses a bare `kill`
+(SIGTERM) rather than `kill -9`, for exactly this reason.
+
+The wrapper also archives `Server.log` to `~/server/logs/archive/Server-<timestamp>.log` **before**
+the stop. Do not skip this by restarting some other way: the log is opened with `overwriteOnOpen`,
+so every start truncates it, and the bot tick log -- usually the only record of what the bots
+actually did -- dies with the previous run. Several of the bot bugs in this tree were found only
+because that archive existed.
+
+### Open world versus real instances
+
+These are two different mechanisms and only one of them is automatic.
+
+**Open world (map 0/1, `creature_respawn.instance = 0`)** needs nothing beyond the clean shutdown
+above. Kills persist because the respawn rows persist. This is the common case for party-bot work,
+which mostly happens outdoors, and it is why restarts during a session appear to "just work".
+
+**A real instance** is the case that breaks, because instance progress needs three things to line
+up and by default the third does not:
+
+1. `creature_respawn` rows for the instance -- written live by the server, fine.
+2. The `instance` row -- present, but its `reset_time` is only flushed when the instance unloads,
+   so the stored value can be hours stale and read as expired on reload.
+3. A bind pointing the player back at *that same instance id* -- this is the one that breaks. A
+   normal five-man leaves only a `group_instance` row, and the group is party bots, which exist
+   only in memory and do not survive a restart. No group, no bind, new instance id, and the
+   respawn rows from (1) are orphaned against an id nobody will ever enter again.
+
+So for an instance, run this **immediately before** the restart, while the player is still inside
+and online:
+
+```bash
+~/preserve_instances.sh [keep_hours]      # default 24
+```
+
+It writes a permanent `character_instance` bind for every online player currently in an instance
+and pushes the stored `reset_time` out past the restart. `ConvertInstancesToGroup` only deletes
+`permanent = 0` rows, so these survive. It prints the binds it pinned; if that table comes back
+empty, nothing was preserved and the restart will reset the instance.
+
+Remember that **instance ids are repacked at every startup**, so an id noted before a restart is
+not the id afterwards. Binds and respawn rows are carried across with the repack, which is why the
+bind is the thing to hold rather than the number.
+
+### Checking it actually worked
+
+The three tables tell the whole story, and reading them takes a few seconds:
+
+```bash
+CI=$(grep -E '^CharacterDatabase.Info' ~/server/etc/mangosd.conf | head -1 | sed 's/.*= *"//;s/"$//')
+H=$(echo "$CI"|cut -d';' -f1); U=$(echo "$CI"|cut -d';' -f3)
+P=$(echo "$CI"|cut -d';' -f4); D=$(echo "$CI"|cut -d';' -f5)
+mysql -h "$H" -u "$U" -p"$P" "$D" -e "
+  SELECT instance, COUNT(*) rows_ FROM creature_respawn GROUP BY instance;
+  SELECT id, map, FROM_UNIXTIME(reset_time) FROM instance;
+  SELECT guid, instance, permanent FROM character_instance;"
+```
+
+`creature_respawn` rows under `instance = 0` are open-world kills and are the ones that matter for
+outdoor bot work. An empty `instance` table simply means nobody is in a dungeon; it is not a
+failure. What *is* a failure is an `instance` row with no matching `character_instance` bind, which
+is the orphan case above.
 
 ## The commands
 
