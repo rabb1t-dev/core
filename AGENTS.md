@@ -23,12 +23,22 @@ the thing -- most stalls so far have been the test, not the server.
 an attempt informative rather than confirmatory, and an attempt is the most expensive thing in this
 loop.
 
-- **The script is authoritative, then the database.** `src/scripts/**/boss_*.cpp` is what the boss
-  actually does on this server. `creature_template` gives rank, level and `spell_list_id`;
-  `creature_spells` gives casts and `castFlags`; `creature_ai_events` gives summons and phases. A
-  `spell_list_id` of 0 means the spells live in the script, not the table. The world database
-  disagrees with every online guide often enough to matter, and the script disagrees with the
-  database.
+- **The script is authoritative, then the database -- but always read both.** `src/scripts/**/boss_*.cpp`
+ is what the boss does on this server. `creature_template` gives rank, level and `spell_list_id`;
+ `creature_spells` gives casts and `castFlags`; `creature_ai_events` gives summons and phases. A
+ `spell_list_id` of 0 means the spells live in the script, not the table. The world database
+ disagrees with every online guide often enough to matter, and the script disagrees with the
+ database.
+- **A boss with no script is invisible to a search of the scripts.** The trap that follows directly
+ from the rule above, and it produced a wrong `wantsTremorTotem` for Molten Core. Magmadar is
+ EventAI driven from a spell list, so grepping `src/scripts/**/molten_core` for a fear returns
+ nothing and the instance reads as fear-free -- while his Panic, an area fear on a thirty second
+ repeat, is sitting in `creature_spells`. Enumerate the instance's bosses from `creature_template`
+ first, then account for each one, rather than reasoning from the set of files that happen to
+ exist.
+- **Resolve a spell by its effect, never by its name.** `spell_template.effectApplyAuraName1` of 7
+ is a fear and 6 is a charm. "Panic" reads like flavour text and is a fear; "Dominate Mind" is a
+ real charm that nothing in the source casts. Neither could be settled from the name.
 - **A boss with no `DungeonTactics` entry is not ready to be attempted.** Author the entry first.
   Then a wipe is information rather than a restatement of what the table does not say yet.
 - **Worked example, Golemagg.** `boss_golemagg.cpp` zeroes all incoming damage on a Core Rager below

@@ -971,20 +971,21 @@ DungeonTactics const g_dungeonTactics[] =
         MAP_MOLTEN_CORE,
         "Molten Core",
 
-        // No, and this one is keyed to a gap in the server rather than to the encounter.
+        // Magmadar's Panic, and nothing else in the instance comes close to justifying it.
         //
-        // Every guide to Molten Core answers Lucifron's Dominate Mind with Tremor Totem, and it
-        // would be the right answer to the fight Blizzard shipped: a charm on up to three players
-        // is exactly what the totem is for. It is not the fight that runs here. Dominate Mind
-        // (20604) exists in spell_template and nothing in the entire source casts it;
-        // boss_lucifron.cpp schedules Impending Doom, Lucifron's Curse and Shadow Shock, and no
-        // charm. Nothing else in the instance sleeps, fears or charms either, so the earth totem
-        // slot is worth more as Strength of Earth for the whole run.
+        // Panic (19408) is an area fear -- SPELL_AURA_MOD_FEAR, confirmed off spell_template
+        // rather than off its name -- on a thirty second repeat, and a feared raid in Magmadar's
+        // room runs into the packs on either side of it. That is the whole case, and it is worth
+        // the earth totem slot for the run even though only one fight in ten spends it.
         //
-        // **Flip this the day Lucifron is completed.** The reasoning above is a fact about an
-        // unimplemented ability, not about Molten Core, and it expires silently: a group would
-        // simply start losing its casters mid-fight with nothing in this table to explain why.
-        /* wantsTremorTotem */ false,
+        // He is also the reason this was first written the other way round. Magmadar has no
+        // script at all: he is EventAI driven from spell list 119820, so a search of
+        // src/scripts/**/molten_core for a fear finds nothing and the instance looks fear-free.
+        // The fight that every guide cites for Tremor here is Lucifron's Dominate Mind, and that
+        // one really is absent -- 20604 is a charm in spell_template and nothing in the source
+        // casts it, on this server or on CMaNGOS. So the guides point at the wrong boss, and the
+        // scripts do not mention the right one.
+        /* wantsTremorTotem */ true,
 
         /* escortNpcEntries */ {},
         /* escortGuardRadius */ 0.0f,
