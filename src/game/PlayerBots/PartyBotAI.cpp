@@ -4171,6 +4171,32 @@ Unit* PartyBotAI::FindFocusTotemForPet(float radius) const
         if (m_tactics->IsSummonedAdd(pCreature->GetEntry()))
             continue;
 
+        // Stationary only -- which the caller has always claimed and nothing ever checked, and
+        // the gap turned this function into a pull.
+        //
+        // focusFirst means "kill these first". It is read here as "post the pet at these", and
+        // that is only safe for the wards and totems it was written for. Maraudon put a level
+        // forty four elite on the same list for an entirely good reason -- Barbed Lasher's Thorn
+        // Volley is a thirty yard stun, so it has to die first -- and a warlock then sent its
+        // voidwalker at an unengaged one from forty yards on zone-in, because this branch returns
+        // above every rule that would have stopped it: the combat check, the thirty yard leash,
+        // and the route scan all sit below it.
+        //
+        // movement_type is what actually separates the two populations, and it separates them
+        // cleanly. Every ward and totem on these lists is IDLE: Earthgrab Totem, Ward of Zum'rah,
+        // Fire Nova Totem, Greater Healing Ward. Every real kill-order entry wanders: Barbed
+        // Lasher, Constrictor Vine, Noxxion's Spawn, Theradrim Shardling, the Sul'lithuz
+        // Broodlings. Creature type does not separate them -- Greater Healing Ward and Barbed
+        // Lasher are both CREATURE_TYPE_NOT_SPECIFIED -- and neither does rank, because the
+        // Broodlings and Shardlings are rank zero and a pet sent at one alone is still a dead pet.
+        if (pCreature->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+            continue;
+
+        // And nothing that hits back hard enough to kill the pet, which is the other half of the
+        // same sentence in the caller.
+        if (pCreature->IsElite())
+            continue;
+
         // Said explicitly rather than left to the filter below, because the whole of "the pet goes
         // back to the boss afterwards" rests on this returning nothing once the totems are down.
         if (!pUnit->IsAlive())
@@ -7940,6 +7966,25 @@ bool PartyBotAI::RecoverLineOfSight()
         m_blindTicks = 0;
         return false;
     }
+
+    // Not at something nobody is fighting yet, and not out in front of the tank.
+    //
+    // This step is a movement like any other, and it was the one movement in the file that
+    // answered to none of the rules that govern the rest. BeginChasing refuses to close on an
+    // unengaged mob until the tank is nearer; this runs earlier in UpdateAI, issues a POINT move
+    // of its own, and so walked straight through that refusal one second after it was logged. A
+    // warlock on zone-in to Maraudon was recorded doing exactly that: "tanklead waited for
+    // 'Zacoyek' to reach 'Barbed Lasher' first" at 22:54:14, then "stepping in to 15.0y" at
+    // 22:54:15, and twenty nine yards of walking at a mob nobody had pulled.
+    //
+    // Being unable to see a target is never a reason to start a fight. When the fight is real the
+    // bot steps as before; when it is not, standing still and casting nothing is correct, because
+    // the alternative is the pull.
+    if (!pTarget->IsInCombat() && !IsUnderOrdersAgainst(pTarget) && !IsPulling())
+        return false;
+
+    if (IsAheadOfTankOnPull(pTarget))
+        return false;
 
     if (++m_blindTicks < PB_BLIND_TICKS_BEFORE_MOVING)
         return false;
