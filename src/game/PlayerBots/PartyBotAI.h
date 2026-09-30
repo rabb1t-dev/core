@@ -143,6 +143,7 @@ public:
     bool IsInOpeningRamp(Unit const* pTarget) const;
     void HoldOpeningSwings(Unit const* pTarget);
     float GetThreatPullRatio(Unit const* pTarget) const;
+    Player* GetThreatReferencePlayer(Unit const* pTarget) const;
     float GetThreatHeadroom(Unit const* pTarget) const;
     float EstimateSpellThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     SpellEntry const* PickRankForThreat(Unit const* pTarget, SpellEntry const* pSpellEntry) const;

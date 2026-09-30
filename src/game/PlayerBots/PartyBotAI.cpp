@@ -2954,18 +2954,11 @@ bool PartyBotAI::IsOverThreatCeiling(Unit const* pTarget) const
     // Read-only, but neither the threat lookup nor the container beneath it is marked const.
     ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
 
-    HostileReference const* pTop = threat.getCurrentVictim();
-    if (!pTop || pTop->getTarget() == me)
+    Player* pReference = GetThreatReferencePlayer(pTarget);
+    if (!pReference || pReference == me)
         return false;
 
-    // Only defer to someone the group is actually relying on. Deferring to a pet, or to a
-    // second mob that has wandered into the fight, would have damage dealers throttling
-    // themselves against a threat pool that nobody is trying to hold.
-    Player const* pHolder = pTop->getTarget() ? pTop->getTarget()->ToPlayer() : nullptr;
-    if (!pHolder || !me->IsInSameGroupWith(pHolder))
-        return false;
-
-    float const topThreat = pTop->getThreat();
+    float const topThreat = threat.getThreat(pReference);
     if (topThreat <= 0.0f)
         return false;
 
@@ -2993,6 +2986,36 @@ float PartyBotAI::GetThreatPullRatio(Unit const* pTarget) const
         : PB_THREAT_PULL_RATIO_RANGED;
 }
 
+// Whose threat the rest of the group measures itself against on this target.
+//
+// The tank, and deliberately still the tank while something else holds the mob. A fear or a stun
+// moves the mob without moving the threat, so the number everyone else has to stay under is
+// unchanged for the whole of it; reading whoever inherited the mob instead turns the ceiling into
+// a ratchet, because each damage dealer that takes the lead becomes the reference for the next.
+//
+// Princess Theradras is the worked example. Repulsive Gaze is an eight second fear on a thirty
+// five to forty five second repeat, so the tank is off the top twice in a normal fight. Measured
+// against the current holder, the warlock and the mage spent those windows measuring against each
+// other and climbed to 6308 and 6763 against a tank sitting on 5444 - a quarter clear of the
+// player they were supposed to be staying under, for eight consecutive seconds.
+Player* PartyBotAI::GetThreatReferencePlayer(Unit const* pTarget) const
+{
+    ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
+
+    // On the list at all is the test, not holding it. A tank with no threat here has not engaged
+    // this mob and cannot be the reference for it.
+    if (Player* pTank = GetGroupMainTank())
+        if (threat.getThreat(pTank) > 0.0f)
+            return pTank;
+
+    // No tank on the list, so the only honest reference left is whoever is actually holding it.
+    // Still restricted to the group: deferring to a pet, or to a second mob that has wandered in,
+    // would have damage dealers throttling against a threat pool nobody is trying to hold.
+    HostileReference const* pTop = threat.getCurrentVictim();
+    Player* pHolder = (pTop && pTop->getTarget()) ? pTop->getTarget()->ToPlayer() : nullptr;
+    return (pHolder && me->IsInSameGroupWith(pHolder)) ? pHolder : nullptr;
+}
+
 float PartyBotAI::GetThreatHeadroom(Unit const* pTarget) const
 {
     // Casting into something that is not fighting anyone yet is not an early cast, it is the
@@ -3001,21 +3024,15 @@ float PartyBotAI::GetThreatHeadroom(Unit const* pTarget) const
     if (!pCreature || !pCreature->IsInCombat())
         return 0.0f;
 
+    // Already the one being measured against. Whatever is added here is threat the tank has to
+    // climb over to take the target back, so the answer is none of it.
+    Player* pReference = GetThreatReferencePlayer(pTarget);
+    if (!pReference || pReference == me)
+        return 0.0f;
+
     ThreatManager& threat = const_cast<Unit*>(pTarget)->GetThreatManager();
-    HostileReference const* pTop = threat.getCurrentVictim();
-    if (!pTop || !pTop->getTarget())
-        return 0.0f;
-
-    // Already holding it. Whatever is added here is threat the tank has to climb over to take
-    // the target back, so the answer is none of it.
-    if (pTop->getTarget() == me)
-        return 0.0f;
-
-    Player const* pHolder = pTop->getTarget()->ToPlayer();
-    if (!pHolder || !me->IsInSameGroupWith(pHolder))
-        return 0.0f;
-
-    float const room = pTop->getThreat() * GetThreatPullRatio(pTarget) - threat.getThreat(me);
+    float const room = threat.getThreat(pReference) * GetThreatPullRatio(pTarget) -
+                       threat.getThreat(me);
     return room > 0.0f ? room * PB_THREAT_RANK_SHARE : 0.0f;
 }
 
@@ -3086,13 +3103,22 @@ SpellCastResult PartyBotAI::DoCastSpell(Unit* pTarget, SpellEntry const* pSpellE
             ThreatManager& threat = pTarget->GetThreatManager();
             HostileReference const* pTop = threat.getCurrentVictim();
 
+            // Both the reference and the holder, because they part company for the whole of every
+            // fear and that is exactly when the ceiling matters. One name told us nothing about
+            // which of the two the budget had been drawn from.
+            Player* pReference = GetThreatReferencePlayer(pTarget);
+
             sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
                      "[BotCombat] threathold bot='%s' role=%s refused=%u downranked=%u since last, "
-                     "wanted '%s' on '%s' mythreat=%.0f topthreat=%.0f top='%s' budget=%.0f",
+                     "wanted '%s' on '%s' mythreat=%.0f ref='%s' refthreat=%.0f holder='%s' "
+                     "holderthreat=%.0f budget=%.0f",
                      me->GetName(), GetRoleName(m_role), m_threatRefusals, m_threatDownranks,
                      pSpellEntry->SpellName[0].c_str(), pTarget->GetName(),
-                     threat.getThreat(me), pTop ? pTop->getThreat() : 0.0f,
+                     threat.getThreat(me),
+                     pReference ? pReference->GetName() : "none",
+                     pReference ? threat.getThreat(pReference) : 0.0f,
                      pTop && pTop->getTarget() ? pTop->getTarget()->GetName() : "none",
+                     pTop ? pTop->getThreat() : 0.0f,
                      budget);
 
             m_lastThreatLog = now;
@@ -7556,8 +7582,28 @@ bool PartyBotAI::HoldTacticalStandoff()
     if (!pTight)
         return false;
 
+    // Which side of the band to come out on. The ceiling already stops the bot walking out of its
+    // own range of the mob, so what is left unconstrained is the bearing, and for a healer the
+    // bearing is the whole question: twenty six yards from Theradras is equally correct on the
+    // tank's side of her and on the far side of the room, and only one of those can heal.
+    //
+    // Measured rather than supposed. Across the three Theradras attempts the healer walked out
+    // twice while the tank's distance grew from twenty five to thirty six yards behind it, and
+    // ended the fight logging no_los against its own heal target for seventeen ticks. It is not
+    // the whole of that gap - a feared tank crossing sixty yards is a separate problem, and this
+    // does not pretend to solve it - but it is the half of it this function is responsible for.
+    //
+    // Preference, not requirement: tried first with the anchor and again without it, so the worst
+    // case is the behaviour that was already here. Standing in a twenty yard field that ticks for
+    // a hundred and thirty a second is not an improvement on standing out of reach.
+    Player* pAnchor = (m_role == ROLE_HEALER) ? GetGroupMainTank() : nullptr;
+    float const anchorReach = pAnchor ? GetMaxHealSpellRange() : 0.0f;
+
     float x, y, z;
     if (!FindSpotClearOfPoint(pTight->GetPositionX(), pTight->GetPositionY(),
+                              want + PB_STANDOFF_MARGIN, PB_STANDOFF_MAX_TRAVEL,
+                              x, y, z, PB_STANDOFF_CEILING, nullptr, pAnchor, anchorReach) &&
+        !FindSpotClearOfPoint(pTight->GetPositionX(), pTight->GetPositionY(),
                               want + PB_STANDOFF_MARGIN, PB_STANDOFF_MAX_TRAVEL,
                               x, y, z, PB_STANDOFF_CEILING))
     {

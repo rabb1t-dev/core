@@ -480,7 +480,9 @@ public:
     bool FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
                               float& outX, float& outY, float& outZ,
                               float keepWithin = 0.0f,
-                              std::vector<AvoidCircle> const* avoid = nullptr) const;
+                              std::vector<AvoidCircle> const* avoid = nullptr,
+                              WorldObject const* pStayNear = nullptr,
+                              float stayNearRange = 0.0f) const;
 
     // Whether landing this spell would drag something in that nobody is fighting.
     //

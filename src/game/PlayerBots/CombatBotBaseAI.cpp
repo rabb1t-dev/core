@@ -5954,7 +5954,9 @@ bool CombatBotBaseAI::FindSpotClearOfUnengaged(Unit const* pAwayFrom, float maxT
 bool CombatBotBaseAI::FindSpotClearOfPoint(float px, float py, float clearRadius, float maxTravel,
                                            float& outX, float& outY, float& outZ,
                                            float keepWithin,
-                                           std::vector<AvoidCircle> const* avoid) const
+                                           std::vector<AvoidCircle> const* avoid,
+                                           WorldObject const* pStayNear,
+                                           float stayNearRange) const
 {
     if (maxTravel <= 0.0f)
         return false;
@@ -5993,6 +5995,17 @@ bool CombatBotBaseAI::FindSpotClearOfPoint(float px, float py, float clearRadius
                     continue;
 
                 if (keepWithin > 0.0f && fromPoint > (keepWithin * keepWithin))
+                    continue;
+
+                // Somewhere the bot can still do its job from, when the caller knows what that
+                // means. The bearing sweep starts directly away from the point and fans out, so
+                // with nothing else to say otherwise the first acceptable candidate wins and the
+                // direction is whatever the geometry happened to offer. For a healer stepping out
+                // of a field that is a coin flip on whether it lands on the tank's side of the
+                // boss or the far side of the room, and the far side clears the field while
+                // putting the one person it exists to keep alive out of reach.
+                if (pStayNear && stayNearRange > 0.0f &&
+                    pStayNear->GetDistance(x, y, z) > stayNearRange)
                     continue;
 
                 // Clear of every other patch as well, not merely of the one being stepped out of.
@@ -7063,6 +7076,44 @@ void CombatBotBaseAI::BreakCrowdControlEffects()
                                 player->RemoveAurasDueToSpellByCancel(spellId);
                         }, 1 * IN_MILLISECONDS);
                     }
+                    return;
+                }
+            }
+            break;
+        }
+        case CLASS_WARRIOR:
+        {
+            // Berserker Rage carries two MECHANIC_IMMUNITY effects, fear and knockout, and
+            // SPELL_ATTR_EX_IMMUNITY_PURGES_EFFECT alongside them. That combination is the whole
+            // reason it works here: Spell::CheckCast builds mechanic_immune out of those effects
+            // and then waives its own fleeing check against it, which is the same route the Will
+            // of the Forsaken block above takes, and the purge attribute strips the fear on
+            // application rather than merely preventing the next one.
+            //
+            // Thirty second cooldown against a thirty five to forty five second fear, so where it
+            // can be reached at all it covers every cast rather than only the first - which is
+            // what Will of the Forsaken, on two minutes, cannot do.
+            //
+            // It cannot be reached from Defensive Stance, and that is a real limit rather than an
+            // omission here. The spell is Berserker Stance only, and a stance change is an
+            // ordinary spell with no fear immunity of its own, so CheckCast refuses it for
+            // precisely as long as the fear runs. A protection tank gets nothing from this and
+            // still needs Tremor Totem or an undead's racial; a fury warrior already standing in
+            // the right stance gets all of it. CanTryToCastSpell reads the stance requirement
+            // through GetErrorAtShapeshiftedCast, so there is nothing to test for separately.
+            if (m_spells.warrior.pBerserkerRage &&
+                HasCrowdControlOfMechanic({ MECHANIC_FEAR, MECHANIC_KNOCKOUT }) &&
+                CanTryToCastSpell(me, m_spells.warrior.pBerserkerRage))
+            {
+                if (DoCastSpell(me, m_spells.warrior.pBerserkerRage) == SPELL_CAST_OK)
+                {
+                    if (sWorld.getConfig(CONFIG_BOOL_PARTY_BOT_COMBAT_LOG))
+                    {
+                        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                 "[BotCombat] fearbreak bot='%s' role=%s broke a fear or a sap "
+                                 "with Berserker Rage", me->GetName(), GetRoleName(m_role));
+                    }
+
                     return;
                 }
             }
