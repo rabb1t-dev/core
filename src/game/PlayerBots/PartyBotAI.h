@@ -309,6 +309,7 @@ public:
     bool IsCastingFillerAutoRepeat() const;
     Player* GetGroupTank() const;
     Unit* SelectHealTargetOutOfReach() const;
+    bool CloseOnUnreachableHealTarget();
     Unit const* GetCurrentFollowTarget() const;
     uint32 ScaleTankRage(uint32 rage) const;
     void LogCombatTick() const;

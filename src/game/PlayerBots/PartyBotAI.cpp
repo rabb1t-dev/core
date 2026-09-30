@@ -4902,6 +4902,68 @@ bool PartyBotAI::RecoverHealLineOfSight()
     return true;
 }
 
+// Walk towards somebody this healer cannot reach at all.
+//
+// The other half of the pair above, and lifted out here for exactly the reason that one was. It
+// lived under `if (!pVictim)` in the movement block, so it ran only for a healer with no attack
+// target, and a healer in combat is nearly always wanding or smiting something. The same comment
+// that rescued the sight step describes the trap, and the range step was left sitting in it.
+//
+// Measured rather than argued: of the 315 ticks in the log where a healer had a heal target it
+// could not reach, 195 had that healer in chase motion - it had a victim, so the branch that
+// exists to close the gap was skipped on nearly two thirds of the occasions it was needed. The
+// surrounding `!me->IsMoving()` accounted for much of the rest, a chasing healer being by
+// definition in motion.
+bool PartyBotAI::CloseOnUnreachableHealTarget()
+{
+    if (m_role != ROLE_HEALER || !me->IsInCombat() || IsInDuel() || m_holdPosition)
+        return false;
+
+    if (me->IsMounted() || me->IsNonMeleeSpellCasted())
+        return false;
+
+    if (me->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_FLEEING))
+        return false;
+
+    if (!CanIssueCombatMovement())
+        return false;
+
+    Unit* const pFar = SelectHealTargetOutOfReach();
+    if (!pFar)
+        return false;
+
+    // Only the range case. Sight is RecoverHealLineOfSight's job and it runs immediately before
+    // this one, so anything still reachable has already had its chance to step around the corner.
+    if (me->IsWithinDist(pFar, GetMaxHealSpellRange()))
+        return false;
+
+    // Never chase a fear. It is a random walk that reverses itself inside ten seconds and ends
+    // wherever the server sent it rather than anywhere a healer should be standing - through the
+    // next pack as often as not. What matters is being in range when it comes back, and that is
+    // won by not drifting out of contact beforehand rather than by running after it. Theradras
+    // fears the tank sixty yards twice a fight, and this is the case that would chase it.
+    if (pFar->HasUnitState(UNIT_STATE_FLEEING) || pFar->HasAuraType(SPELL_AURA_MOD_FEAR))
+        return false;
+
+    // Already on the way. Re-issuing the generator every tick would restart the path and stop
+    // the bot casting for as long as the walk lasted.
+    if (GetCurrentFollowTarget() == pFar)
+        return false;
+
+    if (IsCombatLogged())
+    {
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                 "[BotCombat] healclose bot='%s' set off after '%s' at %.1fy on %.0f%% health, "
+                 "reach=%.0f", me->GetName(), pFar->GetName(), me->GetDistance(pFar),
+                 pFar->GetHealthPercent(), GetMaxHealSpellRange());
+    }
+
+    me->GetMotionMaster()->MoveFollow(pFar, PB_HEAL_REPOSITION_DIST,
+                                      frand(PB_MIN_FOLLOW_ANGLE, PB_MAX_FOLLOW_ANGLE));
+    NoteCombatMovement();
+    return true;
+}
+
 // Whether this bot could actually fight this target without leaving the ground it is holding.
 //
 // The other half of the hold line, and the half the first Zul'Farrak run was missing. Refusing the
@@ -8323,6 +8385,36 @@ Unit* PartyBotAI::SelectHealTargetOutOfReach() const
         }
     }
 
+    // And the tank at any health, when nothing more urgent turned up.
+    //
+    // The health gate above asks whether somebody is hurt enough to be worth walking for, which
+    // is the right question about a party member and the wrong one about the tank. A healer out
+    // of touch with the tank is out of position whatever the tank's bar currently reads, because
+    // closing thirty yards takes longer than the tank has once the damage actually starts: the
+    // moment to move is while it still looks fine. Measured across the log, 236 of the 315 ticks
+    // with an unreachable heal target had that target at or above seventy percent and so returned
+    // nothing here, and eighty of those were beyond heal range as well - the healer could not
+    // have answered anything and declined to close because nothing had gone wrong yet. Princess
+    // Theradras read 73, 73 and then 66 percent on consecutive ticks at seventy yards, and only
+    // the third of those was allowed to move the healer.
+    //
+    // Last, and only when the loop found nobody, so a dying party member still outranks a healthy
+    // tank. In combat only: out of combat the formation follow is what should be holding the
+    // group together, and a tank walking ahead down a corridor is not a healer's problem yet.
+    if (!pTarget && me->IsInCombat())
+    {
+        if (Player* pTank = GetGroupMainTank())
+        {
+            if (pTank != me && pTank->IsAlive() && pTank->IsInWorld() &&
+                pTank->GetMapId() == me->GetMapId() &&
+                me->IsValidHelpfulTarget(pTank) &&
+                !(me->IsWithinDist(pTank, reach) && me->IsWithinLOSInMap(pTank)))
+            {
+                pTarget = pTank;
+            }
+        }
+    }
+
     return pTarget;
 }
 
@@ -9443,6 +9535,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
     if (RecoverHealLineOfSight())
         return;
 
+    // And its range half, immediately after it and ungated for the same reasons. Sight first
+    // because a step around a corner is cheaper than a walk and answers the commoner case.
+    if (CloseOnUnreachableHealTarget())
+        return;
+
     // Not gated on being in combat, and that gate is what this fixes.
     //
     // It excluded exactly the bots that need the step. A ranged bot holding a target it cannot see
@@ -9918,10 +10015,15 @@ void PartyBotAI::LogCombatTick() const
     {
         if (!me->IsValidHelpfulTarget(pWorst))
             reason = "not_helpful";
+        // Distance first, because sight fails on its own at any real distance and testing it
+        // first quietly relabelled every range problem as a sight problem. Sixty six of the two
+        // hundred and fifty four no_los ticks in the log were beyond heal range, a quarter of
+        // them, and the two have different answers: one is a step around a corner and the other
+        // is a walk. far_and_blind exists so the pair stay distinguishable when both are true.
+        else if (!me->IsWithinDist(pWorst, reach))
+            reason = me->IsWithinLOSInMap(pWorst) ? "out_of_range" : "far_and_blind";
         else if (!me->IsWithinLOSInMap(pWorst))
             reason = "no_los";
-        else if (!me->IsWithinDist(pWorst, reach))
-            reason = "out_of_range";
         else if (IsRationingHealsForTank() && GetEffectiveRole(pWorst) != ROLE_TANK)
             reason = "rationed_tank_only";
         else if (IsAlreadyHealing(pWorst->GetObjectGuid()))
