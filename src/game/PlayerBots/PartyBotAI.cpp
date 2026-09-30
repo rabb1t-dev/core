@@ -4150,6 +4150,39 @@ bool PartyBotAI::HasThreatOnGroup(Unit const* pEnemy) const
 // DungeonCreatureTactic::burnBelowPercent for why Antu'sul needs it: above sixty percent he has no
 // heal and the pause is free, below it he undoes whatever the pause cost.
 // The nearest thing the instance says to kill that a pet can reasonably be sent at on its own.
+// Whether a focus-first entry is the kind of thing a bot may walk to, or send a pet to, without
+// that being a pull.
+//
+// focusFirst answers one question -- what dies first -- and three separate rules have now read it
+// as the answer to a different one: which creatures are safe to approach on sight. They are not
+// the same set, and every time the two have been confused the result has been the same bug.
+//
+// The list holds two populations. One is stationary support that never appears in anybody's
+// attacker list because it never attacks: Earthgrab Totem, Ward of Zum'rah, Fire Nova Totem,
+// Greater Healing Ward. Walking to those is safe by construction and is the entire reason the
+// rules below exist -- Antu'sul's ward healed him through three wipes with no bot ever selecting
+// it. The other is ordinary pack members that happen to have kill priority: Barbed Lasher,
+// Constrictor Vine, Noxxion's Spawn, the Sul'lithuz Broodlings. Approaching one of those is a
+// pull, and in Maraudon it is a pull of a seventeen-Lasher corridor.
+//
+// movement_type separates them cleanly and nothing else does. Creature type cannot: Greater
+// Healing Ward and Barbed Lasher are both CREATURE_TYPE_NOT_SPECIFIED. Rank cannot: the
+// Broodlings and Theradrim Shardlings are rank zero, and a bot sent alone at one is still a bot
+// that pulled. Every ward and totem on these lists is IDLE and every real kill-order entry
+// wanders, so the test is simply whether the creature was ever going to move.
+static bool IsPassiveSupportCreature(Creature const* pCreature)
+{
+    if (!pCreature)
+        return false;
+
+    // Anything that wanders is part of a pack, and going to it is a pull.
+    if (pCreature->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+        return false;
+
+    // And an immobile elite is a fight rather than an object, whoever walks at it.
+    return !pCreature->IsElite();
+}
+
 Unit* PartyBotAI::FindFocusTotemForPet(float radius) const
 {
     if (!m_tactics || m_tactics->focusFirst.empty())
@@ -4171,30 +4204,12 @@ Unit* PartyBotAI::FindFocusTotemForPet(float radius) const
         if (m_tactics->IsSummonedAdd(pCreature->GetEntry()))
             continue;
 
-        // Stationary only -- which the caller has always claimed and nothing ever checked, and
-        // the gap turned this function into a pull.
-        //
-        // focusFirst means "kill these first". It is read here as "post the pet at these", and
-        // that is only safe for the wards and totems it was written for. Maraudon put a level
-        // forty four elite on the same list for an entirely good reason -- Barbed Lasher's Thorn
-        // Volley is a thirty yard stun, so it has to die first -- and a warlock then sent its
-        // voidwalker at an unengaged one from forty yards on zone-in, because this branch returns
-        // above every rule that would have stopped it: the combat check, the thirty yard leash,
-        // and the route scan all sit below it.
-        //
-        // movement_type is what actually separates the two populations, and it separates them
-        // cleanly. Every ward and totem on these lists is IDLE: Earthgrab Totem, Ward of Zum'rah,
-        // Fire Nova Totem, Greater Healing Ward. Every real kill-order entry wanders: Barbed
-        // Lasher, Constrictor Vine, Noxxion's Spawn, Theradrim Shardling, the Sul'lithuz
-        // Broodlings. Creature type does not separate them -- Greater Healing Ward and Barbed
-        // Lasher are both CREATURE_TYPE_NOT_SPECIFIED -- and neither does rank, because the
-        // Broodlings and Shardlings are rank zero and a pet sent at one alone is still a dead pet.
-        if (pCreature->GetDefaultMovementType() != IDLE_MOTION_TYPE)
-            continue;
-
-        // And nothing that hits back hard enough to kill the pet, which is the other half of the
-        // same sentence in the caller.
-        if (pCreature->IsElite())
+        // Stationary support only, which the caller has always claimed and nothing ever checked.
+        // The gap turned this function into a pull: this branch returns above every rule that
+        // would have stopped one -- the combat check, the thirty yard leash, the route scan -- so
+        // a warlock zoning into Maraudon sent its voidwalker at an unengaged Barbed Lasher from
+        // forty yards.
+        if (!IsPassiveSupportCreature(pCreature))
             continue;
 
         // Said explicitly rather than left to the filter below, because the whole of "the pet goes
@@ -4621,6 +4636,18 @@ Unit* PartyBotAI::SelectPartyAttackTarget() const
         {
             Creature const* pCreature = pUnit->ToCreature();
             if (!pCreature || !m_tactics->IsFocusFirst(pCreature->GetEntry()))
+                continue;
+
+            // Stationary support only, which is the whole of the justification written above:
+            // these are picked precisely because they never appear in an attacker list, and the
+            // reason they never appear is that they do not attack. A creature that wanders is in
+            // nobody's attacker list for the ordinary reason -- it has not been pulled yet -- and
+            // reaching fifty yards for one is the opposite of what this rule is for.
+            //
+            // A mage was logged doing exactly that mid-fight in Maraudon: "idlefocus picked
+            // 'Barbed Lasher' (lvl 44, 48.5y) which is hitting nobody but the instance says kill
+            // it first", against the next pack over while the current one was still up.
+            if (!IsPassiveSupportCreature(pCreature))
                 continue;
 
             if (!IsValidHostileTarget(pUnit) || !IsSummonWorthLeavingBossFor(pUnit))
