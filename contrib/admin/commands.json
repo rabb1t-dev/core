@@ -132,6 +132,194 @@
   "wp": "Creature waypoint path authoring.",
   "wr": "Reload your own character's waypoints."
  },
+ "categories": [
+  {
+   "name": "Server operation",
+   "groups": [
+    "server",
+    "saveall",
+    "quit",
+    "service",
+    "announce",
+    "notify",
+    "pbcast",
+    "log",
+    "variable",
+    "wareffort",
+    "event"
+   ]
+  },
+  {
+   "name": "Accounts and moderation",
+   "groups": [
+    "account",
+    "ban",
+    "baninfo",
+    "banlist",
+    "unban",
+    "kick",
+    "mute",
+    "unmute",
+    "spamer",
+    "antispam",
+    "gm",
+    "ticket",
+    "whispers",
+    "channel",
+    "sniff",
+    "anticheat"
+   ]
+  },
+  {
+   "name": "Characters",
+   "groups": [
+    "character",
+    "pinfo",
+    "pdump",
+    "reset",
+    "levelup",
+    "learn",
+    "unlearn",
+    "maxskill",
+    "setskill",
+    "repairitems",
+    "revive",
+    "honor",
+    "guild",
+    "groupinfo",
+    "group",
+    "quest",
+    "taxicheat",
+    "explorecheat",
+    "showarea",
+    "hidearea",
+    "removeriding",
+    "gold",
+    "save",
+    "start",
+    "unstuck",
+    "wr",
+    "modify"
+   ]
+  },
+  {
+   "name": "Items and inventory",
+   "groups": [
+    "additem",
+    "additemset",
+    "deleteitem",
+    "itemmove",
+    "send",
+    "bank",
+    "stable",
+    "auction"
+   ]
+  },
+  {
+   "name": "Teleport and movement",
+   "groups": [
+    "go",
+    "goname",
+    "namego",
+    "groupgo",
+    "gocorpse",
+    "tele",
+    "recall",
+    "neargrave",
+    "cometome"
+   ]
+  },
+  {
+   "name": "Bots and test harness",
+   "groups": [
+    "partybot",
+    "battlebot",
+    "raidguild",
+    "harness",
+    "bot",
+    "ahbot"
+   ]
+  },
+  {
+   "name": "Inspection and lookup",
+   "groups": [
+    "lookup",
+    "list",
+    "unit",
+    "spell",
+    "instance",
+    "trigger",
+    "gps",
+    "guid",
+    "distance",
+    "angle",
+    "movegens",
+    "commands",
+    "help"
+   ]
+  },
+  {
+   "name": "World building",
+   "groups": [
+    "npc",
+    "gobject",
+    "wp",
+    "escort",
+    "pool",
+    "pet",
+    "linkgrave",
+    "respawn",
+    "wchange",
+    "cinematic",
+    "video"
+   ]
+  },
+  {
+   "name": "In-game GM actions",
+   "groups": [
+    "cheat",
+    "aura",
+    "unaura",
+    "nameaura",
+    "die",
+    "namedie",
+    "damage",
+    "aoedamage",
+    "fear",
+    "freeze",
+    "unfreeze",
+    "possess",
+    "charge",
+    "knockback",
+    "demorph",
+    "mount",
+    "dismount",
+    "hover",
+    "cast",
+    "combatstop",
+    "cooldown",
+    "pvp",
+    "bg",
+    "deplenish",
+    "replenish"
+   ]
+  },
+  {
+   "name": "Database reload",
+   "groups": [
+    "reload"
+   ]
+  },
+  {
+   "name": "Developer and debug",
+   "groups": [
+    "debug",
+    "mmap",
+    "world",
+    "groupspell"
+   ]
+  }
+ ],
  "commands": [
   {
    "name": "account",

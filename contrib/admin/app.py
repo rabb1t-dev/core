@@ -672,8 +672,13 @@ def command_reference():
             entry["overridden"] = True
         groups.setdefault(entry["group"], []).append(entry)
 
-    return [{"name": g, "desc": COMMANDS["groups"].get(g, ""), "commands": cmds}
-            for g, cmds in sorted(groups.items())]
+    out = []
+    for cat in COMMANDS["categories"]:
+        families = [{"name": g, "desc": COMMANDS["groups"].get(g, ""),
+                     "commands": groups.get(g, [])} for g in cat["groups"]]
+        out.append({"name": cat["name"], "families": families,
+                    "count": sum(len(f["commands"]) for f in families)})
+    return out
 
 
 @app.route("/console", methods=["GET", "POST"])
@@ -692,8 +697,7 @@ def console():
                 flash("Command reported an error.", "err")
     ref = command_reference()
     return render_template("console.html", output=output, command=command,
-                           reference=ref,
-                           total=sum(len(g["commands"]) for g in ref))
+                           reference=ref, total=sum(c["count"] for c in ref))
 
 
 # ---------------------------------------------------------------- errors

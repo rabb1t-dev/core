@@ -4,35 +4,46 @@
   var consoleOnly = document.getElementById('ref-console');
   var counter = document.getElementById('ref-count');
   var empty = document.getElementById('ref-empty');
-  var groups = Array.prototype.slice.call(document.querySelectorAll('.ref-group'));
+  var cats = Array.prototype.slice.call(document.querySelectorAll('.ref-cat'));
   var input = document.getElementById('cmd');
-  if (!filter || !groups.length) return;
+  if (!filter || !cats.length) return;
 
-  groups.forEach(function (g) {
-    g.rows = Array.prototype.slice.call(g.querySelectorAll('.ref-row'));
+  cats.forEach(function (c) {
+    c.count = c.querySelector('.cat-count');
+    c.groups = Array.prototype.slice.call(c.querySelectorAll('.ref-group'));
+    c.groups.forEach(function (g) {
+      g.count = g.querySelector('.count');
+      g.rows = Array.prototype.slice.call(g.querySelectorAll('.ref-row'));
+    });
   });
 
   function apply() {
     var q = filter.value.trim().toLowerCase();
     var needConsole = consoleOnly.checked;
     var shown = 0;
+    // Expanding on a search is the point of searching; collapsing again on clear keeps
+    // the page from staying 800 rows tall afterwards.
     var openAll = q.length > 1;
 
-    groups.forEach(function (g) {
-      var hit = 0;
-      g.rows.forEach(function (r) {
-        var ok = (!needConsole || r.dataset.console === '1') &&
-                 (!q || r.dataset.hay.toLowerCase().indexOf(q) !== -1);
-        r.hidden = !ok;
-        if (ok) hit++;
+    cats.forEach(function (c) {
+      var catHits = 0;
+      c.groups.forEach(function (g) {
+        var hit = 0;
+        g.rows.forEach(function (r) {
+          var ok = (!needConsole || r.dataset.console === '1') &&
+                   (!q || r.dataset.hay.toLowerCase().indexOf(q) !== -1);
+          r.hidden = !ok;
+          if (ok) hit++;
+        });
+        g.hidden = hit === 0;
+        g.count.textContent = hit;
+        if (openAll && hit) g.open = true;
+        else if (!q && !needConsole) g.open = false;
+        catHits += hit;
       });
-      g.hidden = hit === 0;
-      g.querySelector('.count').textContent = hit;
-      // Expanding on a search is the point of searching; collapsing again on clear
-      // keeps the page from staying 800 rows tall afterwards.
-      if (openAll && hit) g.open = true;
-      else if (!q && !needConsole) g.open = false;
-      shown += hit;
+      c.hidden = catHits === 0;
+      c.count.textContent = catHits;
+      shown += catHits;
     });
 
     counter.textContent = shown + ' command' + (shown === 1 ? '' : 's');

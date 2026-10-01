@@ -81,9 +81,19 @@ def main():
         raise SystemExit("command_help.NOTES has entries no longer in the core: %s"
                          % ", ".join(sorted(unknown)))
 
+    present = {c["group"] for c in leaves}
+    assigned = [g for _, gs in command_help.CATEGORIES for g in gs]
+    if sorted(assigned) != sorted(present):
+        missing = present - set(assigned)
+        extra = [g for g in assigned if g not in present]
+        dupes = sorted({g for g in assigned if assigned.count(g) > 1})
+        raise SystemExit("CATEGORIES does not partition the command tree. "
+                         "unassigned=%s stale=%s duplicated=%s"
+                         % (sorted(missing), extra, dupes))
+
     payload = {
-        "groups": {g: command_help.GROUPS.get(g, "") for g in
-                   sorted({c["group"] for c in leaves})},
+        "groups": {g: command_help.GROUPS.get(g, "") for g in sorted(present)},
+        "categories": [{"name": n, "groups": gs} for n, gs in command_help.CATEGORIES],
         "commands": leaves,
     }
     with open(OUT, "w", encoding="utf-8") as f:
@@ -91,8 +101,9 @@ def main():
         f.write("\n")
 
     documented = sum(1 for c in leaves if "desc" in c)
-    print("%s: %d commands in %d groups, %d documented"
-          % (os.path.basename(OUT), len(leaves), len(payload["groups"]), documented))
+    print("%s: %d commands, %d groups in %d categories, %d documented"
+          % (os.path.basename(OUT), len(leaves), len(payload["groups"]),
+             len(payload["categories"]), documented))
 
 
 if __name__ == "__main__":

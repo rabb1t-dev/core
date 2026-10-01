@@ -14,6 +14,56 @@ Anything missing from NOTES still appears in the reference with its name, securi
 level and console flag. Add entries here rather than inventing them in the template.
 """
 
+# Top-level commands sorted by what they are for, since alphabetical order puts
+# `ban` next to `bank` and `reload` three screens from `server`. Every group in
+# GROUPS must appear here exactly once; gen_commands.py enforces that, so a command
+# family added to the core cannot quietly go missing from the reference.
+CATEGORIES = [
+    ("Server operation", [
+        "server", "saveall", "quit", "service", "announce", "notify", "pbcast",
+        "log", "variable", "wareffort", "event",
+    ]),
+    ("Accounts and moderation", [
+        "account", "ban", "baninfo", "banlist", "unban", "kick", "mute", "unmute",
+        "spamer", "antispam", "gm", "ticket", "whispers", "channel", "sniff",
+        "anticheat",
+    ]),
+    ("Characters", [
+        "character", "pinfo", "pdump", "reset", "levelup", "learn", "unlearn",
+        "maxskill", "setskill", "repairitems", "revive", "honor", "guild",
+        "groupinfo", "group", "quest", "taxicheat", "explorecheat", "showarea",
+        "hidearea", "removeriding", "gold", "save", "start", "unstuck", "wr",
+        "modify",
+    ]),
+    ("Items and inventory", [
+        "additem", "additemset", "deleteitem", "itemmove", "send", "bank", "stable",
+        "auction",
+    ]),
+    ("Teleport and movement", [
+        "go", "goname", "namego", "groupgo", "gocorpse", "tele", "recall",
+        "neargrave", "cometome",
+    ]),
+    ("Bots and test harness", [
+        "partybot", "battlebot", "raidguild", "harness", "bot", "ahbot",
+    ]),
+    ("Inspection and lookup", [
+        "lookup", "list", "unit", "spell", "instance", "trigger", "gps", "guid",
+        "distance", "angle", "movegens", "commands", "help",
+    ]),
+    ("World building", [
+        "npc", "gobject", "wp", "escort", "pool", "pet", "linkgrave", "respawn",
+        "wchange", "cinematic", "video",
+    ]),
+    ("In-game GM actions", [
+        "cheat", "aura", "unaura", "nameaura", "die", "namedie", "damage",
+        "aoedamage", "fear", "freeze", "unfreeze", "possess", "charge", "knockback",
+        "demorph", "mount", "dismount", "hover", "cast", "combatstop", "cooldown",
+        "pvp", "bg", "deplenish", "replenish",
+    ]),
+    ("Database reload", ["reload"]),
+    ("Developer and debug", ["debug", "mmap", "world", "groupspell"]),
+]
+
 # One line per top-level command, shown as the section header's subtitle.
 GROUPS = {
     "account": "Create, inspect and change game accounts.",

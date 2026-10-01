@@ -26,7 +26,7 @@
 </div>
 {% endif %}
 
-<div class="panel" id="reference">
+<div class="panel" id="ref-controls">
   <div class="panel-head">
     <div class="panel-title">Command reference</div>
     <div class="row shrink">
@@ -36,9 +36,16 @@
              spellcheck="false" autocomplete="off">
     </div>
   </div>
+</div>
+
+{% for cat in reference %}
+<div class="panel ref-cat">
+  <div class="panel-head">
+    <div class="panel-title">{{ cat.name }} (<span class="cat-count">{{ cat.count }}</span>)</div>
+  </div>
   <div class="panel-body tight">
-    {% for g in reference %}
-    <details class="cfg-group ref-group" data-group="{{ g.name }}">
+    {% for g in cat.families %}
+    <details class="cfg-group ref-group">
       <summary>
         <span class="ref-name">{{ g.name }}<em>{{ g.desc }}</em></span>
         <span class="count">{{ g.commands|length }}</span>
@@ -69,9 +76,11 @@
       </div>
     </details>
     {% endfor %}
-    <div class="empty" id="ref-empty" hidden>Nothing matched that filter.</div>
   </div>
 </div>
+{% endfor %}
+
+<div class="empty panel" id="ref-empty" hidden>Nothing matched that filter.</div>
 
 {% endblock %}
 
