@@ -287,7 +287,6 @@ def logout():
 @app.route("/")
 def dashboard():
     ok, info = soap("server info")
-    online_ok, online = soap("account onlinelist")
 
     accounts = safe(lambda: DB.query("login", "SELECT COUNT(*) AS n FROM account")[0]["n"],
                     0, "account count")
@@ -304,7 +303,6 @@ def dashboard():
         "dashboard.html",
         server_info=info if ok else "SOAP unreachable: %s" % info,
         server_ok=ok,
-        onlinelist=online if online_ok else "",
         accounts=accounts, chars=chars, online_chars=online_chars,
         races=RACES, classes=CLASSES, realms=realms,
         states={k: service_state(v) for k, v in SERVICES.items()},
