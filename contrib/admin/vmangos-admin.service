@@ -1,0 +1,21 @@
+[Unit]
+Description=VMaNGOS admin panel (LAN only)
+After=network-online.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=simple
+User=rabb1t
+WorkingDirectory=/home/rabb1t/vmangos-admin
+EnvironmentFile=/home/rabb1t/vmangos-admin/admin.env
+ExecStart=/home/rabb1t/vmangos-admin/venv/bin/python /home/rabb1t/vmangos-admin/app.py
+Restart=on-failure
+RestartSec=5
+StandardInput=null
+
+# The panel is a convenience front end, not something that should ever win a fight for
+# resources with the world server.
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

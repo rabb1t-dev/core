@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - vmangos admin{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block subheading %}Live server state and quick actions{% endblock %}
+
+{% block content %}
+
+<div class="grid cols-4">
+  <div class="stat">
+    <div class="stat-label">World server</div>
+    <div class="stat-value {{ 'accent' if states.world == 'active' else 'amber' }}">{{ states.world }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Realm daemon</div>
+    <div class="stat-value {{ 'accent' if states.realm == 'active' else 'amber' }}">{{ states.realm }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Accounts</div>
+    <div class="stat-value cyan">{{ accounts }}</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Characters</div>
+    <div class="stat-value cyan">{{ chars }}</div>
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Server info</div>
+      <form class="inline" method="post" action="{{ url_for('server_action', action='saveall') }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="btn sm" type="submit">Save all players</button>
+      </form>
+    </div>
+    <div class="panel-body">
+      <pre class="out {{ '' if server_ok else 'plain' }}">{{ server_info }}</pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Online now ({{ online_chars|length }})</div></div>
+    {% if online_chars %}
+      <div class="panel-body tight table-wrap">
+        <table>
+          <thead><tr><th>Character</th><th>Level</th><th>Race</th><th>Class</th></tr></thead>
+          <tbody>
+          {% for c in online_chars %}
+            <tr>
+              <td class="mono"><span class="dot on"></span> {{ c.name }}</td>
+              <td class="num">{{ c.level }}</td>
+              <td>{{ races.get(c.race, c.race) }}</td>
+              <td>{{ classes.get(c['class'], c['class']) }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">Nobody is online.</div>
+    {% endif %}
+    {% if onlinelist %}
+      <div class="panel-body"><pre class="out plain">{{ onlinelist }}</pre></div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-2">
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Broadcast</div></div>
+    <div class="panel-body">
+      <form method="post" action="{{ url_for('server_action', action='announce') }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <label class="field"><span>Announce to all players</span>
+          <input type="text" name="message" placeholder="Server maintenance in 10 minutes">
+        </label>
+        <div class="row">
+          <button class="btn primary shrink" type="submit">Announce</button>
+          <button class="btn shrink" type="submit" formaction="{{ url_for('server_action', action='notify') }}">Send as notify</button>
+        </div>
+      </form>
+      <form method="post" action="{{ url_for('server_action', action='motd') }}" style="margin-top:14px;">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <label class="field"><span>Message of the day</span>
+          <input type="text" name="message" placeholder="Welcome to the realm">
+        </label>
+        <button class="btn" type="submit">Set MOTD</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><div class="panel-title">Live limits</div></div>
+    <div class="panel-body">
+      <form method="post" action="{{ url_for('server_action', action='plimit') }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <label class="field"><span>Player limit (applies immediately, no restart)</span>
+          <input type="number" name="value" placeholder="15">
+        </label>
+        <button class="btn" type="submit">Apply player limit</button>
+        <div class="hint">
+          A negative value restricts login to a minimum security level instead of a count.
+          This is the live equivalent of <code>PlayerLimit</code> in the world config.
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Realms</div>
+    <a class="btn sm ghost" href="{{ url_for('realms') }}">Edit realms</a>
+  </div>
+  <div class="panel-body tight table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th>Address handed to internet clients</th><th>Address handed to LAN clients</th><th class="num">Port</th></tr></thead>
+      <tbody>
+      {% for r in realms %}
+        <tr>
+          <td class="num">{{ r.id }}</td>
+          <td>{{ r.name }}</td>
+          <td class="mono">{{ r.address }}</td>
+          <td class="mono">{{ r.localAddress }}</td>
+          <td class="num">{{ r.port }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel danger-zone">
+  <div class="panel-head"><div class="panel-title">Server control</div></div>
+  <div class="panel-body">
+    <div class="grid cols-2">
+      <form method="post" action="{{ url_for('server_action', action='shutdown') }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <div class="row">
+          <label class="field" style="flex:1 1 120px;"><span>Graceful shutdown delay (s)</span>
+            <input type="number" name="delay" value="60">
+          </label>
+          <button class="btn danger shrink" type="submit"
+                  data-confirm="Schedule a server shutdown? Players will be disconnected.">Shut down world</button>
+          <button class="btn shrink" type="submit"
+                  formaction="{{ url_for('server_action', action='restart') }}"
+                  data-confirm="Schedule a world restart?">Restart world</button>
+        </div>
+        <div class="hint">These go through the world server, so players get a countdown and characters are saved.</div>
+      </form>
+
+      <div>
+        {% for key, svc in services.items() %}
+          <form method="post" action="{{ url_for('server_action', action='svc-restart') }}"
+                data-confirm="Restart {{ svc }} via systemd now? This is immediate, with no player countdown."
+                style="margin-bottom:8px;">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="service" value="{{ svc }}">
+            <div class="row">
+              <div style="flex:1 1 auto;" class="mono">
+                {{ svc }}
+                <span class="badge {{ 'on' if states[key] == 'active' else 'warn' }}">{{ states[key] }}</span>
+              </div>
+              <button class="btn sm shrink" type="submit">Restart</button>
+              <button class="btn sm danger shrink" type="submit"
+                      formaction="{{ url_for('server_action', action='svc-stop') }}"
+                      data-confirm="Stop {{ svc }}? The server will be offline until you start it again.">Stop</button>
+              <button class="btn sm shrink" type="submit"
+                      formaction="{{ url_for('server_action', action='svc-start') }}"
+                      data-confirm="">Start</button>
+            </div>
+          </form>
+        {% endfor %}
+        <div class="hint">systemd actions are immediate. Prefer the graceful world restart when anyone is online.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

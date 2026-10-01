@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ code }} {{ title }} - vmangos admin</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card" style="text-align:center;">
+    <div class="brand" style="justify-content:center;">
+      <div class="brand-mark">V</div>
+      <div class="brand-text" style="text-align:left;">
+        <div class="brand-title">vmangos</div>
+        <div class="brand-sub">admin</div>
+      </div>
+    </div>
+    <div class="stat-value amber" style="font-size:40px;">{{ code }}</div>
+    <div class="login-tag" style="margin-bottom:14px;">{{ title }}</div>
+    {% if detail %}<p style="color:var(--text-dim);font-size:13px;">{{ detail }}</p>{% endif %}
+    <a class="btn primary" href="{{ url_for('dashboard') }}" style="width:100%;justify-content:center;">Back to dashboard</a>
+  </div>
+</div>
+</body>
+</html>

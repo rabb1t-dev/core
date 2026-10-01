@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Characters - vmangos admin{% endblock %}
+{% block heading %}Characters{% endblock %}
+{% block subheading %}Showing up to 500, online first{% endblock %}
+
+{% block topactions %}
+<form class="search" method="get">
+  <input type="text" name="q" value="{{ q }}" placeholder="Search character name">
+  <button class="btn sm" type="submit">Search</button>
+  {% if q %}<a class="btn sm ghost" href="{{ url_for('characters') }}">Clear</a>{% endif %}
+</form>
+{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">{{ chars|length }} character(s)</div></div>
+  {% if chars %}
+  <div class="panel-body tight table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>Account</th><th class="num">Level</th><th>Race</th><th>Class</th>
+          <th class="num">Gold</th><th class="num">Map</th><th>Status</th><th class="actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for c in chars %}
+        <tr>
+          <td class="mono">
+            {% if c.online %}<span class="dot on"></span> {% else %}<span class="dot off"></span> {% endif %}{{ c.name }}
+          </td>
+          <td class="mono">{{ acct_names.get(c.account, c.account) }}</td>
+          <td class="num">{{ c.level }}</td>
+          <td>{{ races.get(c.race, c.race) }}</td>
+          <td>{{ classes.get(c['class'], c['class']) }}</td>
+          <td class="num">{{ (c.money // 10000) if c.money is not none else 0 }}g</td>
+          <td class="num">{{ c.map }}</td>
+          <td>
+            {% if c.online %}<span class="badge on">online</span>{% else %}<span class="badge off">offline</span>{% endif %}
+          </td>
+          <td class="actions">
+            <div class="row" style="justify-content:flex-end;">
+              {% if c.online %}
+              <form class="inline" method="post" action="{{ url_for('characters_action') }}"
+                    data-confirm="Kick {{ c.name }} from the server?">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="kick">
+                <input type="hidden" name="name" value="{{ c.name }}">
+                <button class="btn sm shrink" type="submit">Kick</button>
+              </form>
+              {% endif %}
+              <form class="inline" method="post" action="{{ url_for('characters_action') }}"
+                    data-confirm="Ban character {{ c.name }} permanently?">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="ban">
+                <input type="hidden" name="name" value="{{ c.name }}">
+                <input type="hidden" name="duration" value="-1">
+                <input type="hidden" name="reason" value="banned via admin panel">
+                <button class="btn sm danger shrink" type="submit">Ban</button>
+              </form>
+              <form class="inline" method="post" action="{{ url_for('characters_action') }}">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="unban">
+                <input type="hidden" name="name" value="{{ c.name }}">
+                <button class="btn sm shrink" type="submit">Unban</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <div class="empty">No characters matched.</div>
+  {% endif %}
+</div>
+
+{% endblock %}

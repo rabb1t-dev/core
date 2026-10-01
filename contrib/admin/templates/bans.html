@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Bans - vmangos admin{% endblock %}
+{% block heading %}Bans{% endblock %}
+{% block subheading %}Account, IP and character bans{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Ban an IP address</div></div>
+  <div class="panel-body">
+    <form method="post" action="{{ url_for('bans_action') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="act" value="ban_ip">
+      <div class="row">
+        <label class="field"><span>IP address</span><input type="text" name="target" placeholder="203.0.113.9" required></label>
+        <label class="field"><span>Duration</span><input type="text" name="duration" value="-1" title="-1 permanent, or 10m / 2h / 7d"></label>
+        <label class="field"><span>Reason</span><input type="text" name="reason" placeholder="reason"></label>
+        <button class="btn danger shrink" type="submit">Ban IP</button>
+      </div>
+      <div class="hint">
+        fail2ban already bans realmd brute-force sources at the firewall. Use this for
+        in-game abuse, where you want the ban recorded in the server's own ban list.
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Banned accounts</div></div>
+  {% if acct %}
+  <div class="panel-body tight table-wrap">
+    <table>
+      <thead><tr><th>Account</th><th>Banned</th><th>Expires</th><th>By</th><th>Reason</th><th>State</th><th class="actions"></th></tr></thead>
+      <tbody>
+      {% for b in acct %}
+        <tr>
+          <td class="mono">{{ b.username or b.id }}</td>
+          <td class="mono">{{ b.bandate }}</td>
+          <td class="mono">{{ 'permanent' if b.bandate == b.unbandate else b.unbandate }}</td>
+          <td class="mono">{{ b.bannedby }}</td>
+          <td>{{ b.banreason }}</td>
+          <td><span class="badge {{ 'danger' if b.active else 'off' }}">{{ 'active' if b.active else 'lifted' }}</span></td>
+          <td class="actions">
+            {% if b.active and b.username %}
+            <form class="inline" method="post" action="{{ url_for('bans_action') }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <input type="hidden" name="act" value="unban_account">
+              <input type="hidden" name="target" value="{{ b.username }}">
+              <button class="btn sm" type="submit">Unban</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty">No account bans.</div>{% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Banned IPs</div></div>
+  {% if ips %}
+  <div class="panel-body tight table-wrap">
+    <table>
+      <thead><tr><th>IP</th><th>Banned</th><th>Expires</th><th>By</th><th>Reason</th><th class="actions"></th></tr></thead>
+      <tbody>
+      {% for b in ips %}
+        <tr>
+          <td class="mono">{{ b.ip }}</td>
+          <td class="mono">{{ b.bandate }}</td>
+          <td class="mono">{{ 'permanent' if b.bandate == b.unbandate else b.unbandate }}</td>
+          <td class="mono">{{ b.bannedby }}</td>
+          <td>{{ b.banreason }}</td>
+          <td class="actions">
+            <form class="inline" method="post" action="{{ url_for('bans_action') }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <input type="hidden" name="act" value="unban_ip">
+              <input type="hidden" name="target" value="{{ b.ip }}">
+              <button class="btn sm" type="submit">Unban</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty">No IP bans.</div>{% endif %}
+</div>
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Banned characters</div></div>
+  {% if chars %}
+  <div class="panel-body tight table-wrap">
+    <table>
+      <thead><tr><th>Character</th><th>Banned</th><th>Expires</th><th>By</th><th>Reason</th><th>State</th><th class="actions"></th></tr></thead>
+      <tbody>
+      {% for b in chars %}
+        <tr>
+          <td class="mono">{{ b.name or b.guid }}</td>
+          <td class="mono">{{ b.bandate }}</td>
+          <td class="mono">{{ 'permanent' if b.bandate == b.unbandate else b.unbandate }}</td>
+          <td class="mono">{{ b.bannedby }}</td>
+          <td>{{ b.banreason }}</td>
+          <td><span class="badge {{ 'danger' if b.active else 'off' }}">{{ 'active' if b.active else 'lifted' }}</span></td>
+          <td class="actions">
+            {% if b.active and b.name %}
+            <form class="inline" method="post" action="{{ url_for('bans_action') }}">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <input type="hidden" name="act" value="unban_character">
+              <input type="hidden" name="target" value="{{ b.name }}">
+              <button class="btn sm" type="submit">Unban</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<div class="empty">No character bans.</div>{% endif %}
+</div>
+
+{% endblock %}

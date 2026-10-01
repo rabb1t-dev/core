@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Realms - vmangos admin{% endblock %}
+{% block heading %}Realms{% endblock %}
+{% block subheading %}What realmd hands to connecting clients{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">How these fields are used</div></div>
+  <div class="panel-body">
+    <div class="hint" style="margin-top:0;">
+      After a client authenticates, realmd decides which address to hand back by checking
+      whether the client's IP falls inside <code>localAddress</code> masked by
+      <code>localSubnetMask</code>. Clients inside that subnet get
+      <code>localAddress</code>; everyone else gets <code>address</code>. So
+      <code>address</code> is the internet-facing one and <code>localAddress</code> is for
+      your LAN.<br><br>
+      <code>address</code> may be a hostname: realmd resolves it server-side and re-reads
+      the whole realm list every 20 seconds, so a dynamic-DNS change is picked up on its
+      own with no restart. The catch is that a hostname which does <em>not</em> resolve
+      causes realmd to drop the realm from the list entirely, so confirm DNS is live
+      before saving one.<br><br>
+      <code>port</code> is shared by both LAN and internet clients and must match the port
+      the world server actually listens on, which is why the world port cannot be remapped
+      by NAT alone.
+    </div>
+  </div>
+</div>
+
+{% for r in realms %}
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title">Realm {{ r.id }} &mdash; {{ r.name }}</div>
+    <div>
+      {% if r.realmflags|int == 1 %}<span class="badge off">hidden</span>
+      {% elif r.realmflags|int == 2 %}<span class="badge warn">offline</span>
+      {% else %}<span class="badge on">listed</span>{% endif %}
+    </div>
+  </div>
+  <div class="panel-body">
+    <form method="post" action="{{ url_for('realms_save') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="id" value="{{ r.id }}">
+      <div class="row">
+        <label class="field"><span>Realm name</span>
+          <input type="text" name="name" value="{{ r.name }}" required></label>
+        <label class="field"><span>Port (world server)</span>
+          <input type="text" name="port" value="{{ r.port }}" required></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Address &mdash; internet clients</span>
+          <input type="text" name="address" value="{{ r.address }}" placeholder="wow.moonlight.cx" required></label>
+        <label class="field"><span>Local address &mdash; LAN clients</span>
+          <input type="text" name="localAddress" value="{{ r.localAddress }}" placeholder="10.0.1.7"></label>
+        <label class="field"><span>Local subnet mask</span>
+          <input type="text" name="localSubnetMask" value="{{ r.localSubnetMask }}" placeholder="255.255.255.0"></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Realm flags</span>
+          <select name="realmflags">
+            <option value="0" {{ 'selected' if r.realmflags|int == 0 }}>0 - listed and joinable</option>
+            <option value="1" {{ 'selected' if r.realmflags|int == 1 }}>1 - hidden from the realm list</option>
+            <option value="2" {{ 'selected' if r.realmflags|int == 2 }}>2 - shown as offline</option>
+            <option value="32" {{ 'selected' if r.realmflags|int == 32 }}>32 - new players</option>
+            <option value="64" {{ 'selected' if r.realmflags|int == 64 }}>64 - recommended</option>
+          </select>
+        </label>
+        <label class="field"><span>Minimum security to join</span>
+          <select name="allowedSecurityLevel">
+            {% for n, label in sec_levels.items() %}
+              {% if n < 7 %}
+              <option value="{{ n }}" {{ 'selected' if r.allowedSecurityLevel|int == n }}>{{ n }} - {{ label }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </label>
+        <button class="btn primary shrink" type="submit">Save realm {{ r.id }}</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{% endblock %}

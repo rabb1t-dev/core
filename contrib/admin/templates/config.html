@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ which }} config - vmangos admin{% endblock %}
+{% block heading %}{{ 'World server' if which == 'mangosd' else 'Realm daemon' }} configuration{% endblock %}
+{% block subheading %}{{ path }}{% endblock %}
+
+{% block topactions %}
+<div class="row">
+  <div class="tabs">
+    {% for name in conf_paths %}
+      <a href="{{ url_for('config_view', which=name) }}" class="{{ 'active' if name == which }}">{{ name }}.conf</a>
+    {% endfor %}
+  </div>
+  <form class="search" method="get">
+    <input type="text" name="q" value="{{ q }}" placeholder="Filter settings">
+    <button class="btn sm" type="submit">Filter</button>
+    {% if q %}<a class="btn sm ghost" href="{{ url_for('config_view', which=which) }}">Clear</a>{% endif %}
+  </form>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<form method="post" action="{{ url_for('config_save', which=which) }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="q" value="{{ q }}">
+
+  <div class="panel">
+    <div class="panel-head">
+      <div class="panel-title">
+        {{ groups.values()|map('length')|sum }} setting(s) in {{ groups|length }} group(s)
+      </div>
+      <div class="hint" style="margin:0;">Values are written back verbatim &mdash; keep the quotes where they exist.</div>
+    </div>
+
+    <div class="panel-body tight">
+      {% if groups %}
+        {% for group, entries in groups.items() %}
+        <details class="cfg-group" {{ 'open' if q or groups|length <= 3 }}>
+          <summary>
+            <span>{{ group }}</span>
+            <span class="count">{{ entries|length }}</span>
+          </summary>
+          <div class="cfg-rows">
+            {% for e in entries %}
+            <div class="cfg-row">
+              <div class="cfg-key">{{ e.key }}</div>
+              <input type="text" name="cfg:{{ e.key }}" value="{{ e.value }}">
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      {% else %}
+        <div class="empty">Nothing matched that filter.</div>
+      {% endif %}
+    </div>
+
+    {% if groups %}
+    <div class="sticky-save">
+      <div class="hint" style="margin:0;">
+        A timestamped backup of the file is written before any change. Almost every setting
+        here is read at startup, so restart the service afterwards to apply it.
+      </div>
+      <div class="row shrink">
+        <button class="btn primary shrink" type="submit">Save changes</button>
+        <button class="btn shrink" type="submit"
+                formaction="{{ url_for('server_action', action='svc-restart') }}"
+                formmethod="post"
+                data-confirm="Restart the service now? Save your changes first if you have not.">
+          Restart {{ 'world' if which == 'mangosd' else 'realmd' }}
+        </button>
+        <input type="hidden" name="service" value="{{ 'vmangos-mangosd' if which == 'mangosd' else 'vmangos-realmd' }}">
+        <input type="hidden" name="back" value="{{ url_for('config_view', which=which) }}">
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</form>
+
+{% endblock %}

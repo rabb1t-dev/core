@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}vmangos admin{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232ee6a8'/><text x='16' y='23' font-size='19' font-family='monospace' font-weight='bold' text-anchor='middle' fill='%2304231a'>V</text></svg>">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">V</div>
+      <div class="brand-text">
+        <div class="brand-title">vmangos</div>
+        <div class="brand-sub">admin</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-group">
+        <div class="nav-label">Overview</div>
+        <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint == 'dashboard' }}"><span class="ico">◧</span> Dashboard</a>
+        <a href="{{ url_for('console') }}" class="{{ 'active' if request.endpoint == 'console' }}"><span class="ico">›_</span> Console</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">Players</div>
+        <a href="{{ url_for('accounts') }}" class="{{ 'active' if request.endpoint == 'accounts' }}"><span class="ico">⬡</span> Accounts</a>
+        <a href="{{ url_for('characters') }}" class="{{ 'active' if request.endpoint == 'characters' }}"><span class="ico">⚔</span> Characters</a>
+        <a href="{{ url_for('bans') }}" class="{{ 'active' if request.endpoint == 'bans' }}"><span class="ico">⊘</span> Bans</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">Server</div>
+        <a href="{{ url_for('realms') }}" class="{{ 'active' if request.endpoint == 'realms' }}"><span class="ico">◈</span> Realms</a>
+        <a href="{{ url_for('config_view', which='mangosd') }}" class="{{ 'active' if request.endpoint == 'config_view' and which == 'mangosd' }}"><span class="ico">⚙</span> World config</a>
+        <a href="{{ url_for('config_view', which='realmd') }}" class="{{ 'active' if request.endpoint == 'config_view' and which == 'realmd' }}"><span class="ico">⚙</span> Realmd config</a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">Session</div>
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <button class="btn ghost sm" type="submit" style="width:100%;justify-content:flex-start;">
+            <span class="ico">⏏</span> Sign out {{ current_user }}
+          </button>
+        </form>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 class="page-title">{% block heading %}{% endblock %}</h1>
+        <div class="page-sub">{% block subheading %}{% endblock %}</div>
+      </div>
+      <div>{% block topactions %}{% endblock %}</div>
+    </div>
+
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% if msgs %}
+        <div class="flashes">
+          {% for cat, m in msgs %}
+            <div class="flash {{ cat }}">
+              <span class="fi">{{ '✓' if cat == 'ok' else ('!' if cat == 'warn' else '✕') }}</span>
+              <span>{{ m }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="{{ url_for('static', filename='confirm.js') }}"></script>
+</body>
+</html>

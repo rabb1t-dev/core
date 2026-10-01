@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - vmangos admin</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-mark">V</div>
+      <div class="brand-text">
+        <div class="brand-title">vmangos</div>
+        <div class="brand-sub">admin</div>
+      </div>
+    </div>
+    <div class="login-tag">LAN access only</div>
+
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% if msgs %}
+        <div class="flashes">
+          {% for cat, m in msgs %}
+            <div class="flash {{ cat }}"><span class="fi">✕</span><span>{{ m }}</span></div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <label class="field">
+        <span>Username</span>
+        <input type="text" name="username" autocomplete="username" autofocus required>
+      </label>
+      <label class="field">
+        <span>Password</span>
+        <input type="password" name="password" autocomplete="current-password" required>
+      </label>
+      <button class="btn primary" type="submit">Authenticate</button>
+    </form>
+
+    <div class="login-foot">wow-pi &middot; not exposed to the internet</div>
+  </div>
+</div>
+</body>
+</html>
