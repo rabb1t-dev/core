@@ -5,6 +5,18 @@
 
 {% block content %}
 
+{% if cert and cert.warn %}
+<div class="flash err" style="margin-bottom:16px;">
+  {% if cert.error %}
+    Could not read the TLS certificate from the front end: {{ cert.error }}
+  {% else %}
+    TLS certificate expires in {{ cert.days }} days, on {{ cert.expires }}. Renewal is
+    manual: publish the TXT record this prints, then run
+    <code>sudo touch /run/acme-manual-armed &amp;&amp; sudo certbot renew --cert-name vmangos-admin</code>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="grid cols-4">
   <div class="stat">
     <div class="stat-label">World server</div>

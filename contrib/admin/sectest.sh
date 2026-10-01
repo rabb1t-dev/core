@@ -6,7 +6,11 @@ export HISTFILE=/dev/null
 : "${VMA_USER:?set VMA_USER to a panel login}"
 : "${VMA_PASS:?set VMA_PASS to the password for that login}"
 PORT="${VMA_PORT:-8099}"
-BASE="http://127.0.0.1:$PORT"
+# Point VMA_BASE at the TLS front end when the panel runs behind nginx. The session
+# cookie is marked Secure there, and curl will not send a Secure cookie over plaintext,
+# so testing the loopback port directly fails every authenticated check in a way that
+# looks like a broken panel rather than a mis-aimed test.
+BASE="${VMA_BASE:-http://127.0.0.1:$PORT}"
 JAR=$(mktemp); HDR=$(mktemp)
 trap 'rm -f "$JAR" "$HDR" /tmp/sec.body' EXIT
 

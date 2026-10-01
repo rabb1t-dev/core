@@ -5,7 +5,9 @@ export HISTFILE=/dev/null
 : "${VMA_USER:?set VMA_USER to a panel login}"
 : "${VMA_PASS:?set VMA_PASS to the password for that login}"
 PORT="${VMA_PORT:-8099}"
-BASE="http://127.0.0.1:$PORT"
+# See sectest.sh: set VMA_BASE to the https front end when the panel sits behind nginx,
+# because the Secure session cookie is not sent over plaintext.
+BASE="${VMA_BASE:-http://127.0.0.1:$PORT}"
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
 

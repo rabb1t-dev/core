@@ -13,12 +13,22 @@ Security posture, since this process can create accounts and restart the server:
     commands are single-line and space-delimited (see security.py).
   - Redirect targets are restricted to same-origin relative paths.
   - Failed logins are throttled per source address.
-There is no TLS: the panel is plain HTTP reachable only from RFC1918 space, which is why
-the session cookie cannot be marked Secure.
+
+TLS is terminated by nginx, which proxies to this process on loopback. Set
+VMA_BEHIND_PROXY=1 for that deployment: it marks the session cookie Secure, emits HSTS,
+and tells waitress to honour the X-Forwarded-* headers so the login throttle sees real
+client addresses rather than 127.0.0.1 -- without which every client shares one throttle
+bucket and eight failures from anywhere lock out the operator. Leave it unset when
+running the app directly, because honouring those headers with no proxy in front would
+let a client declare its own source address.
 """
 import os
 import re
+import ssl
+import time
+import socket
 import secrets
+import datetime
 import functools
 import subprocess
 
@@ -38,6 +48,11 @@ SOAP_USER = os.environ.get("VMA_SOAP_USER", "")
 SOAP_PASS = os.environ.get("VMA_SOAP_PASSWORD", "")
 ADMIN_USER = os.environ.get("VMA_ADMIN_USER", "rabb1t")
 ADMIN_HASH = os.environ.get("VMA_ADMIN_HASH", "")
+BEHIND_PROXY = os.environ.get("VMA_BEHIND_PROXY", "") == "1"
+# Hostname on the certificate. Empty disables the expiry panel on the dashboard.
+CERT_HOST = os.environ.get("VMA_CERT_HOST", "")
+# Renewal of this certificate is manual, so the warning has to land well before expiry.
+CERT_WARN_DAYS = int(os.environ.get("VMA_CERT_WARN_DAYS", "25"))
 
 SERVICES = {"world": "vmangos-mangosd", "realm": "vmangos-realmd"}
 CONF_PATHS = {"mangosd": MANGOSD_CONF, "realmd": REALMD_CONF}
@@ -66,6 +81,7 @@ app.config.update(
     SESSION_COOKIE_NAME="vmangos_admin",
     PERMANENT_SESSION_LIFETIME=8 * 3600,
     MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+    SESSION_COOKIE_SECURE=BEHIND_PROXY,
 )
 
 DB = dbmod.DB(MANGOSD_CONF)
@@ -76,6 +92,42 @@ THROTTLE = sec.LoginThrottle()
 
 def soap(command):
     return soapmod.execute(SOAP_URL, SOAP_USER, SOAP_PASS, command)
+
+
+_cert_cache = {"at": 0.0, "value": None}
+
+
+def cert_status():
+    """How long the served certificate has left, or None if not configured.
+
+    Read from the TLS front end over a real connection rather than from the file on
+    disk. That needs no privilege, since this process cannot read /etc/letsencrypt, and
+    it reports what a browser is actually offered -- so a renewal that never reached
+    nginx shows up here instead of looking fine until the old certificate expires.
+
+    This certificate is renewed by hand, which is the whole reason for surfacing it.
+    """
+    if not CERT_HOST:
+        return None
+
+    now = time.time()
+    if _cert_cache["value"] is not None and now - _cert_cache["at"] < 900:
+        return _cert_cache["value"]
+
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((CERT_HOST, 443), timeout=4) as raw:
+            with ctx.wrap_socket(raw, server_hostname=CERT_HOST) as tls:
+                not_after = tls.getpeercert()["notAfter"]
+        expires = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
+        days = (expires - datetime.datetime.utcnow()).days
+        value = {"expires": expires.strftime("%Y-%m-%d"), "days": days,
+                 "warn": days <= CERT_WARN_DAYS, "error": None}
+    except Exception as e:
+        value = {"expires": None, "days": None, "warn": True, "error": str(e)}
+
+    _cert_cache.update(at=now, value=value)
+    return value
 
 
 def run_soap_flash(command, success_note=None):
@@ -126,6 +178,10 @@ def security_headers(resp):
     resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if BEHIND_PROXY:
+        # No includeSubDomains: this host's name sits under a zone whose other names are
+        # not ours to make promises about.
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000"
     return resp
 
 
@@ -253,6 +309,7 @@ def dashboard():
         races=RACES, classes=CLASSES, realms=realms,
         states={k: service_state(v) for k, v in SERVICES.items()},
         services=SERVICES,
+        cert=cert_status(),
     )
 
 
@@ -628,6 +685,21 @@ if __name__ == "__main__":
     if not ADMIN_HASH:
         raise SystemExit("VMA_ADMIN_HASH is not set; refusing to start with no password.")
     from waitress import serve
+
+    proxy = {}
+    if BEHIND_PROXY:
+        # waitress defaults to clear_untrusted_proxy_headers=True with no trusted_proxy,
+        # so it strips X-Forwarded-* before the application ever sees them. Naming the
+        # proxy here is what makes them visible, and it is a stronger check than fixing
+        # up the headers in WSGI middleware would be: waitress only honours them when
+        # the peer really is the local nginx, rather than trusting whoever connected.
+        proxy = dict(
+            trusted_proxy="127.0.0.1",
+            trusted_proxy_count=1,
+            trusted_proxy_headers={"x-forwarded-for", "x-forwarded-proto",
+                                   "x-forwarded-host"},
+        )
+
     serve(app, host=os.environ.get("VMA_BIND", "0.0.0.0"),
           port=int(os.environ.get("VMA_PORT", "8099")),
-          threads=8, ident="vmangos-admin")
+          threads=8, ident="vmangos-admin", **proxy)
