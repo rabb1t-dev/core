@@ -22,13 +22,17 @@ _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 _DURATION = re.compile(r"^-?\d{1,10}[smhdwMy]?$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
+MAX_PASSWORD_LEN = 16
+
 
 def valid_name(value):
     return bool(value) and bool(_NAME.match(value))
 
 
 def valid_password(value):
-    if not value or len(value) < 6 or len(value) > 64:
+    # 16 is MAX_ACCOUNT_STR in AccountMgr.h; the server answers anything longer with
+    # AOR_PASS_TOO_LONG. Note SRP6 uppercases the password, so case is not significant.
+    if not value or len(value) < 6 or len(value) > MAX_PASSWORD_LEN:
         return False
     # Printable ASCII with no whitespace: the console splits arguments on whitespace.
     return all(33 <= ord(c) <= 126 for c in value)

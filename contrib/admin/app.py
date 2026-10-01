@@ -333,11 +333,21 @@ def accounts_action():
         return reject("Account name must be 1-32 characters of letters, digits, "
                       "dot, dash or underscore.", "accounts")
 
+    # The panel reaches the server by authenticating to SOAP as this account, so changing
+    # or removing it from the panel would cut the branch the panel is sitting on: every
+    # later action would fail with an opaque 401.
+    if act in ("password", "delete", "gmlevel", "ban") and user.upper() == SOAP_USER.upper():
+        return reject(
+            "%s is the panel's own SOAP service account. Changing it here would lock the "
+            "panel out of the server. Edit admin.env and restart vmangos-admin instead."
+            % user, "accounts")
+
     if act in ("create", "password"):
         pw = request.form.get("password") or ""
         if not sec.valid_password(pw):
-            return reject("Password must be 6-64 printable characters with no spaces.",
-                          "accounts")
+            return reject("Password must be 6-%d printable characters with no spaces. "
+                          "The server caps account passwords at %d."
+                          % (sec.MAX_PASSWORD_LEN, sec.MAX_PASSWORD_LEN), "accounts")
         if act == "create":
             run_soap_flash("account create %s %s" % (user, pw),
                            "Account %s created at Player level." % user)

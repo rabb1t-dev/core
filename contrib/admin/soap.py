@@ -29,6 +29,20 @@ def execute(url, user, password, command, timeout=20):
     except requests.RequestException as e:
         return False, "SOAP request failed: %s" % e
 
+    # The auth gate in MaNGOSsoap.cpp answers with a bare HTTP status and no SOAP envelope,
+    # so naming these two keeps them from surfacing as an opaque "HTTP 401 Unauthorized".
+    if r.status_code == 401:
+        return False, (
+            "SOAP rejected the panel's credentials. VMA_SOAP_USER/VMA_SOAP_PASSWORD in "
+            "admin.env no longer match a server account -- most likely that account's "
+            "password was changed."
+        )
+    if r.status_code == 403:
+        return False, (
+            "SOAP account '%s' is below Administrator level. It needs gmlevel 6 in "
+            "account_access, and the world must be restarted to load it." % user
+        )
+
     text = r.text
     try:
         root = ET.fromstring(text)

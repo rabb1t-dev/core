@@ -24,13 +24,16 @@
           <input type="text" name="username" placeholder="FRIENDNAME" required>
         </label>
         <label class="field"><span>Password</span>
-          <input type="text" name="password" placeholder="min 6 chars, no spaces" required>
+          <input type="text" name="password" maxlength="16" placeholder="6-16 chars, no spaces" required>
         </label>
         <button class="btn primary shrink" type="submit">Create</button>
       </div>
       <div class="hint">
         The 1.12 client uppercases account names. Avoid spaces in both fields: the server
         console splits arguments on whitespace.
+        Passwords are capped at 16 characters and are <strong>case-insensitive</strong>:
+        SRP6 uppercases them before computing the verifier, so <code>Hunter2</code> and
+        <code>HUNTER2</code> are the same password. Length beats mixed case here.
       </div>
     </form>
   </div>
@@ -77,7 +80,7 @@
                   <input type="hidden" name="act" value="password">
                   <input type="hidden" name="username" value="{{ a.username }}">
                   <div class="row">
-                    <input type="text" name="password" placeholder="new password">
+                    <input type="text" name="password" maxlength="16" placeholder="new password, 6-16">
                     <button class="btn sm shrink" type="submit">Set password</button>
                   </div>
                 </form>
