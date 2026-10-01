@@ -6,12 +6,11 @@
 {% block content %}
 
 {% if cert and cert.warn %}
-<div class="flash err" style="margin-bottom:16px;">
+<div class="flash err" style="margin-bottom:18px;">
   {% if cert.error %}
-    Could not read the TLS certificate from the front end: {{ cert.error }}
+    Could not read the TLS certificate: {{ cert.error }}
   {% else %}
-    TLS certificate expires in {{ cert.days }} days, on {{ cert.expires }}. Renewal is
-    manual: publish the TXT record this prints, then run
+    TLS certificate expires in {{ cert.days }} days, on {{ cert.expires }}. Renew with
     <code>sudo touch /run/acme-manual-armed &amp;&amp; sudo certbot renew --cert-name vmangos-admin</code>
   {% endif %}
 </div>
@@ -102,14 +101,10 @@
     <div class="panel-body">
       <form method="post" action="{{ url_for('server_action', action='plimit') }}">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-        <label class="field"><span>Player limit (applies immediately, no restart)</span>
+        <label class="field"><span>Player limit</span>
           <input type="number" name="value" placeholder="15">
         </label>
         <button class="btn" type="submit">Apply player limit</button>
-        <div class="hint">
-          A negative value restricts login to a minimum security level instead of a count.
-          This is the live equivalent of <code>PlayerLimit</code> in the world config.
-        </div>
       </form>
     </div>
   </div>
@@ -121,7 +116,7 @@
   </div>
   <div class="panel-body tight table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>Name</th><th>Address handed to internet clients</th><th>Address handed to LAN clients</th><th class="num">Port</th></tr></thead>
+      <thead><tr><th>ID</th><th>Name</th><th>Internet address</th><th>LAN address</th><th class="num">Port</th></tr></thead>
       <tbody>
       {% for r in realms %}
         <tr>
@@ -153,7 +148,6 @@
                   formaction="{{ url_for('server_action', action='restart') }}"
                   data-confirm="Schedule a world restart?">Restart world</button>
         </div>
-        <div class="hint">These go through the world server, so players get a countdown and characters are saved.</div>
       </form>
 
       <div>
@@ -178,7 +172,6 @@
             </div>
           </form>
         {% endfor %}
-        <div class="hint">systemd actions are immediate. Prefer the graceful world restart when anyone is online.</div>
       </div>
     </div>
   </div>

@@ -25,6 +25,7 @@ let a client declare its own source address.
 import os
 import re
 import ssl
+import json
 import time
 import socket
 import secrets
@@ -53,6 +54,10 @@ BEHIND_PROXY = os.environ.get("VMA_BEHIND_PROXY", "") == "1"
 CERT_HOST = os.environ.get("VMA_CERT_HOST", "")
 # Renewal of this certificate is manual, so the warning has to land well before expiry.
 CERT_WARN_DAYS = int(os.environ.get("VMA_CERT_WARN_DAYS", "25"))
+# Accounts matching this are the ones the test harness and the bot roster own, rather
+# than people. The listings keep the two apart so a real player is never one row away
+# from forty bots.
+HARNESS_PATTERN = os.environ.get("VMA_HARNESS_PATTERN", r"^(HARNESS|PANEL|STRESS|BOT|RAIDGUILD)")
 
 SERVICES = {"world": "vmangos-mangosd", "realm": "vmangos-realmd"}
 CONF_PATHS = {"mangosd": MANGOSD_CONF, "realmd": REALMD_CONF}
@@ -68,6 +73,12 @@ RACES = {1: "Human", 2: "Orc", 3: "Dwarf", 4: "Night Elf",
          5: "Undead", 6: "Tauren", 7: "Gnome", 8: "Troll"}
 CLASSES = {1: "Warrior", 2: "Paladin", 3: "Hunter", 4: "Rogue", 5: "Priest",
            7: "Shaman", 8: "Mage", 9: "Warlock", 11: "Druid"}
+
+HARNESS_RE = re.compile(HARNESS_PATTERN, re.I)
+
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.json"),
+          encoding="utf-8") as _f:
+    COMMANDS = json.load(_f)
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; "
@@ -376,7 +387,10 @@ def accounts():
     rows = safe(lambda: DB.query("login", sql, args), [], "accounts")
     banned = safe(lambda: {r["id"] for r in DB.query(
         "login", "SELECT id FROM account_banned WHERE active=1")}, set(), "account bans")
-    return render_template("accounts.html", accounts=rows, q=q, banned=banned)
+    people = [a for a in rows if not HARNESS_RE.match(a["username"] or "")]
+    harness = [a for a in rows if HARNESS_RE.match(a["username"] or "")]
+    return render_template("accounts.html", people=people, harness=harness,
+                           q=q, banned=banned)
 
 
 @app.route("/accounts/action", methods=["POST"])
@@ -392,17 +406,14 @@ def accounts_action():
     # or removing it from the panel would cut the branch the panel is sitting on: every
     # later action would fail with an opaque 401.
     if act in ("password", "delete", "gmlevel", "ban") and user.upper() == SOAP_USER.upper():
-        return reject(
-            "%s is the panel's own SOAP service account. Changing it here would lock the "
-            "panel out of the server. Edit admin.env and restart vmangos-admin instead."
-            % user, "accounts")
+        return reject("%s is the panel's own SOAP service account. Edit admin.env and "
+                      "restart vmangos-admin instead." % user, "accounts")
 
     if act in ("create", "password"):
         pw = request.form.get("password") or ""
         if not sec.valid_password(pw):
-            return reject("Password must be 6-%d printable characters with no spaces. "
-                          "The server caps account passwords at %d."
-                          % (sec.MAX_PASSWORD_LEN, sec.MAX_PASSWORD_LEN), "accounts")
+            return reject("Password must be 6-%d printable characters with no spaces."
+                          % sec.MAX_PASSWORD_LEN, "accounts")
         if act == "create":
             run_soap_flash("account create %s %s" % (user, pw),
                            "Account %s created at Player level." % user)
@@ -464,8 +475,17 @@ def characters():
         names = safe(lambda: {r["id"]: r["username"] for r in DB.query(
             "login", "SELECT id, username FROM account WHERE id IN (%s)" % placeholders,
             tuple(ids))}, {}, "account names")
-    return render_template("characters.html", chars=rows, q=q, acct_names=names,
-                           races=RACES, classes=CLASSES)
+
+    def is_harness(c):
+        # Party bots are spawned onto synthetic account ids that have no row in the
+        # login database at all, so an unresolvable account is itself the tell.
+        owner = names.get(c["account"])
+        return owner is None or bool(HARNESS_RE.match(owner))
+
+    people = [c for c in rows if not is_harness(c)]
+    harness = [c for c in rows if is_harness(c)]
+    return render_template("characters.html", people=people, harness=harness,
+                           q=q, acct_names=names, races=RACES, classes=CLASSES)
 
 
 @app.route("/characters/action", methods=["POST"])
@@ -586,9 +606,7 @@ def realms_save():
     except Exception as e:  # noqa: BLE001
         return reject("Update failed: %s" % e, "realms")
 
-    flash("Realm %s saved. realmd re-reads the realm list every 20s, so this applies "
-          "shortly with no restart. A hostname that does not resolve causes realmd to "
-          "drop the realm from the list, so confirm DNS first." % rid, "ok")
+    flash("Realm %s saved." % rid, "ok")
     return redirect(url_for("realms"))
 
 
@@ -624,9 +642,7 @@ def config_save(which):
     except Exception as e:  # noqa: BLE001
         return reject("Save failed: %s" % e, "config_view")
     if n:
-        flash("%d setting(s) written. Backup: %s. Most settings are only read at "
-              "startup, so restart the service to apply them."
-              % (n, os.path.basename(bak)), "ok")
+        flash("%d setting(s) written. Backup: %s." % (n, os.path.basename(bak)), "ok")
     else:
         flash("No values differed, nothing written.", "warn")
     return redirect(url_for("config_view", which=which,
@@ -634,6 +650,31 @@ def config_save(which):
 
 
 # ---------------------------------------------------------------- console
+
+def command_reference():
+    """The full command tree, with this realm's security overrides applied.
+
+    commands.json is generated from Chat.cpp, which holds the compiled-in defaults. The
+    world `command` table overrides them at startup and on `.reload command`, which is
+    how partybot ended up at Moderator here -- so read it rather than show a level the
+    server no longer enforces.
+    """
+    overrides = safe(
+        lambda: {r["name"]: r["security"] for r in
+                 DB.query("world", "SELECT name, security FROM command")},
+        {}, "command security overrides")
+
+    groups = {}
+    for c in COMMANDS["commands"]:
+        entry = dict(c)
+        if entry["name"] in overrides:
+            entry["security"] = overrides[entry["name"]]
+            entry["overridden"] = True
+        groups.setdefault(entry["group"], []).append(entry)
+
+    return [{"name": g, "desc": COMMANDS["groups"].get(g, ""), "commands": cmds}
+            for g, cmds in sorted(groups.items())]
+
 
 @app.route("/console", methods=["GET", "POST"])
 def console():
@@ -649,7 +690,10 @@ def console():
             output = out or ("(no output)" if ok else "(failed, no output)")
             if not ok:
                 flash("Command reported an error.", "err")
-    return render_template("console.html", output=output, command=command)
+    ref = command_reference()
+    return render_template("console.html", output=output, command=command,
+                           reference=ref,
+                           total=sum(len(g["commands"]) for g in ref))
 
 
 # ---------------------------------------------------------------- errors

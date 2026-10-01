@@ -1,0 +1,5369 @@
+{
+ "groups": {
+  "account": "Create, inspect and change game accounts.",
+  "additem": "Put an item in the selected player's bags.",
+  "additemset": "Add every item belonging to an item set.",
+  "ahbot": "Auction house bot.",
+  "angle": "Report the facing angle between you and your target.",
+  "announce": "Server-wide chat announcement.",
+  "anticheat": "Anticheat state for the selected player.",
+  "antispam": "Chat spam filter word list.",
+  "aoedamage": "Deal damage to everything around you.",
+  "auction": "Open an auction house window remotely.",
+  "aura": "Apply an aura to the selected unit.",
+  "ban": "Ban accounts, characters and addresses.",
+  "baninfo": "Why a ban was applied and when it lifts.",
+  "bank": "Open your bank from anywhere.",
+  "banlist": "List current bans.",
+  "battlebot": "Battleground bots.",
+  "bg": "Battleground instance control.",
+  "bot": "Random world-population bots.",
+  "cast": "Force a spell cast for testing.",
+  "channel": "Join or leave a chat channel as a GM.",
+  "character": "Character maintenance: rename, level, erase, restore.",
+  "charge": "Charge at the selected target.",
+  "cheat": "Per-session cheat toggles. Each takes on|off, or nothing to report state.",
+  "cinematic": "Author and preview cinematic camera paths.",
+  "combatstop": "Drop the selected unit out of combat.",
+  "cometome": "Make the selected creature walk to you.",
+  "commands": "List every command your security level can run.",
+  "cooldown": "Inspect and clear spell cooldowns.",
+  "damage": "Apply damage to the selected unit.",
+  "debug": "Developer probes. Mostly needs a player session and a selected unit.",
+  "deleteitem": "Remove an item from the selected player.",
+  "demorph": "Restore the selected unit's real model.",
+  "deplenish": "Drain the selected unit's health and power.",
+  "die": "Kill the selected unit.",
+  "dismount": "Dismount yourself.",
+  "distance": "Distance from you to the selected unit.",
+  "escort": "Author escort waypoint paths.",
+  "event": "Game events: list, start, stop, enable, disable.",
+  "explorecheat": "Reveal or hide the whole map for a player.",
+  "fear": "Fear the selected unit.",
+  "freeze": "Freeze a player in place.",
+  "gm": "Game master mode and visibility.",
+  "go": "Teleport yourself. Needs a player session, so not usable from this panel.",
+  "gobject": "Create, move and inspect game object spawns.",
+  "gocorpse": "Teleport to a player's corpse.",
+  "gold": "Remove gold from a player.",
+  "goname": "Teleport to a named player.",
+  "gps": "Print your exact position, map, zone and area.",
+  "group": "Act on everyone in the selected player's group.",
+  "groupgo": "Teleport a whole group to you.",
+  "groupinfo": "Show a player's group membership.",
+  "groupspell": "Spell group stacking rules.",
+  "guid": "GUID of the selected unit.",
+  "guild": "Create, rename, delete guilds and manage membership.",
+  "harness": "Test harness primitives, used by contrib/harness suites.",
+  "help": "Help for one command.",
+  "hidearea": "Hide an explored area from a player's map.",
+  "honor": "Honor points, kills and ranking.",
+  "hover": "Toggle hover on the selected unit.",
+  "instance": "Instance bindings, saves and encounter data.",
+  "itemmove": "Move an item between your own bag slots.",
+  "kick": "Disconnect a player.",
+  "knockback": "Knock the selected unit back.",
+  "learn": "Teach spells, skills and recipes.",
+  "levelup": "Raise or lower a player's level.",
+  "linkgrave": "Link a graveyard to a zone.",
+  "list": "Find spawns and item copies in the world.",
+  "log": "Per-player logging switches.",
+  "lookup": "Search the game and account databases by name.",
+  "maxskill": "Cap every skill the player has.",
+  "mmap": "Movement map (pathfinding) diagnostics.",
+  "modify": "Change a stat on the selected player. Most take one number.",
+  "mount": "Apply a mount display to yourself.",
+  "movegens": "Movement generator stack for the selected unit.",
+  "mute": "Silence a player's chat for a while.",
+  "nameaura": "Apply an aura to a named player.",
+  "namedie": "Kill a named player.",
+  "namego": "Summon a named player to you.",
+  "neargrave": "Nearest graveyard to your position.",
+  "notify": "Screen-centre notification to every player.",
+  "npc": "Create, edit, move and delete creature spawns.",
+  "partybot": "Party bots. Run these in game: they act on your party and selection.",
+  "pbcast": "Background broadcast queue statistics.",
+  "pdump": "Dump a character to a file, or load one back.",
+  "pet": "Pet creation and training.",
+  "pinfo": "Account, level, money and location for one player.",
+  "pool": "Spawn pool inspection and forced rolls.",
+  "possess": "Take direct control of the selected unit.",
+  "pvp": "PvP flag for the selected player.",
+  "quest": "Give, complete and remove quests.",
+  "quit": "Shut the server down immediately. Console only.",
+  "raidguild": "Persistent bot raid guild.",
+  "recall": "Return a player to where they were last teleported from.",
+  "reload": "Re-read one world database table with no restart.",
+  "removeriding": "Remove riding skill from a player.",
+  "repairitems": "Repair everything a player is wearing.",
+  "replenish": "Refill the selected unit's health and power.",
+  "reset": "Reset a character's talents, stats, spells or level.",
+  "respawn": "Respawn every creature near you.",
+  "revive": "Resurrect a player.",
+  "save": "Write your own character to the database.",
+  "saveall": "Write every online character to the database.",
+  "send": "Send mail, money or items, to one player or a race mask.",
+  "server": "World server state, limits, MOTD and shutdown.",
+  "service": "Bulk maintenance jobs.",
+  "setskill": "Set one skill's value on the selected player.",
+  "showarea": "Reveal one map area to a player.",
+  "sniff": "Packet capture for the selected session.",
+  "spamer": "Mute accounts flagged by the spam filter.",
+  "spell": "Spell template inspection.",
+  "stable": "Open the hunter stable from anywhere.",
+  "start": "Teleport yourself to your race's starting area.",
+  "taxicheat": "Unlock every flight path for a player.",
+  "tele": "Named teleport locations from game_tele.",
+  "ticket": "GM ticket queue.",
+  "trigger": "Area trigger inspection.",
+  "unaura": "Remove an aura from the selected unit.",
+  "unban": "Lift a ban.",
+  "unfreeze": "Release a frozen player.",
+  "unit": "Read fields off the selected unit.",
+  "unlearn": "Remove spells from a player.",
+  "unmute": "Restore a muted player's chat.",
+  "unstuck": "Teleport yourself to your bind point.",
+  "variable": "Read and write world variables.",
+  "video": "Camera helpers for recording.",
+  "wareffort": "AQ war effort resource tracking.",
+  "wchange": "Set the weather in your current zone.",
+  "whispers": "Accept or refuse whispers while in GM mode.",
+  "world": "World update timing and visibility diagnostics.",
+  "wp": "Creature waypoint path authoring.",
+  "wr": "Reload your own character's waypoints."
+ },
+ "commands": [
+  {
+   "name": "account",
+   "group": "account",
+   "security": 0,
+   "console": true,
+   "args": "",
+   "desc": "Your own account's security level and expansion."
+  },
+  {
+   "name": "account characters",
+   "group": "account",
+   "security": 3,
+   "console": true,
+   "args": "<account>",
+   "desc": "Every character on an account."
+  },
+  {
+   "name": "account cleardata",
+   "group": "account",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "account create",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "<account> <password>",
+   "desc": "Create an account at Player level. Both fields are uppercased and the password is capped at 16 characters."
+  },
+  {
+   "name": "account delete",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "<account>",
+   "desc": "Delete an account and all of its characters."
+  },
+  {
+   "name": "account lock",
+   "group": "account",
+   "security": 0,
+   "console": true,
+   "args": "on|off",
+   "desc": "Lock your own account to the address you last used."
+  },
+  {
+   "name": "account onlinelist",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "[limit]",
+   "desc": "Accounts with a session open right now."
+  },
+  {
+   "name": "account password",
+   "group": "account",
+   "security": 0,
+   "console": true,
+   "args": "<old> <new> <new again>",
+   "desc": "Change your own password."
+  },
+  {
+   "name": "account set addon",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "[account] <expansion>",
+   "desc": "Expansion level the account may log in at."
+  },
+  {
+   "name": "account set gmlevel",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "[account] <0-7> [realm]",
+   "desc": "Security level, written to account_access. Realm -1 means every realm."
+  },
+  {
+   "name": "account set locked",
+   "group": "account",
+   "security": 6,
+   "console": true,
+   "args": "[account] <0|1>",
+   "desc": "Pin the account to its last used address."
+  },
+  {
+   "name": "account set password",
+   "group": "account",
+   "security": 7,
+   "console": true,
+   "args": "<account> <new> <new again>",
+   "desc": "Set another account's password."
+  },
+  {
+   "name": "additem",
+   "group": "additem",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "additemset",
+   "group": "additemset",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "ahbot reload",
+   "group": "ahbot",
+   "security": 6,
+   "console": true,
+   "desc": "Reload table and config"
+  },
+  {
+   "name": "ahbot update",
+   "group": "ahbot",
+   "security": 6,
+   "console": true,
+   "desc": "Add items for sale"
+  },
+  {
+   "name": "angle",
+   "group": "angle",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "announce",
+   "group": "announce",
+   "security": 4,
+   "console": true,
+   "args": "<text>",
+   "desc": "Server-wide chat announcement."
+  },
+  {
+   "name": "anticheat",
+   "group": "anticheat",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "antispam add",
+   "group": "antispam",
+   "security": 2,
+   "console": true,
+   "args": "\"phrase\" [ban seconds]",
+   "desc": "Add a phrase to the spam filter."
+  },
+  {
+   "name": "antispam remove",
+   "group": "antispam",
+   "security": 4,
+   "console": true,
+   "args": "\"phrase\"",
+   "desc": "Drop a phrase from the filter."
+  },
+  {
+   "name": "antispam removereplace",
+   "group": "antispam",
+   "security": 4,
+   "console": true,
+   "args": "\"phrase\"",
+   "desc": "Drop a censor rule."
+  },
+  {
+   "name": "antispam replace",
+   "group": "antispam",
+   "security": 2,
+   "console": true,
+   "args": "\"phrase\" \"replacement\"",
+   "desc": "Censor a phrase rather than block it."
+  },
+  {
+   "name": "aoedamage",
+   "group": "aoedamage",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "auction",
+   "group": "auction",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "auction alliance",
+   "group": "auction",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "auction goblin",
+   "group": "auction",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "auction horde",
+   "group": "auction",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "aura",
+   "group": "aura",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "ban account",
+   "group": "ban",
+   "security": 3,
+   "console": true,
+   "args": "<account> <duration> <reason>",
+   "desc": "Duration is -1 for permanent, or a count with a unit: 10m, 2h, 7d."
+  },
+  {
+   "name": "ban allip",
+   "group": "ban",
+   "security": 6,
+   "console": true,
+   "args": "<account> <duration> <reason>",
+   "desc": "Ban every address the account has logged in from."
+  },
+  {
+   "name": "ban character",
+   "group": "ban",
+   "security": 3,
+   "console": true,
+   "args": "<character> <duration> <reason>",
+   "desc": "Ban one character by name."
+  },
+  {
+   "name": "ban ip",
+   "group": "ban",
+   "security": 6,
+   "console": true,
+   "args": "<address> <duration> <reason>",
+   "desc": "Ban a source address."
+  },
+  {
+   "name": "ban note",
+   "group": "ban",
+   "security": 2,
+   "console": true,
+   "args": "<character> <note>",
+   "desc": "Attach a note to a character's record."
+  },
+  {
+   "name": "ban warn",
+   "group": "ban",
+   "security": 2,
+   "console": true,
+   "args": "<character> <reason>",
+   "desc": "Record a warning without banning."
+  },
+  {
+   "name": "baninfo account",
+   "group": "baninfo",
+   "security": 2,
+   "console": true,
+   "args": "<account>",
+   "desc": "When the ban was set, by whom, and when it lifts."
+  },
+  {
+   "name": "baninfo character",
+   "group": "baninfo",
+   "security": 2,
+   "console": true,
+   "args": "<character>",
+   "desc": "Ban detail for one character."
+  },
+  {
+   "name": "baninfo ip",
+   "group": "baninfo",
+   "security": 3,
+   "console": true,
+   "args": "<address>",
+   "desc": "Ban detail for one address."
+  },
+  {
+   "name": "bank",
+   "group": "bank",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "banlist account",
+   "group": "banlist",
+   "security": 2,
+   "console": true,
+   "args": "[filter]",
+   "desc": "Banned accounts, optionally filtered by name."
+  },
+  {
+   "name": "banlist character",
+   "group": "banlist",
+   "security": 2,
+   "console": true,
+   "args": "[filter]",
+   "desc": "Banned characters."
+  },
+  {
+   "name": "banlist ip",
+   "group": "banlist",
+   "security": 3,
+   "console": true,
+   "args": "[filter]",
+   "desc": "Banned addresses."
+  },
+  {
+   "name": "battlebot add alterac",
+   "group": "battlebot",
+   "security": 6,
+   "console": true,
+   "args": "<count> [level]",
+   "desc": "Add bots to Alterac Valley."
+  },
+  {
+   "name": "battlebot add arathi",
+   "group": "battlebot",
+   "security": 6,
+   "console": true,
+   "args": "<count> [level]",
+   "desc": "Add bots to Arathi Basin."
+  },
+  {
+   "name": "battlebot add warsong",
+   "group": "battlebot",
+   "security": 6,
+   "console": true,
+   "args": "<count> [level]",
+   "desc": "Add bots to Warsong Gulch."
+  },
+  {
+   "name": "battlebot remove",
+   "group": "battlebot",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "battlebot removeall",
+   "group": "battlebot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Remove every battleground bot."
+  },
+  {
+   "name": "battlebot showallpaths",
+   "group": "battlebot",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "battlebot showpath",
+   "group": "battlebot",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "bg",
+   "group": "bg",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "bg start",
+   "group": "bg",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "bg status",
+   "group": "bg",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "bg stop",
+   "group": "bg",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "bot add",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "<character>",
+   "desc": "Add one world-population bot."
+  },
+  {
+   "name": "bot add_all",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Add every configured world bot."
+  },
+  {
+   "name": "bot delete",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "<character>",
+   "desc": "Remove a world bot."
+  },
+  {
+   "name": "bot info",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "World bot counts and state."
+  },
+  {
+   "name": "bot ranadd",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "<count>",
+   "desc": "Add random world bots."
+  },
+  {
+   "name": "bot reload",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Re-read the world bot configuration."
+  },
+  {
+   "name": "bot start",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Start the world bot manager."
+  },
+  {
+   "name": "bot stop",
+   "group": "bot",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Stop the world bot manager."
+  },
+  {
+   "name": "cast",
+   "group": "cast",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cast back",
+   "group": "cast",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cast dist",
+   "group": "cast",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cast self",
+   "group": "cast",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cast target",
+   "group": "cast",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "channel join",
+   "group": "channel",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "channel leave",
+   "group": "channel",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "character aiinfo",
+   "group": "character",
+   "security": 1,
+   "console": true,
+   "args": "[player]",
+   "desc": "Bot AI state for a character, if it is a bot."
+  },
+  {
+   "name": "character citytitle",
+   "group": "character",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "character clean items",
+   "group": "character",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Strip items that no longer exist in item_template."
+  },
+  {
+   "name": "character clean todelete",
+   "group": "character",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Run the pending character deletion queue."
+  },
+  {
+   "name": "character deleted delete",
+   "group": "character",
+   "security": 7,
+   "console": true,
+   "args": "<character>",
+   "desc": "Purge a soft-deleted character."
+  },
+  {
+   "name": "character deleted list account",
+   "group": "character",
+   "security": 3,
+   "console": true,
+   "args": "<account>",
+   "desc": "Soft-deleted characters on an account."
+  },
+  {
+   "name": "character deleted list name",
+   "group": "character",
+   "security": 3,
+   "console": true,
+   "args": "<filter>",
+   "desc": "Soft-deleted characters by name."
+  },
+  {
+   "name": "character deleted old",
+   "group": "character",
+   "security": 7,
+   "console": true,
+   "args": "[days]",
+   "desc": "Purge soft-deleted characters older than N days."
+  },
+  {
+   "name": "character deleted restore",
+   "group": "character",
+   "security": 4,
+   "console": true,
+   "args": "<character> [new name] [account]",
+   "desc": "Bring a soft-deleted character back."
+  },
+  {
+   "name": "character erase",
+   "group": "character",
+   "security": 7,
+   "console": true,
+   "args": "<character>",
+   "desc": "Delete a character outright, no restore."
+  },
+  {
+   "name": "character fillflys",
+   "group": "character",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Unlock every flight path."
+  },
+  {
+   "name": "character hasitem",
+   "group": "character",
+   "security": 2,
+   "console": true,
+   "args": "<item id> [player]",
+   "desc": "Whether the character holds an item."
+  },
+  {
+   "name": "character level",
+   "group": "character",
+   "security": 5,
+   "console": true,
+   "args": "[player] <level>",
+   "desc": "Set a character's level."
+  },
+  {
+   "name": "character premade gear",
+   "group": "character",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "character premade savegear",
+   "group": "character",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "character premade savespec",
+   "group": "character",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "character premade spec",
+   "group": "character",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "character race",
+   "group": "character",
+   "security": 4,
+   "console": true,
+   "args": "<character> <race id>",
+   "desc": "Change a character's race."
+  },
+  {
+   "name": "character rename",
+   "group": "character",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Force a rename at the player's next login."
+  },
+  {
+   "name": "character reputation",
+   "group": "character",
+   "security": 2,
+   "console": true,
+   "args": "[player]",
+   "desc": "Every faction standing the character holds."
+  },
+  {
+   "name": "character skin",
+   "group": "character",
+   "security": 4,
+   "console": true,
+   "args": "<character> <skin id>",
+   "desc": "Change a character's skin colour."
+  },
+  {
+   "name": "charge",
+   "group": "charge",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat beastmaster",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat castchecks",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat casttime",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat cooldown",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat criticals",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat debuffs",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat debugtargetinfo",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat fixedz",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat fly",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat god",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat ignoretriggers",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat immunenpc",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat immunepc",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat powercost",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat procs",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat status",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat triggerpass",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat untargetable",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat wallclimb",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cheat waterwalk",
+   "group": "cheat",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cinematic addwp",
+   "group": "cinematic",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cinematic gotime",
+   "group": "cinematic",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "cinematic listwp",
+   "group": "cinematic",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "combatstop",
+   "group": "combatstop",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cometome",
+   "group": "cometome",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "commands",
+   "group": "commands",
+   "security": 0,
+   "console": true,
+   "args": "",
+   "desc": "Every command your security level can run."
+  },
+  {
+   "name": "cooldown clear",
+   "group": "cooldown",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cooldown clearclientside",
+   "group": "cooldown",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "cooldown list",
+   "group": "cooldown",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "damage",
+   "group": "damage",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug anim",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug assert",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "debug bg",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "debug bytes1",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug bytes2",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug chatfreeze",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "debug condition",
+   "group": "debug",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "debug control",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug faceme",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug factionchange_items",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "debug forceupdate",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug getitemstate",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug getitemvalue",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug getprevplaytime",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug getvaluebyindex",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug getvaluebyname",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug loottable",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug los",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug los allow",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug los check",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug lrecipient",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug moditemvalue",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug modvalue",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug monster",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug movedistance",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug moveflags",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug movemotion",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug movespline",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug moveto",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug play cinematic",
+   "group": "debug",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "debug play music",
+   "group": "debug",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "debug play sound",
+   "group": "debug",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "debug play text",
+   "group": "debug",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "debug pvpcredit",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send buyerror",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send channelnotify",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send chanvisual",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug send chanvisualnext",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug send chatmmessage",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send equiperror",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send impact",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug send mailerror",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send opcode",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send openbag",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug send poi",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send qinvalidmsg",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send qpartymsg",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send sellerror",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send spellfail",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug send visual",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug send worldstate",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug setaurastate",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug setitemvalue",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug setprevplaytime",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug setvaluebyindex",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug setvaluebyname",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug spellcheck",
+   "group": "debug",
+   "security": 7,
+   "console": true
+  },
+  {
+   "name": "debug spellcoefs",
+   "group": "debug",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "debug spellmods",
+   "group": "debug",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "debug time",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "debug unitstate",
+   "group": "debug",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "debug utf8overflow",
+   "group": "debug",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "deleteitem",
+   "group": "deleteitem",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "demorph",
+   "group": "demorph",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "deplenish",
+   "group": "deplenish",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "die",
+   "group": "die",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "dismount",
+   "group": "dismount",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "distance",
+   "group": "distance",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "escort addwp",
+   "group": "escort",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "escort clearwp",
+   "group": "escort",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "escort create",
+   "group": "escort",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "escort hidewp",
+   "group": "escort",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "escort modwp",
+   "group": "escort",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "escort showwp",
+   "group": "escort",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "event",
+   "group": "event",
+   "security": 3,
+   "console": true,
+   "args": "<event id>",
+   "desc": "Status of one game event."
+  },
+  {
+   "name": "event disable",
+   "group": "event",
+   "security": 5,
+   "console": true,
+   "args": "<event id>",
+   "desc": "Keep the event from firing."
+  },
+  {
+   "name": "event enable",
+   "group": "event",
+   "security": 5,
+   "console": true,
+   "args": "<event id>",
+   "desc": "Let the event fire on its own schedule."
+  },
+  {
+   "name": "event list",
+   "group": "event",
+   "security": 3,
+   "console": true,
+   "args": "",
+   "desc": "Every game event and whether it is active."
+  },
+  {
+   "name": "event start",
+   "group": "event",
+   "security": 4,
+   "console": true,
+   "args": "<event id>",
+   "desc": "Force an event to start."
+  },
+  {
+   "name": "event stop",
+   "group": "event",
+   "security": 4,
+   "console": true,
+   "args": "<event id>",
+   "desc": "Force an event to stop."
+  },
+  {
+   "name": "explorecheat",
+   "group": "explorecheat",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "fear",
+   "group": "fear",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "freeze",
+   "group": "freeze",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gm",
+   "group": "gm",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gm chat",
+   "group": "gm",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "gm fly",
+   "group": "gm",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gm ingame",
+   "group": "gm",
+   "security": 0,
+   "console": true,
+   "args": "",
+   "desc": "Game masters currently online and visible."
+  },
+  {
+   "name": "gm list",
+   "group": "gm",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Accounts above Player level."
+  },
+  {
+   "name": "gm setview",
+   "group": "gm",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gm visible",
+   "group": "gm",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go alterac",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go arathi",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go creature",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go forward",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go graveyard",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go grid",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go object",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go relative",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go target",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go taxinode",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go trigger",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go up",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go warsong",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go xy",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go xyz",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go xyzo",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "go zonexy",
+   "group": "go",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gobject add",
+   "group": "gobject",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "gobject customanim",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject delete",
+   "group": "gobject",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "gobject despawn",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject despawnanim",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject info",
+   "group": "gobject",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gobject move",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject near",
+   "group": "gobject",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gobject reset",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject respawn",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject select",
+   "group": "gobject",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gobject setgostate",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject setlootstate",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject spawnanim",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject target",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject tmpadd",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject toggle",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject turn",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gobject ufinfo",
+   "group": "gobject",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "gobject use",
+   "group": "gobject",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "gocorpse",
+   "group": "gocorpse",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gold remove",
+   "group": "gold",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "goname",
+   "group": "goname",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "gps",
+   "group": "gps",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "group additem",
+   "group": "group",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "group replenish",
+   "group": "group",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "group revive",
+   "group": "group",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "group summon",
+   "group": "group",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "groupgo",
+   "group": "groupgo",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "groupinfo",
+   "group": "groupinfo",
+   "security": 2,
+   "console": true,
+   "args": "[player]",
+   "desc": "Group the player is in, and its members."
+  },
+  {
+   "name": "groupspell add",
+   "group": "groupspell",
+   "security": 6,
+   "console": true,
+   "args": "<group> <spell id>",
+   "desc": "Put a spell in a stacking group."
+  },
+  {
+   "name": "groupspell rule",
+   "group": "groupspell",
+   "security": 6,
+   "console": true,
+   "args": "<group> <rule>",
+   "desc": "Set a group's stacking rule."
+  },
+  {
+   "name": "guid",
+   "group": "guid",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "guild create",
+   "group": "guild",
+   "security": 3,
+   "console": true,
+   "args": "[player] \"name\"",
+   "desc": "Create a guild with the player as leader."
+  },
+  {
+   "name": "guild delete",
+   "group": "guild",
+   "security": 4,
+   "console": true,
+   "args": "\"name\"",
+   "desc": "Disband a guild."
+  },
+  {
+   "name": "guild invite",
+   "group": "guild",
+   "security": 3,
+   "console": true,
+   "args": "[player] \"guild\"",
+   "desc": "Add a player to a guild."
+  },
+  {
+   "name": "guild rank",
+   "group": "guild",
+   "security": 3,
+   "console": true,
+   "args": "[player] <rank>",
+   "desc": "Set a member's rank."
+  },
+  {
+   "name": "guild rename",
+   "group": "guild",
+   "security": 4,
+   "console": true,
+   "args": "\"old\" \"new\"",
+   "desc": "Rename a guild."
+  },
+  {
+   "name": "guild showlog",
+   "group": "guild",
+   "security": 3,
+   "console": true,
+   "args": "\"guild\"",
+   "desc": "Recent guild event log."
+  },
+  {
+   "name": "guild uninvite",
+   "group": "guild",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Remove a player from their guild."
+  },
+  {
+   "name": "harness cover",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness createchar",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness despawn",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness dynobj",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness enemy",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness equipnew",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness exec",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness gobject",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness gossip",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness graveyard",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness ground",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness info",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness items",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness itemstats",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness loadmmaps",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness loadout",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness login",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness path",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness respawn",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness rewardquest",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness select",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness spells",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness spellstats",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness stow",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness talents",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness threat",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "harness wear",
+   "group": "harness",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "help",
+   "group": "help",
+   "security": 0,
+   "console": true,
+   "args": "<command>",
+   "desc": "Help text for one command, if the world table carries any."
+  },
+  {
+   "name": "hidearea",
+   "group": "hidearea",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "honor add",
+   "group": "honor",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "honor addkill",
+   "group": "honor",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "honor reset",
+   "group": "honor",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "honor setrp",
+   "group": "honor",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "honor show",
+   "group": "honor",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "hover",
+   "group": "hover",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "instance continents",
+   "group": "instance",
+   "security": 4,
+   "console": true
+  },
+  {
+   "name": "instance getdata",
+   "group": "instance",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "instance groupunbind",
+   "group": "instance",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "instance listbinds",
+   "group": "instance",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "instance perfinfos",
+   "group": "instance",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "instance savedata",
+   "group": "instance",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "instance setdata",
+   "group": "instance",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "instance smartrebind",
+   "group": "instance",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "instance stats",
+   "group": "instance",
+   "security": 4,
+   "console": true
+  },
+  {
+   "name": "instance switch",
+   "group": "instance",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "instance unbind",
+   "group": "instance",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "itemmove",
+   "group": "itemmove",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "kick",
+   "group": "kick",
+   "security": 2,
+   "console": true,
+   "args": "[player]",
+   "desc": "Disconnect a player."
+  },
+  {
+   "name": "knockback",
+   "group": "knockback",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "learn",
+   "group": "learn",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "learn all",
+   "group": "learn",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "learn all_crafts",
+   "group": "learn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "learn all_default",
+   "group": "learn",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "learn all_gm",
+   "group": "learn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "learn all_items",
+   "group": "learn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "learn all_lang",
+   "group": "learn",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "learn all_myclass",
+   "group": "learn",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "learn all_myspells",
+   "group": "learn",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "learn all_mytalents",
+   "group": "learn",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "learn all_mytaxis",
+   "group": "learn",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "learn all_recipes",
+   "group": "learn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "learn all_trainer",
+   "group": "learn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "levelup",
+   "group": "levelup",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "linkgrave",
+   "group": "linkgrave",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "list auras",
+   "group": "list",
+   "security": 2,
+   "console": false,
+   "args": "",
+   "desc": "Auras on the selected unit."
+  },
+  {
+   "name": "list clicktomove",
+   "group": "list",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "list creature",
+   "group": "list",
+   "security": 2,
+   "console": true,
+   "args": "<creature id> [count]",
+   "desc": "Where a creature entry is spawned."
+  },
+  {
+   "name": "list exploredareas",
+   "group": "list",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "list hostilerefs",
+   "group": "list",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "list item",
+   "group": "list",
+   "security": 2,
+   "console": true,
+   "args": "<item id> [count]",
+   "desc": "Who holds copies of an item."
+  },
+  {
+   "name": "list maps",
+   "group": "list",
+   "security": 2,
+   "console": true,
+   "args": "",
+   "desc": "Loaded maps and their instance counts."
+  },
+  {
+   "name": "list movegens",
+   "group": "list",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "list object",
+   "group": "list",
+   "security": 2,
+   "console": true,
+   "args": "<object id> [count]",
+   "desc": "Where a game object entry is spawned."
+  },
+  {
+   "name": "list talents",
+   "group": "list",
+   "security": 2,
+   "console": false,
+   "args": "",
+   "desc": "Talent spells known by the selected player."
+  },
+  {
+   "name": "list threat",
+   "group": "list",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "list visibleguids",
+   "group": "list",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "log",
+   "group": "log",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "lookup account email",
+   "group": "lookup",
+   "security": 4,
+   "console": false,
+   "args": "<text> [limit]",
+   "desc": "Accounts by email address."
+  },
+  {
+   "name": "lookup account ip",
+   "group": "lookup",
+   "security": 4,
+   "console": false,
+   "args": "<address> [limit]",
+   "desc": "Accounts that have used an address."
+  },
+  {
+   "name": "lookup account iponline",
+   "group": "lookup",
+   "security": 4,
+   "console": false,
+   "args": "<address> [limit]",
+   "desc": "Accounts on an address right now."
+  },
+  {
+   "name": "lookup account name",
+   "group": "lookup",
+   "security": 3,
+   "console": false,
+   "args": "<text> [limit]",
+   "desc": "Accounts whose name contains the text."
+  },
+  {
+   "name": "lookup area",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Areas by name."
+  },
+  {
+   "name": "lookup creature",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Creature templates by name."
+  },
+  {
+   "name": "lookup creaturemodel",
+   "group": "lookup",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "lookup event",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Game events by description."
+  },
+  {
+   "name": "lookup faction",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Factions by name."
+  },
+  {
+   "name": "lookup guild",
+   "group": "lookup",
+   "security": 1,
+   "console": true,
+   "args": "<text>",
+   "desc": "Guilds by name."
+  },
+  {
+   "name": "lookup item",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Items by name."
+  },
+  {
+   "name": "lookup itemset",
+   "group": "lookup",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "lookup object",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Game object templates by name."
+  },
+  {
+   "name": "lookup player account",
+   "group": "lookup",
+   "security": 3,
+   "console": false,
+   "args": "<account> [limit]",
+   "desc": "Characters belonging to an account."
+  },
+  {
+   "name": "lookup player character",
+   "group": "lookup",
+   "security": 2,
+   "console": false,
+   "args": "<text> [limit]",
+   "desc": "Characters whose name contains the text."
+  },
+  {
+   "name": "lookup player email",
+   "group": "lookup",
+   "security": 4,
+   "console": false,
+   "args": "<email> [limit]",
+   "desc": "Characters behind an email address."
+  },
+  {
+   "name": "lookup player ip",
+   "group": "lookup",
+   "security": 4,
+   "console": false,
+   "args": "<address> [limit]",
+   "desc": "Characters behind an address."
+  },
+  {
+   "name": "lookup player name",
+   "group": "lookup",
+   "security": 1,
+   "console": false,
+   "args": "<text> [limit]",
+   "desc": "Find the account behind a character name."
+  },
+  {
+   "name": "lookup pool",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Spawn pools by description."
+  },
+  {
+   "name": "lookup quest",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Quests by title."
+  },
+  {
+   "name": "lookup skill",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Skills by name."
+  },
+  {
+   "name": "lookup sound",
+   "group": "lookup",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "lookup spell",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Spells by name."
+  },
+  {
+   "name": "lookup taxinode",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Flight points by name."
+  },
+  {
+   "name": "lookup tele",
+   "group": "lookup",
+   "security": 2,
+   "console": true,
+   "args": "<text>",
+   "desc": "Named teleport locations."
+  },
+  {
+   "name": "maxskill",
+   "group": "maxskill",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap",
+   "group": "mmap",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "mmap connect",
+   "group": "mmap",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "mmap loadedtiles",
+   "group": "mmap",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap loc",
+   "group": "mmap",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap path",
+   "group": "mmap",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap reload",
+   "group": "mmap",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "mmap stats",
+   "group": "mmap",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap testarea",
+   "group": "mmap",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "mmap unload",
+   "group": "mmap",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "modify accessories",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify agility",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify ap",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify arcane",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify armor",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify aspeed",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify block",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify boundrad",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify bwalk",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify castspeed",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify combreach",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify crit",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify dodge",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify drunk",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify emotestate",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify energy",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify exhaustion",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify faction",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify fire",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify fly",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify frost",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify gender",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify haircolor",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify hairstyle",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify holy",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify honor",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify hp",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify intellect",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify mainspeed",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify mana",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify money",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify morph",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify mount",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify nature",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify offspeed",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify parry",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify rage",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify rangeap",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify rangecrit",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify rangespeed",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify rep",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify scale",
+   "group": "modify",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "modify shadow",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify skincolor",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify speed",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify spellcrit",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify spellpower",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify spirit",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify stamina",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify strength",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify swim",
+   "group": "modify",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "modify tp",
+   "group": "modify",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "modify xprate",
+   "group": "modify",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "mount",
+   "group": "mount",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "movegens",
+   "group": "movegens",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "mute",
+   "group": "mute",
+   "security": 1,
+   "console": true,
+   "args": "[player] <minutes> <reason>",
+   "desc": "Silence a player's chat."
+  },
+  {
+   "name": "nameaura",
+   "group": "nameaura",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "namedie",
+   "group": "namedie",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "namego",
+   "group": "namego",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "neargrave",
+   "group": "neargrave",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "notify",
+   "group": "notify",
+   "security": 4,
+   "console": true,
+   "args": "<text>",
+   "desc": "Large notification across every player's screen."
+  },
+  {
+   "name": "npc additem",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc addweapon",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc aiinfo",
+   "group": "npc",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "npc allowattack",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc allowmove",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc delitem",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc despawn",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc evade",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc follow",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc group add",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc group addrel",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc group del",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc group link",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc info",
+   "group": "npc",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "npc move",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc playemote",
+   "group": "npc",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "npc say",
+   "group": "npc",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "npc set displayid",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set entry",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set faction",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set flag",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set level",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set movetype",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set reactstate",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set respawntime",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc set wanderdistance",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc spawn add",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn addentry",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn delete",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn info",
+   "group": "npc",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "npc spawn move",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set auras",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set deathstate",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set displayid",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set emotestate",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set entry",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set movetype",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set respawntime",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set sheathstate",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set standstate",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc spawn set wanderdistance",
+   "group": "npc",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "npc summon",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc tame",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc textemote",
+   "group": "npc",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "npc unfollow",
+   "group": "npc",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "npc whisper",
+   "group": "npc",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "npc yell",
+   "group": "npc",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "partybot add",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<class> <role> [level] [spec]",
+   "desc": "Spawn a bot into your party. Needs a player session."
+  },
+  {
+   "name": "partybot aoe",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Toggle area spells for the party."
+  },
+  {
+   "name": "partybot attackstart",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Send the party at your target, re-issued each tick."
+  },
+  {
+   "name": "partybot attackstop",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Call the party off."
+  },
+  {
+   "name": "partybot caststart",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Resume casting."
+  },
+  {
+   "name": "partybot caststop",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Stop casting but stay in combat."
+  },
+  {
+   "name": "partybot ccmark",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<mark>",
+   "desc": "Crowd control whatever carries this raid mark."
+  },
+  {
+   "name": "partybot clearmarks",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Drop every crowd control and focus mark."
+  },
+  {
+   "name": "partybot clone",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Spawn a bot copied from your selected player."
+  },
+  {
+   "name": "partybot cometome",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Walk the party to your position."
+  },
+  {
+   "name": "partybot focusmark",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<mark>",
+   "desc": "Focus fire whatever carries this raid mark."
+  },
+  {
+   "name": "partybot hold",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Stop the party moving."
+  },
+  {
+   "name": "partybot load",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<character>",
+   "desc": "Bring an existing character in as a bot."
+  },
+  {
+   "name": "partybot pause",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "[seconds]",
+   "desc": "Suspend bot AI."
+  },
+  {
+   "name": "partybot pull",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "[bot]",
+   "desc": "Pull your target with the puller, or the named bot."
+  },
+  {
+   "name": "partybot release",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Let the party move again."
+  },
+  {
+   "name": "partybot remove",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Remove the selected bot."
+  },
+  {
+   "name": "partybot removeall",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Remove every party bot you own."
+  },
+  {
+   "name": "partybot setpuller",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "[bot]",
+   "desc": "Nominate the bot that pulls."
+  },
+  {
+   "name": "partybot setrole",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<role>",
+   "desc": "Change the selected bot's role."
+  },
+  {
+   "name": "partybot unequip",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "<item>",
+   "desc": "Take an item off the selected bot."
+  },
+  {
+   "name": "partybot unpause",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Resume bot AI."
+  },
+  {
+   "name": "partybot usegobject",
+   "group": "partybot",
+   "security": 6,
+   "console": false,
+   "args": "",
+   "desc": "Have the party use your selected game object."
+  },
+  {
+   "name": "pbcast",
+   "group": "pbcast",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "pbcast setthreads",
+   "group": "pbcast",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "pbcast stats",
+   "group": "pbcast",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "pdump load",
+   "group": "pdump",
+   "security": 6,
+   "console": true,
+   "args": "<file> <account> [name] [guid]",
+   "desc": "Load a dump file into an account."
+  },
+  {
+   "name": "pdump write",
+   "group": "pdump",
+   "security": 6,
+   "console": true,
+   "args": "<file> <character>",
+   "desc": "Write a character to a dump file on the server."
+  },
+  {
+   "name": "pet delete",
+   "group": "pet",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "pet info",
+   "group": "pet",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "pet learnspell",
+   "group": "pet",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "pet list",
+   "group": "pet",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "pet loyalty",
+   "group": "pet",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "pet rename",
+   "group": "pet",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "pet unlearnspell",
+   "group": "pet",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "pinfo",
+   "group": "pinfo",
+   "security": 2,
+   "console": false,
+   "args": "[player]",
+   "desc": "Account, security, level, money, map and guild in one line."
+  },
+  {
+   "name": "pool",
+   "group": "pool",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "pool list",
+   "group": "pool",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "pool spawns",
+   "group": "pool",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "pool update",
+   "group": "pool",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "possess",
+   "group": "possess",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "pvp",
+   "group": "pvp",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "quest add",
+   "group": "quest",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "quest complete",
+   "group": "quest",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "quest remove",
+   "group": "quest",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "quest status",
+   "group": "quest",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "quit",
+   "group": "quit",
+   "security": 7,
+   "console": true,
+   "args": "",
+   "desc": "Exit immediately. Console only."
+  },
+  {
+   "name": "raidguild add",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name> <race> <class> <gender> <spec> <subgroup> [options]",
+   "desc": "Create a persistent raid guild member."
+  },
+  {
+   "name": "raidguild attune",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Grant attunement quests and keys."
+  },
+  {
+   "name": "raidguild dismiss",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Send a member offline."
+  },
+  {
+   "name": "raidguild guild",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "\"guild\" <name>",
+   "desc": "Move a member into a guild."
+  },
+  {
+   "name": "raidguild list",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Every raid guild member and their spec."
+  },
+  {
+   "name": "raidguild provision",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Gear and attune a member."
+  },
+  {
+   "name": "raidguild reload",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Re-read the raid guild roster."
+  },
+  {
+   "name": "raidguild remove",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Delete a raid guild member."
+  },
+  {
+   "name": "raidguild resetbinds",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Clear a member's instance bindings."
+  },
+  {
+   "name": "raidguild spec",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name> <spec>",
+   "desc": "Change a member's spec."
+  },
+  {
+   "name": "raidguild status",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Who is online and where."
+  },
+  {
+   "name": "raidguild summon",
+   "group": "raidguild",
+   "security": 6,
+   "console": true,
+   "args": "<name>",
+   "desc": "Bring a member online and to you."
+  },
+  {
+   "name": "recall",
+   "group": "recall",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "reload account_banned",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all",
+   "group": "reload",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Re-read every reloadable table. Heavy; prefer a narrower reload."
+  },
+  {
+   "name": "reload all_area",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_gossips",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_item",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_locales",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_loot",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_npc",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_quest",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_scripts",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload all_spell",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload anticheat",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload areatrigger_involvedrelation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload areatrigger_tavern",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload areatrigger_teleport",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload autobroadcast",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload character_pet",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload cinematic_waypoints",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload command",
+   "group": "reload",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Re-read the command table, including security overrides."
+  },
+  {
+   "name": "reload conditions",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload config",
+   "group": "reload",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Re-read mangosd.conf. Only settings marked live take effect."
+  },
+  {
+   "name": "reload creature",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_ai_events",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_battleground",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_display_info_addon",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_groups",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_involvedrelation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_onkill_reputation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_questrelation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_spells",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_spells_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload creature_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload disenchant_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload event_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload exploration_basexp",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload fishing_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload game_graveyard_zone",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload game_tele",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload game_weather",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_battleground",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_involvedrelation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_questrelation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_requirement",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gameobject_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload generic_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gossip_menu",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gossip_menu_option",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload gossip_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload instance_buff_removal",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload ip_banned",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload item_enchantment_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload item_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload item_required_target",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload item_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_creature",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_gameobject",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_gossip_menu_option",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_item",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_page_text",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_points_of_interest",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload locales_quest",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload mail_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload mangos_string",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload map_loot_disabled",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload map_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload npc_gossip",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload npc_text",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload npc_trainer",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload npc_vendor",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload page_text",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload pet_name_generation",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload petitions",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload pickpocketing_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload player_factionchange_items",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload player_factionchange_mounts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload player_factionchange_quests",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload player_factionchange_reputations",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload player_factionchange_spells",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload points_of_interest",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload quest_end_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload quest_greeting",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload quest_start_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload quest_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload reference_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload reputation_reward_rate",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload reputation_spillover_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload reserved_name",
+   "group": "reload",
+   "security": 6,
+   "console": true
+  },
+  {
+   "name": "reload skill_fishing_base_level",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload skinning_loot_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_area",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_chain",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_disabled",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_elixir",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_group",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_group_stack_rules",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_learn_spell",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_mod",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_pet_auras",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_proc_event",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_proc_item_enchant",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_script_target",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_scripts",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_target_position",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_template",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload spell_threats",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload taxi_path_transitions",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload trainer_greeting",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "reload variables",
+   "group": "reload",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "removeriding",
+   "group": "removeriding",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "repairitems",
+   "group": "repairitems",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Repair everything the player is wearing."
+  },
+  {
+   "name": "replenish",
+   "group": "replenish",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "reset all",
+   "group": "reset",
+   "security": 6,
+   "console": true,
+   "args": "spells|talents",
+   "desc": "Queue the reset for every character on the realm."
+  },
+  {
+   "name": "reset honor",
+   "group": "reset",
+   "security": 5,
+   "console": true,
+   "args": "[player]",
+   "desc": "Clear honor points, kills and rank."
+  },
+  {
+   "name": "reset items",
+   "group": "reset",
+   "security": 6,
+   "console": true,
+   "args": "[player]",
+   "desc": "Strip every item the character owns."
+  },
+  {
+   "name": "reset level",
+   "group": "reset",
+   "security": 5,
+   "console": true,
+   "args": "[player]",
+   "desc": "Back to level 1 with starting stats."
+  },
+  {
+   "name": "reset spells",
+   "group": "reset",
+   "security": 5,
+   "console": true,
+   "args": "[player]",
+   "desc": "Back to the class's starting spell book."
+  },
+  {
+   "name": "reset stats",
+   "group": "reset",
+   "security": 5,
+   "console": true,
+   "args": "[player]",
+   "desc": "Recompute base stats for the current level."
+  },
+  {
+   "name": "reset talents",
+   "group": "reset",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Refund every talent point."
+  },
+  {
+   "name": "respawn",
+   "group": "respawn",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "revive",
+   "group": "revive",
+   "security": 3,
+   "console": true,
+   "args": "[player]",
+   "desc": "Resurrect with full health."
+  },
+  {
+   "name": "save",
+   "group": "save",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "saveall",
+   "group": "saveall",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Flush every online character to the database."
+  },
+  {
+   "name": "send items",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "[player] \"subject\" \"body\" <item>:<count> ...",
+   "desc": "Mail carrying up to twelve item stacks."
+  },
+  {
+   "name": "send mail",
+   "group": "send",
+   "security": 1,
+   "console": true,
+   "args": "[player] \"subject\" \"body\"",
+   "desc": "Mail with no attachment."
+  },
+  {
+   "name": "send mass items",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "<race mask>|all \"subject\" \"body\" <item>:<count> ...",
+   "desc": "Items to every match."
+  },
+  {
+   "name": "send mass mail",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "<race mask>|all \"subject\" \"body\"",
+   "desc": "Mail to every matching character."
+  },
+  {
+   "name": "send mass money",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "<race mask>|all \"subject\" \"body\" <copper>",
+   "desc": "Money to every match."
+  },
+  {
+   "name": "send message",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "[player] <text>",
+   "desc": "Pop a system message on one player's screen."
+  },
+  {
+   "name": "send money",
+   "group": "send",
+   "security": 6,
+   "console": true,
+   "args": "[player] \"subject\" \"body\" <copper>",
+   "desc": "Mail carrying money."
+  },
+  {
+   "name": "server corpses",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Sweep expired player corpses."
+  },
+  {
+   "name": "server exit",
+   "group": "server",
+   "security": 7,
+   "console": true,
+   "args": "",
+   "desc": "Exit immediately without a countdown."
+  },
+  {
+   "name": "server idlerestart",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<seconds> [exitcode]",
+   "desc": "Restart once the server goes idle."
+  },
+  {
+   "name": "server idlerestart cancel",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Call off an idle restart."
+  },
+  {
+   "name": "server idleshutdown",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<seconds> [exitcode]",
+   "desc": "Shut down once the server goes idle."
+  },
+  {
+   "name": "server idleshutdown cancel",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Call off an idle shutdown."
+  },
+  {
+   "name": "server info",
+   "group": "server",
+   "security": 0,
+   "console": true,
+   "args": "",
+   "desc": "Core revision, players online and uptime."
+  },
+  {
+   "name": "server log filter",
+   "group": "server",
+   "security": 7,
+   "console": true,
+   "args": "<filter> on|off",
+   "desc": "Toggle one log filter at runtime."
+  },
+  {
+   "name": "server log level",
+   "group": "server",
+   "security": 7,
+   "console": true,
+   "args": "<0-3>",
+   "desc": "Global log verbosity."
+  },
+  {
+   "name": "server motd",
+   "group": "server",
+   "security": 0,
+   "console": true,
+   "args": "",
+   "desc": "Show the current message of the day."
+  },
+  {
+   "name": "server plimit",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<count>|player|moderator|gamemaster|administrator|reset",
+   "desc": "Player cap, applied live. A security keyword restricts login to that level and above instead of capping a count."
+  },
+  {
+   "name": "server resetallraids",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Clear every raid instance binding on the realm."
+  },
+  {
+   "name": "server restart",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<seconds> [exitcode]",
+   "desc": "Countdown, then exit with the restart code."
+  },
+  {
+   "name": "server restart cancel",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Call off a scheduled restart."
+  },
+  {
+   "name": "server set botcombatlog",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "desc": "Verbose party bot combat logging.",
+   "args": "on|off"
+  },
+  {
+   "name": "server set motd",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<text>",
+   "desc": "Set the message of the day."
+  },
+  {
+   "name": "server set restedxp",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "desc": "Rested experience accrual.",
+   "args": "[toggle] on|off"
+  },
+  {
+   "name": "server shutdown",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "<seconds> [exitcode]",
+   "desc": "Countdown, then save every character and exit."
+  },
+  {
+   "name": "server shutdown cancel",
+   "group": "server",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Call off a scheduled shutdown."
+  },
+  {
+   "name": "service del_characters",
+   "group": "service",
+   "security": 6,
+   "console": true,
+   "args": "<flags> <max level> <max money> <max items> <max played> <logout days>",
+   "desc": "Bulk-delete characters matching every threshold."
+  },
+  {
+   "name": "setskill",
+   "group": "setskill",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "showarea",
+   "group": "showarea",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "sniff",
+   "group": "sniff",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "spamer list",
+   "group": "spamer",
+   "security": 2,
+   "console": true,
+   "args": "",
+   "desc": "Accounts the spam filter has flagged."
+  },
+  {
+   "name": "spamer mute",
+   "group": "spamer",
+   "security": 1,
+   "console": true,
+   "args": "<account>",
+   "desc": "Mute a flagged account."
+  },
+  {
+   "name": "spamer unmute",
+   "group": "spamer",
+   "security": 2,
+   "console": true,
+   "args": "<account>",
+   "desc": "Unmute a flagged account."
+  },
+  {
+   "name": "spell effects",
+   "group": "spell",
+   "security": 3,
+   "console": true,
+   "args": "<spell id>",
+   "desc": "Per-effect breakdown of a spell."
+  },
+  {
+   "name": "spell iconfix",
+   "group": "spell",
+   "security": 5,
+   "console": true
+  },
+  {
+   "name": "spell info",
+   "group": "spell",
+   "security": 3,
+   "console": true,
+   "args": "<spell id>",
+   "desc": "Spell template fields."
+  },
+  {
+   "name": "spell search",
+   "group": "spell",
+   "security": 3,
+   "console": true,
+   "args": "<text>",
+   "desc": "Spells matching a name fragment."
+  },
+  {
+   "name": "stable",
+   "group": "stable",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "start",
+   "group": "start",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "taxicheat",
+   "group": "taxicheat",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "tele",
+   "group": "tele",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "tele add",
+   "group": "tele",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "tele del",
+   "group": "tele",
+   "security": 5,
+   "console": true,
+   "args": "<location>",
+   "desc": "Remove a named teleport location."
+  },
+  {
+   "name": "tele group",
+   "group": "tele",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "tele name",
+   "group": "tele",
+   "security": 2,
+   "console": true,
+   "args": "[player] <location>",
+   "desc": "Teleport a player to a named game_tele location."
+  },
+  {
+   "name": "ticket",
+   "group": "ticket",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "ticket assign",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id> <gm>",
+   "desc": "Assign a ticket."
+  },
+  {
+   "name": "ticket close",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id>",
+   "desc": "Close a ticket."
+  },
+  {
+   "name": "ticket closedlist",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "",
+   "desc": "Recently closed tickets."
+  },
+  {
+   "name": "ticket comment",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id> <text>",
+   "desc": "Attach a GM comment."
+  },
+  {
+   "name": "ticket complete",
+   "group": "ticket",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "ticket counter",
+   "group": "ticket",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "ticket delete",
+   "group": "ticket",
+   "security": 3,
+   "console": true,
+   "args": "<ticket id>",
+   "desc": "Delete a closed ticket."
+  },
+  {
+   "name": "ticket escalate",
+   "group": "ticket",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "ticket escalatedlist",
+   "group": "ticket",
+   "security": 3,
+   "console": true,
+   "args": "",
+   "desc": "Tickets escalated to a higher level."
+  },
+  {
+   "name": "ticket list",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "",
+   "desc": "Open tickets."
+  },
+  {
+   "name": "ticket next",
+   "group": "ticket",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "ticket notify",
+   "group": "ticket",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "ticket onlinelist",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "",
+   "desc": "Open tickets whose author is online."
+  },
+  {
+   "name": "ticket previous",
+   "group": "ticket",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "ticket reload",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id>",
+   "desc": "Re-read one ticket from the database."
+  },
+  {
+   "name": "ticket reset",
+   "group": "ticket",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Wipe the ticket queue."
+  },
+  {
+   "name": "ticket response append",
+   "group": "ticket",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "ticket response appendln",
+   "group": "ticket",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "ticket response reset",
+   "group": "ticket",
+   "security": 3,
+   "console": true
+  },
+  {
+   "name": "ticket togglesystem",
+   "group": "ticket",
+   "security": 6,
+   "console": true,
+   "args": "",
+   "desc": "Accept or refuse new tickets."
+  },
+  {
+   "name": "ticket unassign",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id>",
+   "desc": "Release an assigned ticket."
+  },
+  {
+   "name": "ticket viewid",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<ticket id>",
+   "desc": "Read one ticket."
+  },
+  {
+   "name": "ticket viewname",
+   "group": "ticket",
+   "security": 2,
+   "console": true,
+   "args": "<character>",
+   "desc": "Read a character's open ticket."
+  },
+  {
+   "name": "trigger",
+   "group": "trigger",
+   "security": 2,
+   "console": true
+  },
+  {
+   "name": "trigger active",
+   "group": "trigger",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "trigger near",
+   "group": "trigger",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "unaura",
+   "group": "unaura",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "unban account",
+   "group": "unban",
+   "security": 6,
+   "console": true,
+   "args": "<account>",
+   "desc": "Lift an account ban."
+  },
+  {
+   "name": "unban character",
+   "group": "unban",
+   "security": 6,
+   "console": true,
+   "args": "<character>",
+   "desc": "Lift a character ban."
+  },
+  {
+   "name": "unban ip",
+   "group": "unban",
+   "security": 6,
+   "console": true,
+   "args": "<address>",
+   "desc": "Lift an address ban."
+  },
+  {
+   "name": "unfreeze",
+   "group": "unfreeze",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "unit aiinfo",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit factioninfo",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit info",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit moveinfo",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show class",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show combattimer",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show createspell",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show emotestate",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show form",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show gender",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show miscflags",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show moveflags",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show npcflags",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show powertype",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show race",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show sheathstate",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show standstate",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show unitflags",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show unitstate",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit show visflags",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit speedinfo",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit statinfo",
+   "group": "unit",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "unit ufinfo",
+   "group": "unit",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "unlearn",
+   "group": "unlearn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "unlearn all_crafts",
+   "group": "unlearn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "unlearn all_gm",
+   "group": "unlearn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "unlearn all_recipes",
+   "group": "unlearn",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "unmute",
+   "group": "unmute",
+   "security": 2,
+   "console": true,
+   "args": "[player]",
+   "desc": "Restore chat for a muted player."
+  },
+  {
+   "name": "unstuck",
+   "group": "unstuck",
+   "security": 0,
+   "console": false
+  },
+  {
+   "name": "variable",
+   "group": "variable",
+   "security": 5,
+   "console": true,
+   "args": "<name> [value]",
+   "desc": "Read a world variable, or set it by passing a value."
+  },
+  {
+   "name": "video",
+   "group": "video",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "video expendables",
+   "group": "video",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "video turn",
+   "group": "video",
+   "security": 3,
+   "console": false
+  },
+  {
+   "name": "wareffort getresource",
+   "group": "wareffort",
+   "security": 5,
+   "console": true,
+   "args": "<resource id> <team>",
+   "desc": "One resource's current total."
+  },
+  {
+   "name": "wareffort info",
+   "group": "wareffort",
+   "security": 5,
+   "console": true,
+   "args": "",
+   "desc": "AQ war effort stage and resource totals."
+  },
+  {
+   "name": "wareffort setgongtime",
+   "group": "wareffort",
+   "security": 5,
+   "console": true,
+   "args": "<unix time>",
+   "desc": "When the gong becomes usable."
+  },
+  {
+   "name": "wareffort setresource",
+   "group": "wareffort",
+   "security": 5,
+   "console": true,
+   "args": "<resource id> <amount> <team>",
+   "desc": "Overwrite a resource total."
+  },
+  {
+   "name": "wareffort setstage",
+   "group": "wareffort",
+   "security": 5,
+   "console": true,
+   "args": "<stage>",
+   "desc": "Force the war effort stage."
+  },
+  {
+   "name": "wchange",
+   "group": "wchange",
+   "security": 4,
+   "console": false
+  },
+  {
+   "name": "whispers",
+   "group": "whispers",
+   "security": 1,
+   "console": false
+  },
+  {
+   "name": "world cansee",
+   "group": "world",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "world detail",
+   "group": "world",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "world update",
+   "group": "world",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "wp add",
+   "group": "wp",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "wp export",
+   "group": "wp",
+   "security": 6,
+   "console": false
+  },
+  {
+   "name": "wp modify",
+   "group": "wp",
+   "security": 5,
+   "console": false
+  },
+  {
+   "name": "wp show",
+   "group": "wp",
+   "security": 2,
+   "console": false
+  },
+  {
+   "name": "wr",
+   "group": "wr",
+   "security": 0,
+   "console": false
+  }
+ ]
+}

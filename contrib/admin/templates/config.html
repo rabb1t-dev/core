@@ -29,7 +29,6 @@
       <div class="panel-title">
         {{ groups.values()|map('length')|sum }} setting(s) in {{ groups|length }} group(s)
       </div>
-      <div class="hint" style="margin:0;">Values are written back verbatim &mdash; keep the quotes where they exist.</div>
     </div>
 
     <div class="panel-body tight">
@@ -57,10 +56,6 @@
 
     {% if groups %}
     <div class="sticky-save">
-      <div class="hint" style="margin:0;">
-        A timestamped backup of the file is written before any change. Almost every setting
-        here is read at startup, so restart the service afterwards to apply it.
-      </div>
       <div class="row shrink">
         <button class="btn primary shrink" type="submit">Save changes</button>
         <button class="btn shrink" type="submit"

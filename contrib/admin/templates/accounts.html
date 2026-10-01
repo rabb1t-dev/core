@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Accounts - vmangos admin{% endblock %}
 {% block heading %}Accounts{% endblock %}
-{% block subheading %}{{ accounts|length }} account(s). New accounts are created at Player level.{% endblock %}
+{% block subheading %}{{ people|length }} player, {{ harness|length }} harness{% endblock %}
 
 {% block topactions %}
 <form class="search" method="get">
@@ -10,6 +10,111 @@
   {% if q %}<a class="btn sm ghost" href="{{ url_for('accounts') }}">Clear</a>{% endif %}
 </form>
 {% endblock %}
+
+{% macro account_table(rows) %}
+<div class="panel-body tight table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th class="num">ID</th><th>Username</th><th>Security</th><th>Status</th>
+        <th>Last IP</th><th>Last login</th><th>Created</th><th class="actions">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for a in rows %}
+      <tr>
+        <td class="num">{{ a.id }}</td>
+        <td class="mono">{{ a.username }}</td>
+        <td>
+          {% set lvl = a.gmlevel if a.gmlevel is not none else 0 %}
+          <span class="badge {{ 'danger' if lvl >= 4 else ('violet' if lvl > 0 else 'off') }}">
+            {{ sec_levels.get(lvl, lvl) }}
+          </span>
+        </td>
+        <td>
+          {% if a.online %}<span class="badge on">online</span>{% endif %}
+          {% if a.locked %}<span class="badge warn">ip-locked</span>{% endif %}
+          {% if a.id in banned %}<span class="badge danger">banned</span>{% endif %}
+          {% if not a.online and not a.locked and a.id not in banned %}<span class="badge off">idle</span>{% endif %}
+        </td>
+        <td class="mono">{{ a.last_ip or '-' }}</td>
+        <td class="mono">{{ a.last_login or 'never' }}</td>
+        <td class="mono">{{ a.joindate or '-' }}</td>
+        <td class="actions">
+          <details>
+            <summary class="btn sm" style="display:inline-flex;">Manage</summary>
+            <div style="padding:12px 0; text-align:left;">
+
+              <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="password">
+                <input type="hidden" name="username" value="{{ a.username }}">
+                <div class="row">
+                  <input type="text" name="password" maxlength="16" placeholder="new password, 6-16">
+                  <button class="btn sm shrink" type="submit">Set password</button>
+                </div>
+              </form>
+
+              <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="gmlevel">
+                <input type="hidden" name="username" value="{{ a.username }}">
+                <div class="row">
+                  <select name="gmlevel">
+                    {% for n, label in sec_levels.items() %}
+                      {% if n < 7 %}
+                      <option value="{{ n }}" {{ 'selected' if (a.gmlevel or 0) == n }}>{{ n }} - {{ label }}</option>
+                      {% endif %}
+                    {% endfor %}
+                  </select>
+                  <input type="text" name="realm" value="-1" title="realm id, -1 for all">
+                  <button class="btn sm shrink" type="submit">Set level</button>
+                </div>
+              </form>
+
+              <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="act" value="ban">
+                <input type="hidden" name="username" value="{{ a.username }}">
+                <div class="row">
+                  <input type="text" name="duration" value="-1" title="-1 permanent, or 10m / 2h / 7d">
+                  <input type="text" name="reason" placeholder="reason">
+                  <button class="btn sm danger shrink" type="submit">Ban</button>
+                </div>
+              </form>
+
+              <div class="row">
+                <form class="inline" method="post" action="{{ url_for('accounts_action') }}">
+                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                  <input type="hidden" name="act" value="unban">
+                  <input type="hidden" name="username" value="{{ a.username }}">
+                  <button class="btn sm shrink" type="submit">Unban</button>
+                </form>
+                <form class="inline" method="post" action="{{ url_for('accounts_action') }}">
+                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                  <input type="hidden" name="act" value="locked">
+                  <input type="hidden" name="username" value="{{ a.username }}">
+                  <input type="hidden" name="locked" value="{{ 0 if a.locked else 1 }}">
+                  <button class="btn sm shrink" type="submit">{{ 'Remove IP lock' if a.locked else 'Lock to IP' }}</button>
+                </form>
+                <form class="inline" method="post" action="{{ url_for('accounts_action') }}"
+                      data-confirm="Permanently delete account {{ a.username }} and all of its characters?">
+                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                  <input type="hidden" name="act" value="delete">
+                  <input type="hidden" name="username" value="{{ a.username }}">
+                  <button class="btn sm danger shrink" type="submit">Delete</button>
+                </form>
+              </div>
+
+            </div>
+          </details>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
 
 {% block content %}
 
@@ -28,125 +133,20 @@
         </label>
         <button class="btn primary shrink" type="submit">Create</button>
       </div>
-      <div class="hint">
-        The 1.12 client uppercases account names. Avoid spaces in both fields: the server
-        console splits arguments on whitespace.
-        Passwords are capped at 16 characters and are <strong>case-insensitive</strong>:
-        SRP6 uppercases them before computing the verifier, so <code>Hunter2</code> and
-        <code>HUNTER2</code> are the same password. Length beats mixed case here.
-      </div>
     </form>
   </div>
 </div>
 
 <div class="panel">
-  <div class="panel-head"><div class="panel-title">All accounts</div></div>
-  {% if accounts %}
-  <div class="panel-body tight table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th class="num">ID</th><th>Username</th><th>Security</th><th>Status</th>
-          <th>Last IP</th><th>Last login</th><th>Created</th><th class="actions">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for a in accounts %}
-        <tr>
-          <td class="num">{{ a.id }}</td>
-          <td class="mono">{{ a.username }}</td>
-          <td>
-            {% set lvl = a.gmlevel if a.gmlevel is not none else 0 %}
-            <span class="badge {{ 'danger' if lvl >= 4 else ('violet' if lvl > 0 else 'off') }}">
-              {{ sec_levels.get(lvl, lvl) }}
-            </span>
-          </td>
-          <td>
-            {% if a.online %}<span class="badge on">online</span>{% endif %}
-            {% if a.locked %}<span class="badge warn">ip-locked</span>{% endif %}
-            {% if a.id in banned %}<span class="badge danger">banned</span>{% endif %}
-            {% if not a.online and not a.locked and a.id not in banned %}<span class="badge off">idle</span>{% endif %}
-          </td>
-          <td class="mono">{{ a.last_ip or '-' }}</td>
-          <td class="mono">{{ a.last_login or 'never' }}</td>
-          <td class="mono">{{ a.joindate or '-' }}</td>
-          <td class="actions">
-            <details>
-              <summary class="btn sm" style="display:inline-flex;">Manage</summary>
-              <div style="padding:12px 0; text-align:left;">
+  <div class="panel-head"><div class="panel-title">Player accounts ({{ people|length }})</div></div>
+  {% if people %}{{ account_table(people) }}
+  {% else %}<div class="empty">No player accounts matched.</div>{% endif %}
+</div>
 
-                <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
-                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                  <input type="hidden" name="act" value="password">
-                  <input type="hidden" name="username" value="{{ a.username }}">
-                  <div class="row">
-                    <input type="text" name="password" maxlength="16" placeholder="new password, 6-16">
-                    <button class="btn sm shrink" type="submit">Set password</button>
-                  </div>
-                </form>
-
-                <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
-                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                  <input type="hidden" name="act" value="gmlevel">
-                  <input type="hidden" name="username" value="{{ a.username }}">
-                  <div class="row">
-                    <select name="gmlevel">
-                      {% for n, label in sec_levels.items() %}
-                        {% if n < 7 %}
-                        <option value="{{ n }}" {{ 'selected' if (a.gmlevel or 0) == n }}>{{ n }} - {{ label }}</option>
-                        {% endif %}
-                      {% endfor %}
-                    </select>
-                    <input type="text" name="realm" value="-1" title="realm id, -1 for all">
-                    <button class="btn sm shrink" type="submit">Set level</button>
-                  </div>
-                </form>
-
-                <form method="post" action="{{ url_for('accounts_action') }}" style="margin-bottom:8px;">
-                  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                  <input type="hidden" name="act" value="ban">
-                  <input type="hidden" name="username" value="{{ a.username }}">
-                  <div class="row">
-                    <input type="text" name="duration" value="-1" title="-1 permanent, or 10m / 2h / 7d">
-                    <input type="text" name="reason" placeholder="reason">
-                    <button class="btn sm danger shrink" type="submit">Ban</button>
-                  </div>
-                </form>
-
-                <div class="row">
-                  <form class="inline" method="post" action="{{ url_for('accounts_action') }}">
-                    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                    <input type="hidden" name="act" value="unban">
-                    <input type="hidden" name="username" value="{{ a.username }}">
-                    <button class="btn sm shrink" type="submit">Unban</button>
-                  </form>
-                  <form class="inline" method="post" action="{{ url_for('accounts_action') }}">
-                    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                    <input type="hidden" name="act" value="locked">
-                    <input type="hidden" name="username" value="{{ a.username }}">
-                    <input type="hidden" name="locked" value="{{ 0 if a.locked else 1 }}">
-                    <button class="btn sm shrink" type="submit">{{ 'Remove IP lock' if a.locked else 'Lock to IP' }}</button>
-                  </form>
-                  <form class="inline" method="post" action="{{ url_for('accounts_action') }}"
-                        data-confirm="Permanently delete account {{ a.username }} and all of its characters?">
-                    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-                    <input type="hidden" name="act" value="delete">
-                    <input type="hidden" name="username" value="{{ a.username }}">
-                    <button class="btn sm danger shrink" type="submit">Delete</button>
-                  </form>
-                </div>
-
-              </div>
-            </details>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-    <div class="empty">No accounts matched.</div>
-  {% endif %}
+<div class="panel">
+  <div class="panel-head"><div class="panel-title">Harness and bot accounts ({{ harness|length }})</div></div>
+  {% if harness %}{{ account_table(harness) }}
+  {% else %}<div class="empty">No harness accounts matched.</div>{% endif %}
 </div>
 
 {% endblock %}

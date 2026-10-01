@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Console - vmangos admin{% endblock %}
 {% block heading %}Console{% endblock %}
-{% block subheading %}Run any GM command over the SOAP channel, at console privilege{% endblock %}
+{% block subheading %}GM commands over SOAP, at console privilege{% endblock %}
 
 {% block content %}
 
@@ -11,15 +11,9 @@
     <form method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <div class="row">
-        <input type="text" name="command" value="{{ command }}" autofocus
+        <input type="text" id="cmd" name="command" value="{{ command }}" autofocus
                placeholder="server info" spellcheck="false" autocomplete="off">
         <button class="btn primary shrink" type="submit">Run</button>
-      </div>
-      <div class="hint">
-        A leading <code>.</code> is optional. Commands run at console level, so
-        console-only ones such as <code>account create</code> work here. Anything the
-        panel does not have a page for is available through this box &mdash; use
-        <code>commands</code> to list everything the core supports.
       </div>
     </form>
   </div>
@@ -32,25 +26,55 @@
 </div>
 {% endif %}
 
-<div class="panel">
-  <div class="panel-head"><div class="panel-title">Handy commands</div></div>
-  <div class="panel-body tight table-wrap">
-    <table>
-      <thead><tr><th>Command</th><th>What it does</th></tr></thead>
-      <tbody>
-        <tr><td class="mono">server info</td><td>Core revision, players online, uptime</td></tr>
-        <tr><td class="mono">account onlinelist</td><td>Accounts currently connected</td></tr>
-        <tr><td class="mono">account characters NAME</td><td>List an account's characters</td></tr>
-        <tr><td class="mono">banlist account</td><td>Current account bans</td></tr>
-        <tr><td class="mono">baninfo account NAME</td><td>Why and how long an account is banned</td></tr>
-        <tr><td class="mono">server plimit 15</td><td>Change the player cap live</td></tr>
-        <tr><td class="mono">saveall</td><td>Flush every online character to the database</td></tr>
-        <tr><td class="mono">server motd</td><td>Show the current message of the day</td></tr>
-        <tr><td class="mono">lookup player name NAME</td><td>Find an account from a player name</td></tr>
-        <tr><td class="mono">commands</td><td>Every command this core supports</td></tr>
-      </tbody>
-    </table>
+<div class="panel" id="reference">
+  <div class="panel-head">
+    <div class="panel-title">Command reference</div>
+    <div class="row shrink">
+      <span class="badge off" id="ref-count">{{ total }} commands</span>
+      <label class="check"><input type="checkbox" id="ref-console"> Console-capable only</label>
+      <input type="text" id="ref-filter" class="ref-filter" placeholder="Filter commands"
+             spellcheck="false" autocomplete="off">
+    </div>
+  </div>
+  <div class="panel-body tight">
+    {% for g in reference %}
+    <details class="cfg-group ref-group" data-group="{{ g.name }}">
+      <summary>
+        <span class="ref-name">{{ g.name }}<em>{{ g.desc }}</em></span>
+        <span class="count">{{ g.commands|length }}</span>
+      </summary>
+      <div class="table-wrap">
+        <table class="ref-table">
+          <thead>
+            <tr><th>Command</th><th>Arguments</th><th>Access</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+          {% for c in g.commands %}
+            <tr class="ref-row" data-cmd="{{ c.name }}" data-console="{{ 1 if c.console else 0 }}"
+                data-hay="{{ c.name }} {{ c.get('desc', '') }}">
+              <td class="mono"><button type="button" class="linkish">{{ c.name }}</button></td>
+              <td class="mono args">{{ c.get('args', '') }}</td>
+              <td>
+                <span class="badge {{ 'danger' if c.security >= 6 else ('violet' if c.security > 0 else 'off') }}"
+                      {% if c.overridden %}title="overridden by the world command table"{% endif %}>
+                  {{ sec_levels.get(c.security, c.security) }}{% if c.overridden %} *{% endif %}
+                </span>
+                {% if not c.console %}<span class="badge warn">in-game</span>{% endif %}
+              </td>
+              <td class="desc">{{ c.get('desc', '') }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endfor %}
+    <div class="empty" id="ref-empty" hidden>Nothing matched that filter.</div>
   </div>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='console.js') }}"></script>
 {% endblock %}

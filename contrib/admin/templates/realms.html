@@ -5,28 +5,6 @@
 
 {% block content %}
 
-<div class="panel">
-  <div class="panel-head"><div class="panel-title">How these fields are used</div></div>
-  <div class="panel-body">
-    <div class="hint" style="margin-top:0;">
-      After a client authenticates, realmd decides which address to hand back by checking
-      whether the client's IP falls inside <code>localAddress</code> masked by
-      <code>localSubnetMask</code>. Clients inside that subnet get
-      <code>localAddress</code>; everyone else gets <code>address</code>. So
-      <code>address</code> is the internet-facing one and <code>localAddress</code> is for
-      your LAN.<br><br>
-      <code>address</code> may be a hostname: realmd resolves it server-side and re-reads
-      the whole realm list every 20 seconds, so a dynamic-DNS change is picked up on its
-      own with no restart. The catch is that a hostname which does <em>not</em> resolve
-      causes realmd to drop the realm from the list entirely, so confirm DNS is live
-      before saving one.<br><br>
-      <code>port</code> is shared by both LAN and internet clients and must match the port
-      the world server actually listens on, which is why the world port cannot be remapped
-      by NAT alone.
-    </div>
-  </div>
-</div>
-
 {% for r in realms %}
 <div class="panel">
   <div class="panel-head">
@@ -48,11 +26,11 @@
           <input type="text" name="port" value="{{ r.port }}" required></label>
       </div>
       <div class="row">
-        <label class="field"><span>Address &mdash; internet clients</span>
+        <label class="field"><span>Internet address</span>
           <input type="text" name="address" value="{{ r.address }}" placeholder="wow.moonlight.cx" required></label>
-        <label class="field"><span>Local address &mdash; LAN clients</span>
+        <label class="field"><span>LAN address</span>
           <input type="text" name="localAddress" value="{{ r.localAddress }}" placeholder="10.0.1.7"></label>
-        <label class="field"><span>Local subnet mask</span>
+        <label class="field"><span>LAN subnet mask</span>
           <input type="text" name="localSubnetMask" value="{{ r.localSubnetMask }}" placeholder="255.255.255.0"></label>
       </div>
       <div class="row">
