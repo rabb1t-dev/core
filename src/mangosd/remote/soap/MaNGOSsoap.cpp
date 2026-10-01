@@ -8,9 +8,16 @@
 #include "IO/Networking/IpAddress.h"
 #include "IO/Multithreading/CreateThread.h"
 
+#include <chrono>
+#include <thread>
+
 // How long to wait between checks on a command that has been handed to the world thread. This only
 // costs anything during a shutdown: a command that finishes normally wakes the wait immediately.
 static constexpr int SOAP_COMMAND_POLL_INTERVAL_MS = 500;
+
+// How many times to try claiming the listening port, one second apart. Only reached when a
+// predecessor process still holds it, since TIME_WAIT is handled by SO_REUSEADDR below.
+static constexpr int SOAP_BIND_ATTEMPTS = 10;
 
 static char const* const SOAP_SHUTTING_DOWN_MESSAGE = "Server is shutting down, the command was not executed.";
 
@@ -100,9 +107,38 @@ std::unique_ptr<std::thread> StartSoapThread(std::string const& bindHost, uint16
 
     int const acceptBacklogCount = 50;
 
-    if (!soap_valid_socket(soap_bind(soap, bindHost.c_str(), bindPort, acceptBacklogCount)))
+    // SO_REUSEADDR, because losing this port across a restart was the default outcome rather than
+    // an unlucky one. gSOAP initialises bind_flags to 0 and only calls setsockopt when it is set,
+    // so without this the bind fails while any socket with local port bindPort sits in TIME_WAIT.
+    // `.server restart` arrives over SOAP, which guarantees such a socket exists at the moment the
+    // replacement process starts, so the usual way to restart the server was also a reliable way
+    // to come back up without it.
+    soap->bind_flags = SO_REUSEADDR;
+
+    // A predecessor that is still alive and holding the listening socket is not covered by
+    // SO_REUSEADDR, so wait for it briefly instead of giving up for the lifetime of the process.
+    // The old behaviour was a single attempt, and the failure is close to invisible: the server
+    // carries on and reports healthy and active with no remote administration at all, and the port
+    // then reads as free, which makes it look like nothing was ever wrong.
+    int boundSocket = SOAP_INVALID_SOCKET;
+    for (int attempt = 1; attempt <= SOAP_BIND_ATTEMPTS; ++attempt)
     {
-        sLog.Out(LOG_RA, LOG_LVL_ERROR, "MaNGOSsoap: Couldn't bind to %s:%d", bindHost.c_str(), bindPort);
+        boundSocket = soap_bind(soap, bindHost.c_str(), bindPort, acceptBacklogCount);
+        if (soap_valid_socket(boundSocket))
+            break;
+
+        if (attempt < SOAP_BIND_ATTEMPTS)
+        {
+            sLog.Out(LOG_RA, LOG_LVL_MINIMAL, "MaNGOSsoap: %s:%d still in use, retrying (attempt %d of %d)",
+                     bindHost.c_str(), bindPort, attempt, SOAP_BIND_ATTEMPTS);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+
+    if (!soap_valid_socket(boundSocket))
+    {
+        sLog.Out(LOG_RA, LOG_LVL_ERROR, "MaNGOSsoap: Couldn't bind to %s:%d after %d attempts, remote administration is unavailable",
+                 bindHost.c_str(), bindPort, SOAP_BIND_ATTEMPTS);
         soap_done(soap);
         soap_destroy(soap);
         return nullptr;
