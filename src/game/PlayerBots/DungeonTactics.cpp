@@ -217,6 +217,73 @@ constexpr float MARA_TEN_YARD_AOE_STANDOFF = 12.0f;
 // down as a floor is what stops the fallback.
 constexpr float MARA_THERADRAS_STANDOFF = 25.0f;
 
+// Sunken Temple.
+//
+// Read off the world database rather than the scripts, because there are no boss scripts to read:
+// src/scripts/**/sunken_temple holds the instance script and Malfurion and nothing else. Every boss
+// and every trash mob here is EventAI or a bare spell list, so the creatures below were enumerated
+// from the creature table for map 109 and each one accounted for -- the Magmadar trap, where a search
+// of the scripts finds nothing and the instance reads as harmless, applies to the whole dungeon.
+//
+// Three things in it that the shared AI cannot see on its own:
+//
+//   Totems and wards. Four of the six spell lists that summon anything summon something stationary
+//   that out-produces the group: Zolo's Atal'ai Totem raises a skeleton every five seconds, Mijan's
+//   Healing Ward V is the same Greater Healing Ward Antu'sul drops, and Jammal'an carries Earthgrab
+//   Totem on an eight to fifteen second repeat. None of them ever appears in an attacker list.
+//
+//   Healers in nearly every pack. Atal'ai Witch Doctor (twenty eight spawns), Atal'ai Priest and
+//   Atal'ai High Priest all heal other mobs -- castTarget 17, friendly missing health -- and the
+//   High Priest does it every five to eight seconds.
+//
+//   The Avatar of Hakkar event, which is lost rather than wiped. Nightmare Suppressors walk in from
+//   the doors and channel Suppression on the Shade of Hakkar; three hits fail the event outright.
+//
+// And two zone pulls that are not tactics for the bots but are the reason a run here can go wrong
+// before any of the above matters. Jammal'an's aggro sets TYPE_JAMMALAN in progress, and the instance
+// script then puts every DB-spawned Mummified Atal'ai, Atal'ai Deathwalker and Atal'ai High Priest
+// within a hundred and fifty yards of him into combat with the zone. Shade of Eranikus does the same
+// for every Nightmare Scalebane, Wyrmkin, Whelp and Wanderer within *three hundred*. Both rooms have
+// to be cleared before their boss is pulled; nothing in this table can make that safe.
+enum SunkenTempleCreatures
+{
+    NPC_ATALAI_DEATHWALKER       = 5271,
+    NPC_ATALAI_HIGH_PRIEST       = 5273,
+    NPC_ATALAI_WITCH_DOCTOR      = 5259,
+    NPC_ATALAI_PRIEST            = 5269,
+    NPC_HAKKARI_FROSTWING        = 5291,
+    NPC_MORPHAZ                  = 5719,
+    NPC_HAZZAS                   = 5722,
+    NPC_WEAVER                   = 5720,
+    NPC_DREAMSCYTHE              = 5721,
+    NPC_JAMMALAN_THE_PROPHET     = 5710,
+    NPC_HUKKU                    = 5715,
+    NPC_MIJAN                    = 5717,
+    NPC_ATALALARION              = 8580,
+    NPC_DEEP_LURKER              = 8384,
+    NPC_ATALAI_SKELETON          = 8324,
+    NPC_ATALAI_TOTEM             = 8510,
+    NPC_HAKKARI_BLOODKEEPER      = 8438,
+    NPC_NIGHTMARE_SUPPRESSOR     = 8497,
+    NPC_HUKKUS_VOIDWALKER        = 8656,
+    NPC_HUKKUS_SUCCUBUS          = 8657,
+    NPC_HUKKUS_IMP               = 8658,
+};
+
+// Outside the ten yard band, for the same reason and with the same arithmetic as Maraudon's: radius
+// index 13 is a flat ten yards, and the large models need the spare yard. In this instance it is the
+// green dragonkin's Acid Breath and Wing Flap cones, the Deep Lurkers' Trample and the Frostwings'
+// Frost Nova.
+constexpr float ST_TEN_YARD_AOE_STANDOFF = MARA_TEN_YARD_AOE_STANDOFF;
+
+// Outside Ground Tremor, which is twenty.
+//
+// Atal'alarion's 6524 is a stun centred on himself -- implicit target 22, radius index 9 -- on a
+// twenty to thirty two second repeat, cast with CF_INTERRUPT_PREVIOUS so nothing he is doing delays
+// it. Twenty five for the reason MARA_THERADRAS_STANDOFF spells out: the caster ladder falls back to
+// twenty, fifteen and ten, and all three are inside the stun.
+constexpr float ST_ATALALARION_STANDOFF = 25.0f;
+
 // Molten Core.
 //
 // The first raid entry in this table, and the two things in it worth writing down are both things
@@ -965,6 +1032,243 @@ DungeonTactics const g_dungeonTactics[] =
         // Noxious Cloud, from Noxious Slime's death and from Creeping Sludge on a timer. See the
         // field's own comment in DungeonTactics.h for why this is the instance that needed it.
         /* groundHazardSpellIds */ { SPELL_NOXIOUS_CLOUD },
+    },
+
+    {
+        MAP_SUNKEN_TEMPLE,
+        "Sunken Temple",
+
+        // Three sources, each confirmed by mechanic in spell_template rather than by name, and
+        // between them most of the instance.
+        //
+        // Atal'ai Deathwalker casts Fear (12096, mechanic 5) every fourteen to twenty seconds and
+        // there are eighteen of them, mostly on the way to and around Jammal'an -- whose zone pull
+        // brings every one still standing. Nightmare Wyrmkin casts Sleep (12098, mechanic 10) every
+        // twenty three to twenty seven seconds on the dragonkin floor. Hukku's Succubus casts
+        // Seduction (6358, mechanic 1) and Hukku summons a fresh one every fifteen to eighteen.
+        //
+        // Not on the list, so nobody counts on the totem for them: Hex of Jammal'an ends in 12483,
+        // a charm with no mechanic and no dispel type, and the Avatar's Cause Insanity (12888) is a
+        // charm with no mechanic either. Tremor removes neither. Cause Insanity is a magic dispel,
+        // which the existing dispel path already handles for a charmed party member.
+        /* wantsTremorTotem */ true,
+
+        // The Shade of Hakkar is what the Avatar event protects, but it is faction 35 and nothing
+        // attacks it -- the Suppressors channel at it rather than fight it -- so the escort defence,
+        // which keys off a creature's victim and attacker list, would never fire. The answer to the
+        // event is the kill order below, not this field.
+        /* escortNpcEntries */ {},
+        /* escortGuardRadius */ 0.0f,
+
+        // Written in kill order.
+        /* focusFirst */
+        {
+            // The one mob in the instance whose survival loses something other than health.
+            //
+            // The Shade of Hakkar summons one every sixty to a hundred and ten seconds at one of the
+            // two doors; it walks to its point and casts Suppression (12623) on the Shade, and three
+            // of those fail the event. It is a level fifty elite with health multiplier four, so it
+            // is not quick, and it arrives while the room is already full of Hakkari Minions --
+            // which is exactly when the group's own target selection would pick on health and guid.
+            NPC_NIGHTMARE_SUPPRESSOR,
+
+            // Stationary summons, ahead of everything that walks. The same shape and the same reason
+            // as Zul'Farrak's Ward of Zum'rah and Greater Healing Ward: each one out-produces the
+            // group for as long as it stands, each one has a health multiplier of 0.01, and none of
+            // them ever appears in an attacker list, so without an entry nothing turns for them.
+            //
+            // Mijan's Healing Ward V summons the same 8179 Greater Healing Ward Antu'sul uses, three
+            // second pulse, on a fifteen to twenty second repeat.
+            NPC_GREATER_HEALING_WARD,
+            // Zolo's Atal'ai Totem fires 12504 every five seconds, which raises an Atal'ai Skeleton.
+            // He recasts it every ten to twelve, so the totem is the source and the skeletons are
+            // the symptom.
+            NPC_ATALAI_TOTEM,
+            // Jammal'an's, every eight to fifteen seconds. Earthgrab roots everything within ten
+            // yards -- see the Zul'Farrak entry for why a rooted melee bot is worse than a slow one.
+            NPC_EARTHGRAB_TOTEM,
+
+            // The healers, in order of how often they heal.
+            //
+            // High Priest first and not close: Heal (12039, three second cast) on a five to eight
+            // second repeat at whichever friend is most hurt, Renew on top, a skeleton every minute,
+            // and Shadow Shield at thirty percent. There are two, and Jammal'an's zone pull brings
+            // both of them if they are still standing.
+            NPC_ATALAI_HIGH_PRIEST,
+            // Heal every ten to twenty seconds and Shadow Shield on the minute.
+            NPC_ATALAI_PRIEST,
+            // Healing Wave every twenty five to thirty five seconds and Hex, and twenty eight of
+            // them -- they are in more packs than any other caster here, which is why they are on
+            // the list despite healing least often.
+            NPC_ATALAI_WITCH_DOCTOR,
+
+            // Jammal'an ahead of Ogom the Wretched, whom he is fought beside. Jammal'an heals
+            // friends with a thousand health missing every three to ten seconds and himself below
+            // eighty percent, and he is the source of the hex, the totem and the Flamestrike. Ogom
+            // has none of that -- Shadow Bolt, Shadow Word: Pain, Curse of Weakness -- and a group
+            // that starts on Ogom watches Jammal'an heal him. Ogom is left off the list so that he
+            // is simply what remains.
+            NPC_JAMMALAN_THE_PROPHET,
+
+            // The Avatar event's other summon, behind the Suppressor and nothing else in it. The
+            // Bloodkeeper carries the Hakkari Blood that puts out the Eternal Flames, so the event
+            // cannot progress until one dies, but unlike the Suppressor it is not on a clock.
+            NPC_HAKKARI_BLOODKEEPER,
+
+            // The skeletons themselves, from Zolo's totem and from the High Priests. Level forty six
+            // non-elites against a group in the fifties, so a couple of swings each, and they land
+            // on whoever is nearest. Behind everything that makes them.
+            NPC_ATALAI_SKELETON,
+
+            // Deliberately absent: Hukku's three pets. They are summons under a burn gate below,
+            // which is the opposite instruction.
+        },
+
+        /* creatures */
+        {
+            {
+                NPC_ATALALARION,
+                // Twenty five, outside Ground Tremor. See ST_ATALALARION_STANDOFF.
+                //
+                // Sweeping Slam, his other cast, is a five yard frontal cone with a knockback, which
+                // only ever reaches the tank. No anchor for it: his room is unmeasured, and the
+                // Landslide note in the Maraudon entry is why a guessed one is worse than none.
+                /* rangedStandoff */ ST_ATALALARION_STANDOFF,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                /* healsBelowPercent */ 0.0f,
+            },
+            {
+                NPC_JAMMALAN_THE_PROPHET,
+
+                // No standoff. Flamestrike is a three second cast at a random player and Hex of
+                // Jammal'an a single target, so there is no distance that answers either.
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+
+                // A hundred, meaning from the pull. His friendly heal is gated on Ogom's health
+                // rather than his own -- creature_ai_events 571005, any friend a thousand health
+                // down, every three to ten seconds -- so there is no point in his own bar below which
+                // the interrupt becomes worth holding. Healing Wave (12492) is a three second cast.
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_MIJAN,
+                // The healer of the six Protectors. Renew is a two second cast in this database and
+                // Healing Wave three, on ten to twenty second repeats between them, from the pull.
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_HUKKU,
+
+                // Shadow Bolt Volley is radius index 10, thirty yards, so as with Zum'rah there is
+                // no distance that is outside it and inside a caster's own range.
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+
+                // A hundred: never leave him for a pet. This is the Celebras shape rather than the
+                // Antu'sul one.
+                //
+                // Hukku's Guardians (12790) summons a Voidwalker, a Succubus and an Imp at once, eight
+                // to ten seconds after the pull and every fifteen to eighteen after that. Being an
+                // NPC caster, nothing unsummons the previous three -- EffectSummonGuardian only does
+                // that for players -- so the count only goes up, and a group that turns for each set
+                // is clearing three non-elites every fifteen seconds while he makes three more. The
+                // number of pets the group ends up fighting is set by how long Hukku lives, so the
+                // shortest fight is the one where he dies first.
+                //
+                // They do not vanish when he does -- a guardian whose owner is dead only despawns
+                // once it is out of combat -- so the pets are still the next fight. They are just a
+                // finite one.
+                /* burnBelowPercent */ 100.0f,
+                /* summonEntries */ { NPC_HUKKUS_VOIDWALKER, NPC_HUKKUS_SUCCUBUS, NPC_HUKKUS_IMP },
+                /* healsBelowPercent */ 0.0f,
+            },
+            {
+                NPC_ATALAI_HIGH_PRIEST,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                // Heal on a five to eight second repeat with no health gate: from the pull.
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_ATALAI_PRIEST,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_ATALAI_WITCH_DOCTOR,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                /* healsBelowPercent */ 100.0f,
+            },
+
+            // The four green dragonkin. Morphaz and Hazzas stand guard by Eranikus; Weaver and
+            // Dreamscythe are hidden until Jammal'an dies and then patrol in. All four share one
+            // book: Acid Breath (12884), a ten yard frontal cone with an armor-reducing DoT, and
+            // Wing Flap (12882), a ten yard cone with a knockback. Cones are the tank's problem only
+            // if the tank has turned the dragon away from everyone else, and the Gizlock note in
+            // the Maraudon entry is why that cannot be assumed of a bot.
+            { NPC_MORPHAZ,    ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f },
+            { NPC_HAZZAS,     ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f },
+            { NPC_WEAVER,     ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f },
+            { NPC_DREAMSCYTHE, ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f },
+
+            // Trash with a ten yard area effect on a repeat.
+            {
+                // Trample, every ten to twenty four seconds. Seventeen of them in the flooded
+                // central pit, which is where a group crossing between the upper ring and the lower
+                // floor spends its time.
+                NPC_DEEP_LURKER,
+                ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f,
+            },
+            {
+                // Frost Nova, a ten yard root every sixteen to twenty nine seconds. Its Frostbolt
+                // Volley is twenty yards and nothing short of leaving range avoids it; the nova is
+                // the part a standoff buys, and a rooted healer cannot walk out of anything else.
+                NPC_HAKKARI_FROSTWING,
+                ST_TEN_YARD_AOE_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f,
+            },
+        },
+
+        // No gauntlet. The Avatar event is fought around the altar with adds arriving from both
+        // doors, which is the Razorfen Downs shape -- a room fought across rather than a choke held.
+        /* holdLines */ {},
+
+        // Nothing to ignore. The non-elite Atal'ai Slaves and Slime Maggots are hostile and fight
+        // back, unlike Maraudon's neutral turtles.
+        //
+        // The Atal'ai Deathwalker's Spirit was considered and left off. It is an elite summoned by
+        // every Deathwalker's death that zone-aggroes and despawns after fifteen seconds, so damage
+        // on it is wasted -- but an ignored creature is also one the tank will not peel, and a level
+        // fifty elite loose on the healer for fifteen seconds is worse than the wasted damage.
+        /* ignoreEntries */ {},
+
+        // None. Jammal'an's Flamestrike is the only persistent area aura in the instance and its
+        // ground effect is twenty four fire damage every two seconds for eight -- under a hundred
+        // in all, against Noxious Cloud's three thousand. Walking out costs more than standing in it.
+        /* groundHazardSpellIds */ {},
     },
 
     {
