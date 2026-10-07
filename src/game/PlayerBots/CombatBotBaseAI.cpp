@@ -5461,6 +5461,10 @@ static constexpr float CB_DETOUR_ANGLES[] =
 // How far one leg of a detour goes before the decision is made again.
 static constexpr float CB_DETOUR_LEG_LENGTH = 12.0f;
 
+// How much longer than the straight leg the walked route to a detour point may be. Enough for a
+// leg that bends round a boulder or a pillar; not enough for one that goes up and round a ramp.
+static constexpr float CB_DETOUR_MAX_ROUTE_FACTOR = 1.75f;
+
 // How near a mesh route has to finish to the spot that was asked for before the spot counts as
 // reachable. Detour returns a partial route rather than failing, so a query at a point inside a
 // wall comes back looking successful with its end against the wall; without a tolerance test that
@@ -5672,7 +5676,7 @@ bool CombatBotBaseAI::PathWouldAggroUnengagedFrom(float startX, float startY, fl
 // Requires a real mesh route and requires it to arrive. PATHFIND_NORMAL on its own is not
 // enough, since Detour degrades to a partial route rather than failing, and a partial route to
 // a point inside a wall ends at the wall.
-bool CombatBotBaseAI::CanWalkTo(float x, float y, float z) const
+bool CombatBotBaseAI::CanWalkTo(float x, float y, float z, float maxRouteLength) const
 {
     PathInfo path(me);
     path.calculate(x, y, z);
@@ -5681,8 +5685,13 @@ bool CombatBotBaseAI::CanWalkTo(float x, float y, float z) const
         return false;
 
     Vector3 const reached = path.getActualEndPosition();
-    return Geometry::GetDistance3D(reached.x, reached.y, reached.z, x, y, z)
-        <= CB_DETOUR_ARRIVE_TOLERANCE;
+    if (Geometry::GetDistance3D(reached.x, reached.y, reached.z, x, y, z) > CB_DETOUR_ARRIVE_TOLERANCE)
+        return false;
+
+    if (maxRouteLength > 0.0f && !path.getPath().empty() && path.Length() > maxRouteLength)
+        return false;
+
+    return true;
 }
 
 // Somewhere the given creature cannot see, reachable from where the bot stands, within the distance
@@ -6107,7 +6116,15 @@ bool CombatBotBaseAI::FindSafeDetour(float destX, float destY, float destZ,
 
             // And it has to be somewhere the bot can actually walk to, which is a question for
             // the pathfinder and not for line of sight. See CanWalkTo.
-            if (!CanWalkTo(x, y, z))
+            //
+            // Walk to *in about a leg*, and that half is the one Pool of Tears taught. The candidate
+            // is placed by bearing and its height taken from whatever floor lies under that spot,
+            // so in terraced ground a twelve yard leg can land on a ledge above the bot whose only
+            // way up is the long way round. The route is real and arrives, so reachability alone
+            // approves it, and a shaman healer under an attack order there walked a spiral ramp
+            // away from the fight on a point move until the tank was seventy yards off. A leg
+            // whose walk is much longer than the leg is not a detour, it is a different journey.
+            if (!CanWalkTo(x, y, z, legLength * CB_DETOUR_MAX_ROUTE_FACTOR))
                 continue;
 
             outX = x;

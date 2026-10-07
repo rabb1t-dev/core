@@ -425,7 +425,10 @@ public:
     // False when nothing within the search found a clear route.
     // Whether the bot could actually walk to a spot. Asked of the pathfinder, because line of
     // sight was standing in for this and a point across a railing is visible and unreachable.
-    bool CanWalkTo(float x, float y, float z) const;
+    //
+    // A positive maxRouteLength also refuses a spot whose route is longer than that, for callers
+    // that chose the spot as a short step and would be wrong to accept it as a long walk.
+    bool CanWalkTo(float x, float y, float z, float maxRouteLength = 0.0f) const;
 
     bool FindSafeDetour(float destX, float destY, float destZ,
                         float& outX, float& outY, float& outZ) const;
