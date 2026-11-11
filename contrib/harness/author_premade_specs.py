@@ -34,7 +34,8 @@ ROLE_HEALER = 4
 # can be removed again by range if the migration ever needs undoing.
 FIRST_ENTRY = 101
 
-# Each spec is (name, class, role, {tree: {talent name: rank}}). The gaps these fill are the
+# Each spec is (name, class, role, {tree: {talent name: rank}}), with an optional fifth element
+# naming a shipped entry the build replaces rather than taking the next new one. The gaps these fill are the
 # level 60 builds a raid roster actually asks for and the shipped data does not have: there was
 # no fire mage, no arms warrior, no SM/Ruin warlock, no dagger rogue, no full-budget priest
 # healer and no cat druid, which between them are most of a raid's damage.
@@ -251,6 +252,76 @@ SPECS = [
             },
         },
     ),
+    (
+        # Frost for a five man that is mostly adds, not the raid build. The bots' own default
+        # for a ranged mage was always frost-pve, but nothing by that name existed, so every mage
+        # below sixty fell back to fire-pve -- the only ordered mage build -- and an Avatar of
+        # Hakkar wipe had two fire mages casting thirty seven Fireballs into a room of Hakkari
+        # Minions. So the points go to the area spells: Improved Blizzard for the slow, Frost
+        # Channeling for the mana, Improved Cone of Cold, Arctic Reach for the radius, and
+        # Improved Frost Nova to root the pile more often. Frost goes first, so a
+        # level fifty bot's forty one points are the whole Frost tree before any Arcane.
+        #
+        # Arcane is the usual route to Arcane Concentration and Improved Arcane Explosion, with
+        # Arcane Meditation on top because a mage in a long add fight runs out of mana first.
+        "frost-pve", "mage", ROLE_RANGE_DPS,
+        {
+            "Frost": {
+                "Improved Frostbolt": 5,
+                "Elemental Precision": 3,
+                "Ice Shards": 5,
+                "Frostbite": 1,
+                "Improved Frost Nova": 2,
+                "Piercing Ice": 3,
+                "Cold Snap": 1,
+                "Improved Blizzard": 3,
+                "Arctic Reach": 2,
+                "Frost Channeling": 3,
+                "Ice Block": 1,
+                "Improved Cone of Cold": 3,
+                "Ice Barrier": 1,
+            },
+            "Arcane": {
+                "Arcane Subtlety": 2,
+                "Arcane Focus": 5,
+                "Arcane Concentration": 5,
+                "Improved Arcane Explosion": 3,
+                "Arcane Meditation": 3,
+            },
+        },
+    ),
+    (
+        # Restoration 0/5/46, the standard healing build, and a replacement for the shipped
+        # resto-pve rather than a second spec beside it. The shipped one is an unordered level 60
+        # set, which drags any shaman it is applied to up to 60, so a roster healer at 56 could
+        # not use it. Keeping the name keeps the resto-pve weight row that judges its gear.
+        #
+        # Left out of the 52 points the tree holds: Improved Reincarnation, which does nothing in
+        # a fight; Nature's Guidance, spell hit a healer does not need; Totemic Mastery, totem
+        # range. Healing Grace is kept because a healer pulling threat is the usual five man
+        # wipe. Restoration goes first, so a level 56 shaman holds the whole tree.
+        "resto-pve", "shaman", ROLE_HEALER,
+        {
+            "Restoration": {
+                "Improved Healing Wave": 5,
+                "Tidal Focus": 5,
+                "Ancestral Healing": 3,
+                "Totemic Focus": 5,
+                "Healing Focus": 5,
+                "Healing Grace": 3,
+                "Restorative Totems": 5,
+                "Tidal Mastery": 5,
+                "Healing Way": 3,
+                "Nature's Swiftness": 1,
+                "Purification": 5,
+                "Mana Tide Totem": 1,
+            },
+            "Enhancement": {
+                "Ancestral Knowledge": 5,
+            },
+        },
+        12,
+    ),
 ]
 
 
@@ -282,9 +353,13 @@ def sql_escape(text):
 
 
 def main():
+    new_specs = [spec for spec in SPECS if len(spec) == 4]
+    replaced_entries = [spec[4] for spec in SPECS if len(spec) == 5]
+    next_entry = iter(range(FIRST_ENTRY, FIRST_ENTRY + len(new_specs)))
+
     every_spell = set()
-    for _, class_name, _, _ in SPECS:
-        for _, talent in talent_dbc.talents_for_class(class_name):
+    for spec in SPECS:
+        for _, talent in talent_dbc.talents_for_class(spec[1]):
             every_spell.update(talent.ranks)
     names_by_spell = talent_dbc.spell_names(every_spell)
     if not names_by_spell:
@@ -295,16 +370,21 @@ def main():
     # Replace rather than insert. These entries have shipped once already, so a migration that
     # only inserted would collide, and one that only updated would leave the old spell rows
     # behind and produce a build that is the union of two specs.
-    last_entry = FIRST_ENTRY + len(SPECS) - 1
+    last_entry = FIRST_ENTRY + len(new_specs) - 1
     lines = [
         "DELETE FROM `player_premade_spell` WHERE `entry` BETWEEN %u AND %u;"
         % (FIRST_ENTRY, last_entry),
         "DELETE FROM `player_premade_spell_template` WHERE `entry` BETWEEN %u AND %u;"
         % (FIRST_ENTRY, last_entry),
-        "",
     ]
-    for offset, (spec_name, class_name, role, trees) in enumerate(SPECS):
-        entry = FIRST_ENTRY + offset
+    for entry in replaced_entries:
+        lines.append("DELETE FROM `player_premade_spell` WHERE `entry` = %u;" % entry)
+        lines.append("DELETE FROM `player_premade_spell_template` WHERE `entry` = %u;" % entry)
+    lines.append("")
+
+    for spec in SPECS:
+        spec_name, class_name, role, trees = spec[:4]
+        entry = spec[4] if len(spec) == 5 else next(next_entry)
         spend = resolve(class_name, trees, names_by_spell)
 
         problems = talent_dbc.validate_build(class_name, spend, level=LEVEL)
