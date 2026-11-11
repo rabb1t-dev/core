@@ -196,8 +196,46 @@ local PartyBuilder = {}
 PartyBuilder.slots = {}
 PartyBuilder.rows = {}
 
+-- Guild mode summons named roster members instead of generating bots. Each slot remembers both
+-- choices, a member and its tick for guild mode and a class and its tick for the other, so switching
+-- back and forth loses neither. The ticks are separate because the roster can arrive while the
+-- window is in class mode, and filling the guild rows then must not untick the class rows.
+PartyBuilder.guildMode = false
+PartyBuilder.roster = {}
+PartyBuilder.rosterLoaded = false
+PartyBuilder.collecting = nil
+PartyBuilder.listenUntil = 0
+
 for n = 1, SLOTS do
-    PartyBuilder.slots[n] = { enabled = true, classId = nil, role = nil, spec = nil, level = nil }
+    PartyBuilder.slots[n] = { enabled = true, classId = nil, role = nil, spec = nil, level = nil,
+                              member = nil, memberOn = false }
+end
+
+-- The server names its roles the way `.raidguild add` takes them.
+local ROSTER_ROLES = {
+    tank = "tank",
+    healer = "healer",
+    meleedps = "melee",
+    rangedps = "ranged",
+}
+
+local function FindMember(name)
+    if not name then
+        return nil
+    end
+    for n = 1, table.getn(PartyBuilder.roster) do
+        if PartyBuilder.roster[n].name == name then
+            return PartyBuilder.roster[n]
+        end
+    end
+    return nil
+end
+
+-- Each value on a roster line follows a space, which is what keeps "class=" from matching inside
+-- some longer key.
+local function Field(line, key)
+    local _, _, value = string.find(line, " " .. key .. "=(%S+)")
+    return value
 end
 
 local function FindClass(id)
@@ -412,7 +450,95 @@ function PartyBuilder:SetStatus(text)
     end
 end
 
+-- Guild mode draws a row from the roster: the member's class colours it, and role and build are
+-- read-only because the roster decides them.
+--
+-- An unticked row is off entirely, as in class mode. Ticking an empty row only makes its name
+-- button live; the tick never opens the member list itself.
+--
+-- Until the roster has arrived there is nothing true to draw, so every row says so and refuses
+-- clicks, rather than showing blank rows that change a moment later.
+function PartyBuilder:RefreshGuildRow(row, slot)
+    if not self.rosterLoaded then
+        row.check:SetChecked(nil)
+        row.check:Disable()
+        row.icon:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+        row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        row.icon:GetNormalTexture():SetVertexColor(0.35, 0.35, 0.35)
+        row.border:SetBackdropBorderColor(0.28, 0.28, 0.28, 1)
+        row.classButton:SetText("Loading roster...")
+        row.classButton:Disable()
+        row.roleButton:SetText("-")
+        row.roleButton:Disable()
+        row.specButton:SetText("-")
+        row.specButton:Disable()
+        row.levelBox:EnableMouse(false)
+        row.levelBox:ClearFocus()
+        row.levelBox:SetText("")
+        return
+    end
+
+    local member = FindMember(slot.member)
+    local class = member and FindClass(member.classId) or nil
+    local on = slot.memberOn and class ~= nil
+
+    row.check:Enable()
+    row.check:SetChecked(slot.memberOn and 1 or nil)
+
+    if class then
+        row.icon:SetNormalTexture(CLASS_ICONS[class.id])
+    else
+        row.icon:SetNormalTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+    end
+    row.icon:GetNormalTexture():SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+    if on then
+        row.icon:GetNormalTexture():SetVertexColor(1, 1, 1)
+        row.border:SetBackdropBorderColor(ColourToRGB(class.colour))
+        row.classButton:SetText("|cff" .. class.colour .. member.name .. "|r")
+    else
+        row.icon:GetNormalTexture():SetVertexColor(0.35, 0.35, 0.35)
+        row.border:SetBackdropBorderColor(0.28, 0.28, 0.28, 1)
+        row.classButton:SetText(member and member.name or "Pick a member")
+    end
+
+    if slot.memberOn then
+        row.classButton:Enable()
+    else
+        row.classButton:Disable()
+    end
+
+    row.roleButton:Disable()
+    row.specButton:Disable()
+    row.levelBox:EnableMouse(false)
+    row.levelBox:ClearFocus()
+    row.levelBox:SetText("")
+
+    row.roleButton:SetText(member and (ROLE_LABELS[member.role] or "Auto") or "-")
+    row.specButton:SetText(member and (member.spec or "Default") or "-")
+end
+
 function PartyBuilder:Refresh()
+    if self.classHeader then
+        self.classHeader:SetText(self.guildMode and "Member" or "Class")
+    end
+    if self.guildCheck then
+        self.guildCheck:SetChecked(self.guildMode and 1 or nil)
+    end
+
+    if self.guildMode then
+        local wanted = 0
+        for n = 1, SLOTS do
+            local slot = self.slots[n]
+            self:RefreshGuildRow(self.rows[n], slot)
+            if slot.memberOn and FindMember(slot.member) then
+                wanted = wanted + 1
+            end
+        end
+        self.sizeText:SetText("Party of " .. (wanted + 1))
+        return
+    end
+
     for n = 1, SLOTS do
         local row = self.rows[n]
         local slot = self.slots[n]
@@ -423,6 +549,7 @@ function PartyBuilder:Refresh()
         -- 1 or nil rather than true or false: this client's SetChecked predates booleans being
         -- accepted everywhere, and a false here is the kind of argument it complains about.
         row.check:SetChecked(slot.enabled and 1 or nil)
+        row.check:Enable()
 
         if class then
             row.icon:SetNormalTexture(CLASS_ICONS[class.id])
@@ -489,7 +616,50 @@ function PartyBuilder:Refresh()
 
 end
 
+-- A member already in another row is left out, so the same character cannot be asked for twice.
+function PartyBuilder:PickMember(index)
+    local entries = {}
+
+    for n = 1, table.getn(self.roster) do
+        local member = self.roster[n]
+        local taken = false
+        for i = 1, SLOTS do
+            if i ~= index and self.slots[i].member == member.name then
+                taken = true
+            end
+        end
+
+        local class = FindClass(member.classId)
+        if not taken and class then
+            local text = "|cff" .. class.colour .. member.name .. "|r  " ..
+                         (ROLE_LABELS[member.role] or "Auto")
+            if member.online then
+                text = text .. " |cff888888(here)|r"
+            end
+            table.insert(entries, { text = text, value = member.name })
+        end
+    end
+
+    if table.getn(entries) == 0 then
+        entries = { { text = "|cff888888No one else on the roster|r", value = nil } }
+    end
+
+    ShowPicker(self.rows[index].classButton, entries, function(value)
+        if not value then
+            return
+        end
+        PartyBuilder.slots[index].member = value
+        PartyBuilder.slots[index].memberOn = true
+        PartyBuilder:Refresh()
+    end)
+end
+
 function PartyBuilder:PickClass(index)
+    if self.guildMode then
+        self:PickMember(index)
+        return
+    end
+
     local row = self.rows[index]
     local entries = {}
     local available = AvailableClasses()
@@ -572,7 +742,44 @@ function PartyBuilder:PickSpec(index)
     end)
 end
 
+-- The same shape as the class preset, a tank, a healer and one of each kind of damage, filled from
+-- whoever on the roster holds each role.
+function PartyBuilder:FillGuildPreset()
+    local taken = {}
+
+    for n = 1, SLOTS do
+        local slot = self.slots[n]
+        local wanted = PRESET[n]
+
+        slot.member = nil
+        slot.memberOn = false
+
+        if wanted then
+            for i = 1, table.getn(self.roster) do
+                local member = self.roster[i]
+                if member.role == wanted.role and not taken[member.name] then
+                    slot.member = member.name
+                    slot.memberOn = true
+                    taken[member.name] = true
+                    break
+                end
+            end
+        end
+    end
+end
+
+function PartyBuilder:UseGuildPreset()
+    self:FillGuildPreset()
+    self:Refresh()
+    self:SetStatus("Standard guild party: a tank, a healer, and one of each kind of damage.")
+end
+
 function PartyBuilder:UsePreset()
+    if self.guildMode then
+        self:UseGuildPreset()
+        return
+    end
+
     local team = MyTeam()
     local _, myClassKey = UnitClass("player")
     if myClassKey then
@@ -614,14 +821,158 @@ end
 -- click away from being a party of five again with the same roster.
 function PartyBuilder:Clear()
     for n = 1, SLOTS do
-        self.slots[n].enabled = false
+        if self.guildMode then
+            self.slots[n].memberOn = false
+        else
+            self.slots[n].enabled = false
+        end
     end
 
     self:Refresh()
     self:SetStatus("All companions off. You will go alone.")
 end
 
+-- Summoned onto this character by name: the command reads its first argument as the leader, so
+-- leaving it off would read the member's name as the leader's.
+function PartyBuilder:CreateGuildParty()
+    local me = UnitName("player")
+    local sent = 0
+
+    for n = 1, SLOTS do
+        local slot = self.slots[n]
+        if slot.memberOn and FindMember(slot.member) then
+            SendChatMessage(".raidguild summon " .. me .. " " .. slot.member, "SAY")
+            sent = sent + 1
+        end
+    end
+
+    if sent == 0 then
+        self:SetStatus("Nothing to summon - no guild members are ticked.")
+    else
+        self:SetStatus("Summoned " .. sent .. " guild member" .. ((sent == 1) and "" or "s") ..
+                       ". They arrive at your level with their own gear.")
+    end
+end
+
+-- Reads the roster from `.raidguild list`. The reply lines are swallowed from the chat frame
+-- while this waits for them, since they are for the addon rather than for reading.
+function PartyBuilder:RequestRoster()
+    self.collecting = {}
+    self.listenUntil = GetTime() + 5
+    SendChatMessage(".raidguild list", "SAY")
+end
+
+function PartyBuilder:IsRosterLine(text)
+    if GetTime() > self.listenUntil or not text then
+        return false
+    end
+    return string.find(text, "^member name=") ~= nil or string.find(text, "^roster members=") ~= nil
+end
+
+function PartyBuilder:OnSystemMessage(text)
+    if not self:IsRosterLine(text) or not self.collecting then
+        return
+    end
+
+    if string.find(text, "^member name=") then
+        local role = Field(text, "role")
+        local spec = Field(text, "spec")
+        table.insert(self.collecting, {
+            name = Field(text, "name"),
+            classId = tonumber(Field(text, "class") or ""),
+            role = ROSTER_ROLES[role or ""],
+            spec = (spec ~= "-") and spec or nil,
+            online = Field(text, "online") == "1",
+        })
+        return
+    end
+
+    -- The summary line ends the list. The swallow window is kept open a moment longer, because
+    -- the chat frames see this same line after the addon does.
+    self.roster = self.collecting
+    self.collecting = nil
+    self.listenUntil = GetTime() + 1
+
+    -- Anyone no longer on the roster drops out of the rows rather than being summoned by a stale name.
+    for n = 1, SLOTS do
+        if self.slots[n].member and not FindMember(self.slots[n].member) then
+            self.slots[n].member = nil
+            self.slots[n].memberOn = false
+        end
+    end
+
+    -- The first load opens the way class mode does: every row filled from the preset, one ticked.
+    local chosen = false
+    for n = 1, SLOTS do
+        if self.slots[n].member then
+            chosen = true
+        end
+    end
+    if not chosen then
+        self:FillGuildPreset()
+        for n = 2, SLOTS do
+            self.slots[n].memberOn = false
+        end
+    end
+
+    local firstLoad = not self.rosterLoaded
+    self.rosterLoaded = true
+
+    self:Refresh()
+    if self.guildMode then
+        if firstLoad and not chosen then
+            self:SetStatus("Guild roster loaded: " .. table.getn(self.roster) .. " members. " ..
+                           "Rows are filled tank, healer, melee, ranged; click a name to change it.")
+        else
+            self:SetStatus("Guild roster loaded: " .. table.getn(self.roster) .. " members.")
+        end
+    end
+end
+
+-- Fetched when the window opens, so the roster is normally in hand before guild mode is ticked.
+-- Skipped while a request is still being answered, which would only start the same list twice.
+function PartyBuilder:PrefetchRoster()
+    if not self.rosterLoaded and GetTime() > self.listenUntil then
+        self:RequestRoster()
+    end
+end
+
+function PartyBuilder:SetGuildMode(on)
+    self.guildMode = on
+    HidePicker()
+
+    -- A roster already in hand is drawn at once and refreshed behind it, so only the very first
+    -- load ever shows the loading rows.
+    if on then
+        if not self.rosterLoaded then
+            self:SetStatus("Loading the guild roster...")
+        end
+        if GetTime() > self.listenUntil then
+            self:RequestRoster()
+        end
+    else
+        self:SetStatus("Generated companions, built by class.")
+    end
+
+    if self.hint then
+        if on then
+            self.hint:SetText("Tick a row to bring that member, and click the name to choose a " ..
+                              "different one. Members arrive at your level with their own gear.")
+        else
+            self.hint:SetText("Untick a companion to leave them behind. Blank Lvl matches your own " ..
+                              "level; builds are listed for the bracket that level falls in.")
+        end
+    end
+
+    self:Refresh()
+end
+
 function PartyBuilder:Create()
+    if self.guildMode then
+        self:CreateGuildParty()
+        return
+    end
+
     local sent = 0
 
     for n = 1, SLOTS do
@@ -656,7 +1007,15 @@ function PartyBuilder:Create()
     end
 end
 
+-- Guild members go home through the roster's own dismiss, which takes them out of the group before
+-- they log out rather than leaving their seats held.
 function PartyBuilder:Disband()
+    if self.guildMode then
+        SendChatMessage(".raidguild dismiss", "SAY")
+        self:SetStatus("Sent every summoned guild member home. What they earned is saved.")
+        return
+    end
+
     SendChatMessage(".partybot removeall", "SAY")
     self:SetStatus("Asked the server to dismiss every party bot in the group.")
 end
@@ -678,6 +1037,13 @@ local function BuildRow(parent, index)
     check:SetPoint("TOPLEFT", row, "TOPLEFT", COL_CHECK, -6)
     check:SetScript("OnClick", function()
         local slot = PartyBuilder.slots[index]
+
+        if PartyBuilder.guildMode then
+            slot.memberOn = not slot.memberOn
+            PartyBuilder:Refresh()
+            return
+        end
+
         slot.enabled = not slot.enabled
 
         -- Ticking a row that has never been given a class opens the class picker rather than
@@ -855,7 +1221,7 @@ local function BuildWindow()
         return label
     end
 
-    Header("Class", COL_CLASS)
+    PartyBuilder.classHeader = Header("Class", COL_CLASS)
     Header("Role", COL_ROLE)
     Header("Talent build", COL_SPEC)
 
@@ -874,6 +1240,21 @@ local function BuildWindow()
     hint:SetJustifyH("LEFT")
     hint:SetText("Untick a companion to leave them behind. Blank Lvl matches your own level; " ..
                  "builds are listed for the bracket that level falls in.")
+    PartyBuilder.hint = hint
+
+    local guildCheck = CreateFrame("CheckButton", "PartyBuilderGuildCheck", frame,
+                                   "UICheckButtonTemplate")
+    guildCheck:SetWidth(22)
+    guildCheck:SetHeight(22)
+    guildCheck:SetPoint("TOPLEFT", frame, "TOPLEFT", 16, -10)
+    guildCheck:SetScript("OnClick", function()
+        PartyBuilder:SetGuildMode(not PartyBuilder.guildMode)
+    end)
+
+    local guildLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    guildLabel:SetPoint("LEFT", guildCheck, "RIGHT", 2, 1)
+    guildLabel:SetText("Guild members")
+    PartyBuilder.guildCheck = guildCheck
 
     local create = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
     create:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 22, 16)
@@ -937,12 +1318,29 @@ end
 PartyBuilder:Refresh()
 PartyBuilder:SetStatus("Tick a companion to bring them along, then Create Party.")
 
+local events = CreateFrame("Frame")
+events:RegisterEvent("CHAT_MSG_SYSTEM")
+events:SetScript("OnEvent", function()
+    PartyBuilder:OnSystemMessage(arg1)
+end)
+
+-- The roster reply is for the addon, so it is kept out of the chat frames while one is expected.
+-- Anything else, including a `.raidguild list` typed by hand outside that window, still shows.
+local originalChatFrameOnEvent = ChatFrame_OnEvent
+ChatFrame_OnEvent = function(event)
+    if event == "CHAT_MSG_SYSTEM" and PartyBuilder:IsRosterLine(arg1) then
+        return
+    end
+    originalChatFrameOnEvent(event)
+end
+
 SLASH_PARTYBUILDER1 = "/partybuilder"
 SLASH_PARTYBUILDER2 = "/pb"
 SlashCmdList["PARTYBUILDER"] = function()
     if PartyBuilder.frame:IsVisible() then
         PartyBuilder.frame:Hide()
     else
+        PartyBuilder:PrefetchRoster()
         PartyBuilder:Refresh()
         PartyBuilder.frame:Show()
     end
