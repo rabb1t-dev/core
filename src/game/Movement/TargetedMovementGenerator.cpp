@@ -25,6 +25,7 @@
 #include "World.h"
 #include "MoveSplineInit.h"
 #include "PlayerBots/CombatBotBaseAI.h"
+#include "PlayerBots/DungeonTactics.h"
 #include "MoveSpline.h"
 #include "Anticheat.h"
 #include "Transport.h"
@@ -119,7 +120,9 @@ static Creature* FindPullOnPath(Unit const& owner, PathFinder const& path, Unit 
                 }
             }
 
-            if (ignored)
+            // Only stationary support. The list is a kill order, and the pack members on it
+            // are as much a pull as anything else on the route.
+            if (ignored && IsPassiveSupportCreature(pCreature))
                 continue;
         }
 

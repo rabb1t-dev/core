@@ -2201,11 +2201,14 @@ static Player* GetDesignatedPuller(Group* pGroup)
 
 // Which bot should do the pulling.
 //
-// Preference is about who can pull without walking into the pack: a hunter has Auto Shot and the
-// ammo for it, anyone holding a gun or a bow can do the same, and a tank is the fallback because it
-// is the one member that can afford to be hit on the way back if it comes to a body pull.
+// Preference is about who can pull without walking into the pack, and then about who the mob comes
+// back to. A tank with a gun or a bow is both at once, so it goes first: the mob arrives on the one
+// member meant to hold it, where a hunter's or a mage's pull hands the tank a mob to take back. A
+// hunter is next, then anyone else with something to shoot -- a wand counts -- and a tank with
+// nothing to shoot is the fallback, because it can afford to be hit on the way back from a body pull.
 static Player* SelectPuller(Group* pGroup, Player* pCommander)
 {
+    Player* pHunter = nullptr;
     Player* pRangedPuller = nullptr;
     Player* pTank = nullptr;
 
@@ -2221,12 +2224,15 @@ static Player* SelectPuller(Group* pGroup, Player* pCommander)
 
         if (pAI->GetRangedAttackSpellId())
         {
-            // A hunter is the best of these and is taken as soon as it is seen; anything else with
-            // something to shoot is kept in case no hunter turns up.
-            if (pMember->GetClass() == CLASS_HUNTER)
+            if (pAI->m_role == ROLE_TANK)
                 return pMember;
 
-            if (!pRangedPuller)
+            if (pMember->GetClass() == CLASS_HUNTER)
+            {
+                if (!pHunter)
+                    pHunter = pMember;
+            }
+            else if (!pRangedPuller)
                 pRangedPuller = pMember;
         }
         else if (pAI->m_role == ROLE_TANK && !pTank)
@@ -2234,6 +2240,9 @@ static Player* SelectPuller(Group* pGroup, Player* pCommander)
             pTank = pMember;
         }
     }
+
+    if (pHunter)
+        return pHunter;
 
     return pRangedPuller ? pRangedPuller : pTank;
 }

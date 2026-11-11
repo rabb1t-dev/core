@@ -290,6 +290,7 @@ class ChatHandler
         bool HandleHarnessTalentsCommand(char* args);
         bool HandleHarnessThreatCommand(char* args);
         bool HandleHarnessDespawnCommand(char* args);
+        bool HandleHarnessRespawnDelayCommand(char* args);
         bool HandleHarnessSelectCommand(char* args);
         bool HandleHarnessEnemyCommand(char* args);
         bool HandleHarnessDynObjCommand(char* args);
@@ -318,7 +319,9 @@ class ChatHandler
         bool HandleRaidGuildGuildCommand(char* args);
         bool HandleRaidGuildResetBindsCommand(char* args);
         bool HandleRaidGuildAttuneCommand(char* args);
+        bool HandleRaidGuildOutfitCommand(char* args);
         bool HandleRaidGuildReloadCommand(char* args);
+        bool HandleRaidGuildLootCommand(char* args);
         Player* RaidGuildResolveLeader(char** args);
 
         bool PartyBotAddRequirementCheck(Player const* pPlayer, Player const* pTarget);

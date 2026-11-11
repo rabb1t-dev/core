@@ -35,6 +35,8 @@
 #include "SpellAuras.h"
 #include "Chat.h"
 #include "Packets/Loot.h"
+#include "Packets/Petition.h"
+#include "RaidGuildMgr.h"
 #include "Geometry.h"
 #include "Maps/PathFinder.h"
 #include "Maps/GridNotifiers.h"
@@ -531,6 +533,16 @@ float const PB_INTERRUPT_WATCH_RADIUS = 30.0f;
 // targets is worth withholding. Generous on purpose: the cost of holding one Multi-Shot is a
 // fraction of one global cooldown, and the cost of waking the crowd control is the whole of it.
 float const PB_AOE_CC_SAFETY_RADIUS = 15.0f;
+
+// What makes a fight a swarm. The Lyceum in Blackrock Depths holds two hundred and forty
+// Anvilrage Reservist spawns on a thirty second respawn, at three tenths of normal health, and
+// against that the pack rules lost two five-man groups in five minutes: the mage cast fifty
+// Frostbolts, seventeen Polymorphs -- every one on a Reservist that dies to one Arcane Explosion --
+// and no Blizzard at all, because each sheep and each idle Reservist nearby held the area spells.
+float const PB_SWARM_RADIUS = 40.0f;
+uint32 const PB_SWARM_MAP_ID = 230;
+uint32 const PB_SPELL_WEAKENED_SOUL = 6788;
+uint32 const PB_SWARM_MIN_FODDER = 4;
 
 // The band Charge works in. Read as plain numbers rather than out of the spell, because the
 // minimum is not stored on it: a spell's range index carries the maximum, and Charge's eight yard
@@ -1184,6 +1196,16 @@ void PartyBotAI::UpdatePetCombat()
 
     Pet* pPet = me->GetPet();
 
+    // An instance with a creature for the voidwalker to hold wants that demon and no other; the
+    // ordinary summon picks one at random.
+    static uint32 const PB_SPELL_SUMMON_VOIDWALKER = 697;
+    static uint32 const PB_NPC_VOIDWALKER = 1860;
+    bool wantsVoidwalker = false;
+    if (me->GetClass() == CLASS_WARLOCK && m_tactics && me->HasSpell(PB_SPELL_SUMMON_VOIDWALKER))
+        for (DungeonCreatureTactic const& tactic : m_tactics->creatures)
+            if (tactic.petHoldFloorPercent > 0.0f)
+                wantsVoidwalker = true;
+
     // Missing or dead. Throttled rather than attempted every tick, because a summon refused for a
     // reason that will still hold next tick - a cast already in progress, a spell not ready - would
     // otherwise be retried four times a second for the length of the fight.
@@ -1201,13 +1223,32 @@ void PartyBotAI::UpdatePetCombat()
         if (canSummonNow && now - m_lastPetSummon >= PB_PET_SUMMON_INTERVAL)
         {
             m_lastPetSummon = now;
-            SummonPetIfNeeded();
+            if (wantsVoidwalker)
+                me->CastSpell(me, PB_SPELL_SUMMON_VOIDWALKER, true);
+            else
+                SummonPetIfNeeded();
         }
 
         return;
     }
 
+    if (wantsVoidwalker && pPet->GetEntry() != PB_NPC_VOIDWALKER && !me->IsInCombat())
+    {
+        time_t const now = time(nullptr);
+        if (now - m_lastPetSummon >= PB_PET_SUMMON_INTERVAL)
+        {
+            m_lastPetSummon = now;
+            me->CastSpell(me, PB_SPELL_SUMMON_VOIDWALKER, true);
+        }
+        return;
+    }
+
     if (!pPet->GetCharmInfo())
+        return;
+
+    // Ahead of the react state below, because the floor needs the pet passive and that assert
+    // would hand it back to defensive, where it swings at whatever is hitting it.
+    if (!m_holdPosition && UpdatePetTankHold(pPet))
         return;
 
     // A bot's pet never picks its own fights, asserted every tick rather than assumed.
@@ -1310,6 +1351,262 @@ void PartyBotAI::UpdatePetCombat()
     }
 
     CommandPetAttack(pPet, pVictim);
+}
+
+// A voidwalker parked on the creature the instance says to hold rather than kill.
+//
+// Above the floor the pet fights it like any target and adds Torment, so the pet is the one it
+// stays on. At the floor the pet stops swinging and stands where it is, passive so it does not hit
+// back, and keeps only Torment: the creature carries on beating the pet in place, which keeps it
+// off the healers and next to whatever the group is fighting. Suffering is kept off throughout,
+// since it taunts everything within eight yards and the creature is held beside the boss.
+bool PartyBotAI::UpdatePetTankHold(Pet* pPet)
+{
+    static uint32 const tormentRanks[] = { 11775, 11774, 7811, 7810, 7809, 3716 };
+    static uint32 const sufferingRanks[] = { 17752, 17751, 17750, 17735 };
+    static float const PB_PET_TANK_RADIUS = 40.0f;
+
+    CharmInfo* pCharmInfo = pPet->GetCharmInfo();
+
+    uint32 torment = 0;
+    for (uint32 id : tormentRanks)
+    {
+        if (pPet->HasSpell(id))
+        {
+            torment = id;
+            break;
+        }
+    }
+
+    Creature* pHeld = nullptr;
+    float floorPercent = 0.0f;
+    if (m_tactics && torment && me->IsInCombat())
+    {
+        for (DungeonCreatureTactic const& tactic : m_tactics->creatures)
+        {
+            if (tactic.petHoldFloorPercent <= 0.0f)
+                continue;
+
+            Creature* pCandidate = me->FindNearestCreature(tactic.creatureEntry, PB_PET_TANK_RADIUS);
+            if (pCandidate && pCandidate->IsInCombat() && IsValidHostileTarget(pCandidate))
+            {
+                pHeld = pCandidate;
+                floorPercent = tactic.petHoldFloorPercent;
+                break;
+            }
+        }
+    }
+
+    if (!pHeld)
+    {
+        // Released from the floor's stay, or the pet stands on that spot for the rest of the run.
+        if (m_petTankStay)
+        {
+            m_petTankStay = false;
+            pCharmInfo->SetIsAtStay(false);
+            pCharmInfo->SetCommandState(COMMAND_FOLLOW);
+            pCharmInfo->SetReactState(REACT_DEFENSIVE);
+        }
+        return false;
+    }
+
+    for (uint32 id : sufferingRanks)
+        if (pPet->HasSpell(id))
+            pCharmInfo->SetSpellAutocast(id, false);
+
+    bool const atFloor = pHeld->GetHealthPercent() <= floorPercent;
+    if (atFloor)
+    {
+        if (!m_petTankStay)
+        {
+            m_petTankStay = true;
+            pPet->AttackStop();
+            pPet->InterruptNonMeleeSpells(false);
+            pCharmInfo->SetIsCommandAttack(false);
+            pCharmInfo->SetIsFollowing(false);
+            pCharmInfo->SetIsCommandFollow(false);
+            pCharmInfo->SetIsReturning(false);
+            pCharmInfo->SetReactState(REACT_PASSIVE);
+            pCharmInfo->SetCommandState(COMMAND_STAY);
+            pCharmInfo->SaveStayPosition();
+            pCharmInfo->SetIsAtStay(true);
+            pPet->GetMotionMaster()->Clear(false);
+            pPet->GetMotionMaster()->MoveIdle();
+        }
+    }
+    else
+    {
+        if (m_petTankStay)
+        {
+            m_petTankStay = false;
+            pCharmInfo->SetIsAtStay(false);
+            pCharmInfo->SetCommandState(COMMAND_FOLLOW);
+        }
+
+        if (!pPet->HasReactState(REACT_DEFENSIVE))
+            pCharmInfo->SetReactState(REACT_DEFENSIVE);
+
+        if (pPet->GetVictim() != pHeld)
+            CommandPetAttack(pPet, pHeld);
+    }
+
+    if (SpellEntry const* pTorment = sSpellMgr.GetSpellEntry(torment))
+    {
+        if (pPet->IsSpellReady(pTorment) && !pPet->IsNonMeleeSpellCasted(false) &&
+            pPet->IsWithinDistInMap(pHeld, Spells::GetSpellMaxRange(
+                sSpellRangeStore.LookupEntry(pTorment->rangeIndex)) + pHeld->GetCombatReach()))
+            pPet->CastSpell(pHeld, pTorment, false);
+    }
+
+    if (IsCombatLogged())
+    {
+        time_t const now = time(nullptr);
+        if (now - m_lastPetTankLog >= PB_PET_LOG_INTERVAL)
+        {
+            m_lastPetTankLog = now;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] pettank bot='%s' pet='%s' holding '%s' hp=%.0f floor=%.0f "
+                     "atfloor=%u dist=%.1f itsvictim='%s'",
+                     me->GetName(), pPet->GetName(), pHeld->GetName(),
+                     pHeld->GetHealthPercent(), floorPercent, uint32(atFloor),
+                     pPet->GetDistance(pHeld),
+                     pHeld->GetVictim() ? pHeld->GetVictim()->GetName() : "none");
+        }
+    }
+
+    return true;
+}
+
+// The creature this bot is to hold as off-tank, or nullptr.
+//
+// One warrior per group, chosen without asking anybody: the lowest guid among the warriors who
+// are not the main tank. A second warrior on the same creature would split the threat it is
+// meant to be concentrating, and a choice every bot can make alone needs no coordination.
+Creature* PartyBotAI::GetOffTankHold(float& floorPercent) const
+{
+    static float const PB_OFFTANK_RADIUS = 50.0f;
+
+    if (!m_tactics || IsInDuel() || me->GetClass() != CLASS_WARRIOR || m_role == ROLE_TANK ||
+        !me->IsAlive() || !me->IsInCombat())
+        return nullptr;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return nullptr;
+
+    Player const* pMainTank = GetGroupMainTank();
+    if (pMainTank == me)
+        return nullptr;
+
+    for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* pMember = itr->getSource();
+        if (!pMember || pMember == me || pMember == pMainTank || !pMember->IsAlive() ||
+            pMember->GetClass() != CLASS_WARRIOR || pMember->GetMap() != me->GetMap())
+            continue;
+
+        if (pMember->GetGUIDLow() < me->GetGUIDLow())
+            return nullptr;
+    }
+
+    for (DungeonCreatureTactic const& tactic : m_tactics->creatures)
+    {
+        if (tactic.petHoldFloorPercent <= 0.0f)
+            continue;
+
+        Creature* pCandidate = me->FindNearestCreature(tactic.creatureEntry, PB_OFFTANK_RADIUS);
+        if (pCandidate && pCandidate->IsInCombat() && IsValidHostileTarget(pCandidate))
+        {
+            floorPercent = tactic.petHoldFloorPercent;
+            return pCandidate;
+        }
+    }
+
+    return nullptr;
+}
+
+// A warrior keeping the creature the group must neither kill nor leave loose.
+//
+// Sunder Armor is the whole of it: no damage and a large flat threat, castable in Berserker
+// Stance, which is also where Pummel lives for the heal. Above the floor the warrior swings as
+// well, which builds the lead early and pays for the rage; at the floor it stops swinging and
+// keeps sundering, so the creature stays on it without its health going anywhere.
+bool PartyBotAI::UpdateOffTankHold()
+{
+    float floorPercent = 0.0f;
+    Creature* pHeld = GetOffTankHold(floorPercent);
+    if (!pHeld)
+        return false;
+
+    bool const atFloor = pHeld->GetHealthPercent() <= floorPercent;
+
+    if (me->GetVictim() != pHeld)
+    {
+        if (me->GetVictim())
+            me->AttackStop(true);
+        if (!me->Attack(pHeld, !atFloor))
+            return false;
+        BeginChasing(pHeld);
+    }
+    else if (atFloor && me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+    {
+        me->ClearUnitState(UNIT_STATE_MELEE_ATTACKING);
+        me->SendMeleeAttackStop(pHeld);
+    }
+    else if (!atFloor && !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+    {
+        me->Attack(pHeld, true);
+    }
+
+    if (!me->IsMoving())
+    {
+        switch (me->GetMotionMaster()->GetCurrentMovementGeneratorType())
+        {
+            case IDLE_MOTION_TYPE:
+            case FOLLOW_MOTION_TYPE:
+                BeginChasing(pHeld);
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (IsCombatLogged())
+    {
+        time_t const now = time(nullptr);
+        if (now - m_lastOffTankLog >= PB_PET_LOG_INTERVAL)
+        {
+            m_lastOffTankLog = now;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] offtank bot='%s' holding '%s' hp=%.0f floor=%.0f atfloor=%u "
+                     "dist=%.1f rage=%u itsvictim='%s'",
+                     me->GetName(), pHeld->GetName(), pHeld->GetHealthPercent(), floorPercent,
+                     uint32(atFloor), me->GetDistance(pHeld), me->GetPower(POWER_RAGE) / 10,
+                     pHeld->GetVictim() ? pHeld->GetVictim()->GetName() : "none");
+        }
+    }
+
+    if (m_spells.warrior.pBerserkerStance &&
+        me->GetShapeshiftForm() != FORM_BERSERKERSTANCE &&
+        CanTryToCastSpell(me, m_spells.warrior.pBerserkerStance))
+    {
+        if (DoCastSpell(me, m_spells.warrior.pBerserkerStance) == SPELL_CAST_OK)
+            return true;
+    }
+
+    if (m_spells.warrior.pBloodrage &&
+        me->GetPower(POWER_RAGE) < PB_WARRIOR_DPS_RAGE_LOW &&
+        CanTryToCastSpell(me, m_spells.warrior.pBloodrage))
+    {
+        if (DoCastSpell(me, m_spells.warrior.pBloodrage) == SPELL_CAST_OK)
+            return true;
+    }
+
+    if (m_spells.warrior.pSunderArmor &&
+        CanTryToCastSpell(pHeld, m_spells.warrior.pSunderArmor))
+        DoCastSpell(pHeld, m_spells.warrior.pSunderArmor);
+
+    return true;
 }
 
 // Order a pet onto a target the way the game does it when a player clicks attack.
@@ -3051,6 +3348,19 @@ SpellEntry const* PartyBotAI::PickRankForThreat(Unit const* pTarget, SpellEntry 
     if (!pTarget || !pSpellEntry || pSpellEntry->IsPositiveSpell())
         return pSpellEntry;
 
+    // An interrupt aimed at a cast in progress is worth the threat. A healer leads the threat on
+    // anything its heals have touched, so throttling here left Earth Shock refused on every one of
+    // Moira's heals while the tank's single Shield Bash was the only reference on her list.
+    if (pTarget->IsNonMeleeSpellCasted(false, false, true))
+        for (uint32 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if (pSpellEntry->Effect[i] == SPELL_EFFECT_INTERRUPT_CAST)
+                return pSpellEntry;
+
+    // Holding the creature is the off-tank's job, so the tank's threat is not its ceiling there.
+    float holdFloor = 0.0f;
+    if (pTarget == GetOffTankHold(holdFloor))
+        return pSpellEntry;
+
     if (!IsOverThreatCeiling(pTarget))
         return pSpellEntry;
 
@@ -3266,7 +3576,12 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
     // that is in no fight has no victim, fails that condition, and is skipped. The rule that was
     // supposed to stop area effects pulling was structurally incapable of seeing anything
     // unpulled, which is the only thing that can be pulled.
-    if (!IsInDuel() && WouldSpellPullExtraEnemies(pTarget, pSpellEntry))
+    //
+    // In a swarm the unpulled mobs around the fight are more of the same stream, already on their
+    // way; only an unpulled elite is still worth holding the spell for.
+    bool const swarm = !IsInDuel() && !pSpellEntry->IsPositiveSpell() && IsSwarmFight();
+    if (!IsInDuel() && (swarm ? WouldSpellPullUnengagedElite(pTarget, pSpellEntry)
+                              : WouldSpellPullExtraEnemies(pTarget, pSpellEntry)))
         return false;
 
     if (pSpellEntry->IsAreaOfEffectSpell() && !pSpellEntry->IsPositiveSpell() && !IsInDuel())
@@ -3292,6 +3607,11 @@ bool PartyBotAI::CanTryToCastSpell(Unit const* pTarget, SpellEntry const* pSpell
 
             for (auto const& pEnemy : targets)
             {
+                // A non-elite that turns on a caster in a swarm is one more of the mobs already on
+                // it, and the area spell is what kills it.
+                if (swarm && IsSwarmFodder(pEnemy))
+                    continue;
+
                 if (((pEnemy->GetLevel() + 5) > me->GetLevel()) &&
                     ((pEnemy->GetHealth() * 4) > me->GetHealth()) &&
                     pEnemy->GetVictim() && pEnemy->GetVictim() != me &&
@@ -3338,6 +3658,11 @@ bool PartyBotAI::CanUseCrowdControl(SpellEntry const* pSpellEntry, Unit* pTarget
     // rotation rather than the four crowd control spells that happened to be guarded by hand.
     if (pSpellEntry->HasAuraInterruptFlag(AURA_INTERRUPT_DAMAGE_CANCELS) &&
         AreOthersOnSameTarget(pTarget->GetObjectGuid()))
+        return false;
+
+    // Not on swarm fodder. It dies to the next area spell, and while it stands controlled it holds
+    // every area spell within PB_AOE_CC_SAFETY_RADIUS of it.
+    if (IsSwarmFodder(pTarget) && IsSwarmFight())
         return false;
 
     if (pSpellEntry->HasSingleTargetAura())
@@ -3547,6 +3872,126 @@ void PartyBotAI::ClearGroupAttackOrder()
 {
     if (Group* pGroup = me->GetGroup())
         s_groupFocus[pGroup->GetId()].ordered.Clear();
+}
+
+// How far the intercept scan reaches. Sunken Temple's Suppressors appear forty five to fifty yards
+// from the altar the group is defending, and every yard of their walk is time to kill them in.
+static constexpr float PB_INTERCEPT_RADIUS = 60.0f;
+
+// Turn the group onto anything the instance says must not be allowed to arrive.
+//
+// The same instruction a player's attack command gives -- a group-wide order and, for the bots that
+// will go, the movement exemption that lets them walk to something nobody is fighting yet -- issued
+// by the bots themselves the moment one is in sight. See DungeonTactics::interceptEntries for why
+// the kill order cannot say this: the creature never attacks anybody, so nothing ever ranks it.
+//
+// Outranks a standing order the player gave for something else. The only creatures on the list
+// are ones whose arrival loses the encounter, and an order on whatever happened to be in front of
+// the group when the player last pressed the key is not an instruction to let that happen. The
+// order is not restored afterwards; the group falls back on its own selection, as it does when any
+// ordered target dies.
+void PartyBotAI::InterceptOnSight()
+{
+    if (!m_tactics || m_tactics->interceptEntries.empty() || IsInDuel())
+        return;
+
+    Group* pGroup = me->GetGroup();
+    if (!pGroup)
+        return;
+
+    time_t const now = time(nullptr);
+    if (now == m_lastInterceptScan)
+        return;
+    m_lastInterceptScan = now;
+
+    auto const isIntercept = [this](Unit const* pUnit) -> bool
+    {
+        Creature const* pCreature = pUnit ? pUnit->ToCreature() : nullptr;
+        if (!pCreature)
+            return false;
+
+        std::vector<uint32> const& entries = m_tactics->interceptEntries;
+        return std::find(entries.begin(), entries.end(), pCreature->GetEntry()) != entries.end();
+    };
+
+    // One already ordered and still standing is the answer, whichever bot ordered it.
+    Unit* pTarget = nullptr;
+    PartyBotGroupFocus& held = s_groupFocus[pGroup->GetId()];
+    if (!held.ordered.IsEmpty())
+        if (Unit* pOrdered = me->GetMap()->GetUnit(held.ordered))
+            if (pOrdered->IsAlive() && IsValidHostileTarget(pOrdered) && isIntercept(pOrdered))
+                pTarget = pOrdered;
+
+    if (!pTarget)
+    {
+        std::list<Unit*> nearby;
+        me->GetEnemyListInRadiusAround(me, PB_INTERCEPT_RADIUS, nearby);
+
+        float bestDistance = 0.0f;
+        for (Unit* pUnit : nearby)
+        {
+            if (!pUnit->IsAlive() || !isIntercept(pUnit) || !IsValidHostileTarget(pUnit))
+                continue;
+
+            // In sight, not merely in range: the room above or the corridor behind a wall is not
+            // where this bot should be going.
+            if (!me->IsWithinLOSInMap(pUnit))
+                continue;
+
+            float const distance = me->GetDistance(pUnit);
+            if (!pTarget || distance < bestDistance)
+            {
+                pTarget = pUnit;
+                bestDistance = distance;
+            }
+        }
+
+        if (!pTarget)
+            return;
+
+        SetGroupAttackOrder(pTarget->GetObjectGuid());
+    }
+
+    // The healer keeps healing. Everybody else goes, the tank included.
+    //
+    // The tank was left out at first, on the reasoning that it should keep whatever it is holding,
+    // and the first run with this rule lost the event exactly as before. The damage dealers do not
+    // open on anything before the tank: they wait for it to get there first, and they will not spend
+    // threat it does not have -- PickRankForThreat budgets every nuke against the tank's own threat
+    // on the target, and the tank's threat on a Suppressor it is not attacking is zero. So the order
+    // went out at fifty seven yards and the mage logged fifty "waited for the tank" lines and every
+    // Fireball refused, while the Suppressors lived thirty, eighty three and twenty seven seconds.
+    // A player's attack command sends the tank as well, which is why it worked when the player used
+    // it.
+    if (GetRole() == ROLE_HEALER)
+        return;
+
+    if (GetRole() == ROLE_TANK && m_tactics->interceptSparesTank)
+        return;
+
+    // Only while it is still walking in. The exemption is spent when the creature enters combat,
+    // and by then the bot is fighting it and no longer needs one.
+    if (!pTarget->IsInCombat() && me->GetAttackOrders() != pTarget->GetObjectGuid())
+    {
+        if (IsPulling())
+            EndPull();
+        if (IsHolding())
+            ReleaseHold();
+
+        me->SetAttackOrders(pTarget->GetObjectGuid());
+
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] intercept bot='%s' role=%s going for '%s' (guid=%u, %.1fy, hp=%.0f)",
+                     me->GetName(), GetRoleName(GetRole()), pTarget->GetName(),
+                     pTarget->GetObjectGuid().GetCounter(), me->GetDistance(pTarget),
+                     pTarget->GetHealthPercent());
+    }
+
+    // The tank's own target selection only takes something new when it has nothing, so it has to
+    // be turned here. Asked every scan rather than once, because a peel will take it off again.
+    if (GetRole() == ROLE_TANK && me->GetVictim() != pTarget)
+        AttackStart(pTarget);
 }
 
 uint32 PartyBotAI::ScoreFocusCandidate(Unit const* pEnemy) const
@@ -4169,6 +4614,80 @@ bool PartyBotAI::HasThreatOnGroup(Unit const* pEnemy) const
     return false;
 }
 
+// By mechanic rather than by spell id, so any rank cast by any warlock counts.
+static bool IsBanished(Unit const* pUnit)
+{
+    for (Aura* pAura : pUnit->GetAurasByType(SPELL_AURA_MOD_STUN))
+        if (pAura && pAura->GetSpellProto()->Mechanic == MECHANIC_BANISH)
+            return true;
+
+    return false;
+}
+
+// Whether anything besides this mob is still fighting the group. A controlled mob is waiting its
+// turn rather than fighting, so a sheep or a second banish does not count.
+bool PartyBotAI::IsAnotherEnemyFighting(Unit const* pExcept) const
+{
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_LEFTOVER_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (pEnemy == pExcept || !pEnemy->IsAlive())
+            continue;
+
+        if (pEnemy->HasBreakableByDamageCrowdControlAura() || IsBanished(pEnemy))
+            continue;
+
+        if (IsEngagedWithGroup(pEnemy) || (pEnemy->IsInCombat() && HasThreatOnGroup(pEnemy)))
+            return true;
+    }
+
+    return false;
+}
+
+// Let a banished mob go once it is the last thing in the fight.
+//
+// A sheep left over at the end is simply attacked, which breaks it (SelectControlledLeftoverTarget).
+// Banish cannot be broken that way because it makes its target immune to everything, so without
+// this the group stands idle beside the last mob until the spell runs out on its own.
+bool PartyBotAI::ReleaseBanishOnLastEnemy()
+{
+    if (IsInDuel() || me->GetClass() != CLASS_WARLOCK || !m_spells.warlock.pBanish)
+        return false;
+
+    time_t const now = time(nullptr);
+    if (now - m_lastBanishScan < PB_LEFTOVER_SCAN_INTERVAL)
+        return false;
+
+    m_lastBanishScan = now;
+
+    uint32 const banishId = m_spells.warlock.pBanish->Id;
+
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_LEFTOVER_SEARCH_RADIUS, enemies);
+
+    for (Unit* pEnemy : enemies)
+    {
+        if (!pEnemy->IsAlive() || !pEnemy->GetSpellAuraHolder(banishId, me->GetObjectGuid()))
+            continue;
+
+        if (IsAnotherEnemyFighting(pEnemy))
+            return false;
+
+        pEnemy->RemoveAurasByCasterSpell(banishId, me->GetObjectGuid(), AURA_REMOVE_BY_CANCEL);
+
+        if (IsCombatLogged())
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] unbanish bot='%s' released '%s' at %.1fy, nothing else left in "
+                     "the fight", me->GetName(), pEnemy->GetName(), me->GetDistance(pEnemy));
+
+        return true;
+    }
+
+    return false;
+}
+
 // Whether turning to kill this summon still pays, given how far through its summoner is.
 //
 // Only ever says no about creatures a tactic names as a summon of something with a burn gate, so
@@ -4176,39 +4695,6 @@ bool PartyBotAI::HasThreatOnGroup(Unit const* pEnemy) const
 // DungeonCreatureTactic::burnBelowPercent for why Antu'sul needs it: above sixty percent he has no
 // heal and the pause is free, below it he undoes whatever the pause cost.
 // The nearest thing the instance says to kill that a pet can reasonably be sent at on its own.
-// Whether a focus-first entry is the kind of thing a bot may walk to, or send a pet to, without
-// that being a pull.
-//
-// focusFirst answers one question -- what dies first -- and three separate rules have now read it
-// as the answer to a different one: which creatures are safe to approach on sight. They are not
-// the same set, and every time the two have been confused the result has been the same bug.
-//
-// The list holds two populations. One is stationary support that never appears in anybody's
-// attacker list because it never attacks: Earthgrab Totem, Ward of Zum'rah, Fire Nova Totem,
-// Greater Healing Ward. Walking to those is safe by construction and is the entire reason the
-// rules below exist -- Antu'sul's ward healed him through three wipes with no bot ever selecting
-// it. The other is ordinary pack members that happen to have kill priority: Barbed Lasher,
-// Constrictor Vine, Noxxion's Spawn, the Sul'lithuz Broodlings. Approaching one of those is a
-// pull, and in Maraudon it is a pull of a seventeen-Lasher corridor.
-//
-// movement_type separates them cleanly and nothing else does. Creature type cannot: Greater
-// Healing Ward and Barbed Lasher are both CREATURE_TYPE_NOT_SPECIFIED. Rank cannot: the
-// Broodlings and Theradrim Shardlings are rank zero, and a bot sent alone at one is still a bot
-// that pulled. Every ward and totem on these lists is IDLE and every real kill-order entry
-// wanders, so the test is simply whether the creature was ever going to move.
-static bool IsPassiveSupportCreature(Creature const* pCreature)
-{
-    if (!pCreature)
-        return false;
-
-    // Anything that wanders is part of a pack, and going to it is a pull.
-    if (pCreature->GetDefaultMovementType() != IDLE_MOTION_TYPE)
-        return false;
-
-    // And an immobile elite is a fight rather than an object, whoever walks at it.
-    return !pCreature->IsElite();
-}
-
 Unit* PartyBotAI::FindFocusTotemForPet(float radius) const
 {
     if (!m_tactics || m_tactics->focusFirst.empty())
@@ -5036,7 +5522,7 @@ bool PartyBotAI::IsApproachAnywayTarget(Unit const* pTarget) const
         return false;
 
     Creature const* pCreature = pTarget->ToCreature();
-    if (!pCreature)
+    if (!IsPassiveSupportCreature(pCreature))
         return false;
 
     return std::find(pEntries->begin(), pEntries->end(), pCreature->GetEntry()) != pEntries->end();
@@ -5413,11 +5899,20 @@ uint32 PartyBotAI::GetWorstKnownCastPriority(Unit const* pEnemy) const
 
     uint32 const entry = pCreature->GetEntry();
 
+    // A heal that lives only in a C++ script is invisible to the scan below, so a table entry that
+    // says the creature heals stands in for it; Princess Moira's whole book is script. MINOR_HEAL
+    // rather than HEAL, because her Heal scores MINOR_HEAL against her own bar and a floor above it
+    // would have the hold in SelectInterruptTarget keep the interrupt back from the heal itself.
+    // Outside the cache, which is keyed by entry and shared by bots holding different tables.
+    uint32 const tableFloor = m_tactics && m_tactics->GetHealWatchPercent(entry) > 0.0f
+                            ? uint32(PB_INTERRUPT_MINOR_HEAL)
+                            : uint32(PB_INTERRUPT_NONE);
+
     static std::unordered_map<uint32, uint32> s_worstKnownCast;
 
     auto cached = s_worstKnownCast.find(entry);
     if (cached != s_worstKnownCast.end())
-        return cached->second;
+        return std::max(cached->second, tableFloor);
 
     uint32 worst = PB_INTERRUPT_NONE;
 
@@ -5457,7 +5952,7 @@ uint32 PartyBotAI::GetWorstKnownCastPriority(Unit const* pEnemy) const
     }
 
     s_worstKnownCast[entry] = worst;
-    return worst;
+    return std::max(worst, tableFloor);
 }
 
 uint32 PartyBotAI::GetInterruptPriority(Unit const* pCaster) const
@@ -8445,6 +8940,13 @@ Player* PartyBotAI::SelectShieldTarget() const
     if (!pGroup)
         return nullptr;
 
+    // In a swarm the casters hold most of the aggro, because area spells generate it on every mob at
+    // once and the tank cannot taunt a stream. Shield them before the damage lands rather than after
+    // it has taken a tenth of the bar, and the one with the most mobs on it first.
+    bool const swarm = IsSwarmFight();
+    Player* pBest = nullptr;
+    size_t bestAttackers = 0;
+
     for (GroupReference* itr = pGroup->GetFirstMember(); itr != nullptr; itr = itr->next())
     {
         if (Player* pMember = itr->getSource())
@@ -8453,20 +8955,46 @@ Player* PartyBotAI::SelectShieldTarget() const
             if (pMember == me)
                 continue;
 
+            // A member who cannot take a shield yet is not a candidate. Returning it anyway made the
+            // cast fail in CanTryToCastSpell and left everybody after it in the group unshielded.
+            if (swarm && pMember->HasAura(PB_SPELL_WEAKENED_SOUL))
+                continue;
+
+            if (pMember->GetAttackers().empty())
+                continue;
+
             // Line of sight, which nothing here asked for and the spell then demanded: fifteen
             // shields in half an hour were thrown at a group member the priest could not see and
             // failed with SPELL_FAILED_LINE_OF_SIGHT, each one a tick given up. Range for the same
             // reason, taken from the spell rather than guessed at.
-            if ((pMember->GetHealthPercent() < 90.0f) &&
-                !pMember->GetAttackers().empty() &&
-                !pMember->IsImmuneToMechanic(MECHANIC_SHIELD) &&
-                me->IsWithinLOSInMap(pMember) &&
-                m_spells.priest.pPowerWordShield->IsTargetInRange(me, pMember))
-                return pMember;
+            if (pMember->IsImmuneToMechanic(MECHANIC_SHIELD) ||
+                !me->IsWithinLOSInMap(pMember) ||
+                !m_spells.priest.pPowerWordShield->IsTargetInRange(me, pMember))
+                continue;
+
+            if (!swarm)
+            {
+                if (pMember->GetHealthPercent() < 90.0f)
+                    return pMember;
+                continue;
+            }
+
+            if (GetEffectiveRole(pMember) == ROLE_TANK && pMember->GetHealthPercent() >= 90.0f)
+                continue;
+
+            size_t const attackers = pMember->GetAttackers().size();
+            bool const caster = GetEffectiveRole(pMember) != ROLE_TANK;
+            bool const bestIsCaster = pBest && GetEffectiveRole(pBest) != ROLE_TANK;
+            if (!pBest || (caster && !bestIsCaster) ||
+                (caster == bestIsCaster && attackers > bestAttackers))
+            {
+                pBest = pMember;
+                bestAttackers = attackers;
+            }
         }
     }
 
-    return nullptr;
+    return pBest;
 }
 
 bool PartyBotAI::CrowdControlMarkedTargets()
@@ -8482,7 +9010,9 @@ bool PartyBotAI::CrowdControlMarkedTargets()
             if (!pTarget->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
                 IsValidHostileTarget(pTarget) && !AreOthersOnSameTarget(pTarget->GetObjectGuid()))
             {
-                if (CanTryToCastSpell(pTarget, pSpellEntry))
+                // The mark still stands once everything else is dead, and controlling the last mob
+                // only delays the end of the fight.
+                if (CanTryToCastSpell(pTarget, pSpellEntry) && IsAnotherEnemyFighting(pTarget))
                 {
                     if (DoCastSpell(pTarget, pSpellEntry) == SPELL_CAST_OK)
                     {
@@ -8567,9 +9097,12 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
 
             if (Group const* pGroup = me->GetGroup())
             {
+                // Master loot included: a bot's round robin claim otherwise locks the player out
+                // of any corpse it killed that holds nothing at or above the threshold.
                 if (pGroup->GetLootMethod() == ROUND_ROBIN ||
                     pGroup->GetLootMethod() == GROUP_LOOT ||
-                    pGroup->GetLootMethod() == NEED_BEFORE_GREED)
+                    pGroup->GetLootMethod() == NEED_BEFORE_GREED ||
+                    pGroup->GetLootMethod() == MASTER_LOOT)
                 {
                     ObjectGuid victimGuid = *(((uint64*)(*packet).contents()) + 1);
                     if (Creature* pCreature = me->GetMap()->GetCreature(victimGuid))
@@ -8587,6 +9120,33 @@ void PartyBotAI::OnPacketReceived(WorldPacket const* packet)
                 }
             }
             
+            return;
+        }
+        case SMSG_PETITION_SHOW_SIGNATURES:
+        {
+            if (!me)
+                return;
+
+            // Only a roster member signs. Everyone who signs is written into the guild when the
+            // charter is turned in, and a generated bot is never saved, so its signature would
+            // leave the guild holding a member with no character behind it.
+            RaidGuildMember const* pMember = sRaidGuildMgr.FindMember(me->GetName());
+            if (!pMember || pMember->guid != me->GetGUIDLow())
+                return;
+
+            // Sent both when someone offers the charter and when its owner opens it. Only the
+            // first is a request; the owner cannot sign their own and the server says so.
+            ObjectGuid const itemGuid = *((uint64 const*)(*packet).contents());
+            ObjectGuid const ownerGuid = *(((uint64 const*)(*packet).contents()) + 1);
+            if (ownerGuid == me->GetObjectGuid())
+                return;
+
+            auto data = std::make_unique<WorldPackets::Petition::PetitionSign>();
+            data->itemGuid = itemGuid;
+            me->GetSession()->QueuePacket(std::move(data));
+
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[RaidGuild] %s signs the charter offered by %s",
+                me->GetName(), ownerGuid.GetString().c_str());
             return;
         }
     }
@@ -9427,6 +9987,9 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
     }
 
+    // Ahead of the target pick below, so an order it writes is the one the pick reads this tick.
+    InterceptOnSight();
+
     Unit* pVictim = me->GetVictim();
 
     if (GetRole() != ROLE_HEALER)
@@ -9444,6 +10007,11 @@ void PartyBotAI::UpdateAI(uint32 const diff)
 
         if (focusFires)
             pDesired = SelectGroupFocusTarget();
+
+        // The off-tank's target is the creature it holds, whatever the rest of the group is on.
+        float holdFloor = 0.0f;
+        if (Creature* pHeld = GetOffTankHold(holdFloor))
+            pDesired = pHeld;
 
         // Except while peeling. The focus runs every tick and would pull the warrior straight back
         // off the add it just switched to, so the peel would be undone before it landed a swing and
@@ -9630,7 +10198,14 @@ void PartyBotAI::UpdateAI(uint32 const diff)
         }
         else
         {
-            if (!me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
+            // An off-tank at its floor has stopped swinging on purpose.
+            float holdFloor = 0.0f;
+            Creature const* pHeld = GetOffTankHold(holdFloor);
+            bool const heldAtFloor = pHeld && pHeld == pVictim &&
+                                     pHeld->GetHealthPercent() <= holdFloor;
+
+            if (!heldAtFloor &&
+                !me->HasUnitState(UNIT_STATE_MELEE_ATTACKING) &&
                (GetRole() == ROLE_MELEE_DPS || m_role == ROLE_TANK) &&
                 IsValidHostileTarget(pVictim) &&
                 AttackStart(pVictim))
@@ -10024,7 +10599,7 @@ void PartyBotAI::LogCombatTick() const
             reason = me->IsWithinLOSInMap(pWorst) ? "out_of_range" : "far_and_blind";
         else if (!me->IsWithinLOSInMap(pWorst))
             reason = "no_los";
-        else if (IsRationingHealsForTank() && GetEffectiveRole(pWorst) != ROLE_TANK)
+        else if (IsRationedOutOfHeals(pWorst))
             reason = "rationed_tank_only";
         else if (IsAlreadyHealing(pWorst->GetObjectGuid()))
             reason = "heal_in_flight";
@@ -10152,6 +10727,9 @@ void PartyBotAI::UpdateInCombatAI()
     // half thousand health that lands because nobody looked costs the attempt.
     PB_BAIL_IF(InterruptHostileCasters(), "interrupt");
 
+    // Below the interrupt, which is half of the off-tank's job and spends the same tick.
+    PB_BAIL_IF(UpdateOffTankHold(), "offtank");
+
     // Then the potion, below the interrupt because a Healing Wave landing is worse than a tick of
     // drinking, and above the rotations because by the time a healer is empty the casts the potion
     // was going to buy have already been missed.
@@ -10175,6 +10753,8 @@ void PartyBotAI::UpdateInCombatAI()
     // alone. Costs the tick when it fires and nothing at all otherwise, and it cannot run long:
     // the sequence carries its own deadline and stands itself down for thirty seconds afterwards.
     PB_BAIL_IF(TryFreezingTrapSequence(), "freezingtrap");
+
+    PB_BAIL_IF(ReleaseBanishOnLastEnemy(), "unbanish");
 
     if (!IsInDuel())
     {
@@ -11168,6 +11748,174 @@ void PartyBotAI::UpdateOutOfCombatAI_Mage()
     // already in progress.
 }
 
+// Ground-targeted area spells. Blizzard and Flamestrike both reach thirty yards and both cover
+// eight; three is where either outdamages the single-target nuke it replaces.
+static constexpr float PB_MAGE_GROUND_AOE_RANGE = 30.0f;
+static constexpr float PB_MAGE_GROUND_AOE_RADIUS = 8.0f;
+static constexpr uint32 PB_MAGE_AOE_MIN_PILE = 3;
+
+// Frost Nova is worth its cooldown only on a tight pile: three or more mobs within five yards of
+// one another, all inside the nova's own ten. A spread of mobs, or one or two, is left for the
+// nukes, and the cooldown is there for the pile when it forms.
+static constexpr float PB_FROST_NOVA_REACH = 10.0f;
+static constexpr float PB_FROST_NOVA_PILE_RADIUS = 5.0f;
+static constexpr uint32 PB_FROST_NOVA_MIN_PILE = 3;
+
+bool PartyBotAI::IsFrostNovaPileInReach() const
+{
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, PB_FROST_NOVA_REACH, nearby);
+
+    std::vector<Unit*> engaged;
+    for (Unit* pUnit : nearby)
+        if (pUnit->IsAlive() && IsValidHostileTarget(pUnit) && IsEngagedWithGroup(pUnit) &&
+            !pUnit->HasUnitState(UNIT_STATE_ROOT))
+            engaged.push_back(pUnit);
+
+    if (engaged.size() < PB_FROST_NOVA_MIN_PILE)
+        return false;
+
+    for (Unit* pCenter : engaged)
+    {
+        uint32 around = 0;
+        for (Unit* pOther : engaged)
+            if (pCenter->IsWithinDist(pOther, PB_FROST_NOVA_PILE_RADIUS))
+                ++around;
+
+        if (around >= PB_FROST_NOVA_MIN_PILE)
+            return true;
+    }
+
+    return false;
+}
+
+// The engaged enemy with the most other engaged enemies around it, within reach and in sight, and
+// how many that is counting itself. Only enemies the group is already fighting count, so the
+// answer can never be a pack that has not been pulled.
+Unit* PartyBotAI::FindBestAreaSpellCenter(float range, float radius, uint32& count) const
+{
+    count = 0;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, range + radius, nearby);
+
+    std::vector<Unit*> engaged;
+    for (Unit* pUnit : nearby)
+        if (pUnit->IsAlive() && IsValidHostileTarget(pUnit) && IsEngagedWithGroup(pUnit))
+            engaged.push_back(pUnit);
+
+    Unit* pBest = nullptr;
+    for (Unit* pCenter : engaged)
+    {
+        if (!me->IsWithinDist(pCenter, range) || !me->IsWithinLOSInMap(pCenter))
+            continue;
+
+        uint32 around = 0;
+        for (Unit* pOther : engaged)
+            if (pCenter->IsWithinDist(pOther, radius))
+                ++around;
+
+        if (around > count)
+        {
+            count = around;
+            pBest = pCenter;
+        }
+    }
+
+    return pBest;
+}
+
+bool PartyBotAI::IsSwarmFodder(Unit const* pEnemy)
+{
+    if (!pEnemy || !pEnemy->IsCreature() || pEnemy->IsCharmerOrOwnerPlayerOrPlayerItself())
+        return false;
+
+    Creature const* pCreature = static_cast<Creature const*>(pEnemy);
+    return !pCreature->IsElite() && !pCreature->IsWorldBoss();
+}
+
+// Swarm handling is for the Lyceum in Blackrock Depths and nowhere else: two hundred and forty
+// Anvilrage Reservists on a thirty second respawn, until both braziers are lit. Everywhere else the
+// ordinary pull, threat and crowd control rules stand. The box is the room's spawn footprint with a
+// margin, on the room's own floor, so the Summoner's Tomb next door and Magmus beyond it are outside.
+bool PartyBotAI::IsInSwarmArea() const
+{
+    if (me->GetMapId() != PB_SWARM_MAP_ID)
+        return false;
+
+    float const x = me->GetPositionX();
+    float const y = me->GetPositionY();
+    float const z = me->GetPositionZ();
+    return x >= 1270.0f && x <= 1490.0f &&
+           y >= -570.0f && y <= -290.0f &&
+           z >= -100.0f && z <= -70.0f;
+}
+
+bool PartyBotAI::IsSwarmFight() const
+{
+    if (!IsInSwarmArea())
+        return false;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, PB_SWARM_RADIUS, nearby);
+
+    uint32 fodder = 0;
+    for (Unit* pUnit : nearby)
+    {
+        if (pUnit->IsAlive() && IsSwarmFodder(pUnit) && IsValidHostileTarget(pUnit) &&
+            IsEngagedWithGroup(pUnit) && ++fodder >= PB_SWARM_MIN_FODDER)
+            return true;
+    }
+
+    return false;
+}
+
+// WouldSpellPullExtraEnemies with the non-elites let through: the same widest radius, and true only
+// for an elite standing in it that nobody is fighting yet.
+bool PartyBotAI::WouldSpellPullUnengagedElite(Unit const* pTarget, SpellEntry const* pSpellEntry) const
+{
+    if (!WouldSpellPullExtraEnemies(pTarget, pSpellEntry))
+        return false;
+
+    float radius = 0.0f;
+    for (uint32 radiusIndex : pSpellEntry->EffectRadiusIndex)
+        if (radiusIndex)
+            radius = std::max(radius, Spells::GetSpellRadius(sSpellRadiusStore.LookupEntry(radiusIndex)));
+
+    if (radius <= 0.0f)
+        radius = 10.0f;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(pTarget, radius, nearby);
+
+    for (Unit* pUnit : nearby)
+    {
+        if (pUnit == pTarget || !pUnit->IsAlive() || pUnit->IsInCombat())
+            continue;
+
+        if (!IsSwarmFodder(pUnit))
+            return true;
+    }
+
+    return false;
+}
+
+// Two is enough in a swarm: Arcane Explosion on two eight hundred health non-elites already beats a
+// Frostbolt into one, and the third is never far behind.
+static constexpr uint32 PB_SWARM_MAGE_MIN_REACH = 2;
+
+void PartyBotAI::LogSwarmMageCast(SpellEntry const* pSpell, uint32 fodder, uint32 loose) const
+{
+    if (!IsCombatLogged())
+        return;
+
+    sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+             "[BotCombat] swarmmage bot='%s' cast '%s' with %u non-elites in reach, %u unrooted, "
+             "mana=%.0f%%",
+             me->GetName(), pSpell->SpellName[0].c_str(), fodder, loose,
+             me->GetPowerPercent(POWER_MANA));
+}
+
 void PartyBotAI::UpdateInCombatAI_Mage()
 {
     if (Unit* pVictim = me->GetVictim())
@@ -11194,6 +11942,49 @@ void PartyBotAI::UpdateInCombatAI_Mage()
         {
             if (DoCastSpell(me, m_spells.mage.pIceBlock) == SPELL_CAST_OK)
                 return;
+        }
+
+        // In a swarm the pile on the mage is the target. Backing away from it, which the block below
+        // does first, only drags the stream after the casters while Frostbolt kills one at a time:
+        // two Lyceum wipes have the mage casting fifty Frostbolts and one Arcane Explosion. Root what
+        // is in reach, then explode it while it is held; roots do not count as breakable control.
+        if (IsSwarmFight())
+        {
+            std::list<Unit*> inReach;
+            me->GetEnemyListInRadiusAround(me, PB_FROST_NOVA_REACH, inReach);
+
+            uint32 fodder = 0;
+            uint32 loose = 0;
+            for (Unit* pUnit : inReach)
+            {
+                if (!pUnit->IsAlive() || !IsSwarmFodder(pUnit) || !IsValidHostileTarget(pUnit) ||
+                    !IsEngagedWithGroup(pUnit))
+                    continue;
+
+                ++fodder;
+                if (!pUnit->HasUnitState(UNIT_STATE_ROOT))
+                    ++loose;
+            }
+
+            if (fodder >= PB_SWARM_MAGE_MIN_REACH)
+            {
+                if (m_spells.mage.pFrostNova && loose >= PB_SWARM_MAGE_MIN_REACH &&
+                    CanTryToCastSpell(me, m_spells.mage.pFrostNova) &&
+                    DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+                {
+                    LogSwarmMageCast(m_spells.mage.pFrostNova, fodder, loose);
+                    return;
+                }
+
+                if (m_spells.mage.pArcaneExplosion &&
+                    !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
+                    CanTryToCastSpell(me, m_spells.mage.pArcaneExplosion) &&
+                    DoCastSpell(me, m_spells.mage.pArcaneExplosion) == SPELL_CAST_OK)
+                {
+                    LogSwarmMageCast(m_spells.mage.pArcaneExplosion, fodder, loose);
+                    return;
+                }
+            }
         }
 
         if (ShouldCloseOn(pVictim, 30.0f))
@@ -11227,9 +12018,12 @@ void PartyBotAI::UpdateInCombatAI_Mage()
 
                 if (!me->HasUnitState(UNIT_STATE_CAN_NOT_MOVE))
                 {
+                    // Only on a pile, like the nova below: the player's rule for this spell is three or
+                    // more mobs packed together, and a single attacker is answered by backing away.
                     if (m_spells.mage.pFrostNova &&
                        !pVictim->HasUnitState(UNIT_STATE_ROOT) &&
                        !pVictim->HasUnitState(UNIT_STATE_CAN_NOT_REACT_OR_LOST_CONTROL) &&
+                        IsFrostNovaPileInReach() &&
                         CanTryToCastSpell(me, m_spells.mage.pFrostNova))
                     {
                         DoCastSpell(me, m_spells.mage.pFrostNova);
@@ -11246,6 +12040,21 @@ void PartyBotAI::UpdateInCombatAI_Mage()
 
         if (me->GetEnemyCountInRadiusAround(me, 10.0f) > 1)
         {
+            // Frost Nova on a pile near the mage, not only on what is already hitting it. The
+            // defensive use above needs an attacker on the mage, and in a fight with adds streaming
+            // in the mobs on the tank or on their way to the healer are exactly the ones worth
+            // rooting: one Avatar of Hakkar wipe has two mages casting it twice each in four
+            // minutes, against forty six Hakkari Minions. Three or more, packed tight; see
+            // IsFrostNovaPileInReach.
+            if (m_spells.mage.pFrostNova &&
+                IsFrostNovaPileInReach() &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS) &&
+                CanTryToCastSpell(me, m_spells.mage.pFrostNova))
+            {
+                if (DoCastSpell(me, m_spells.mage.pFrostNova) == SPELL_CAST_OK)
+                    return;
+            }
+
             // Guarded against the victim, which is what the cast below actually targets. Asking
             // about the mage instead checked range and immunity on the wrong unit, so the guard
             // was not guarding anything.
@@ -11283,12 +12092,49 @@ void PartyBotAI::UpdateInCombatAI_Mage()
                 return;
         }
 
-        if (m_spells.mage.pBlizzard &&
-           (me->GetEnemyCountInRadiusAround(pVictim, 10.0f) > 2) &&
-            CanTryToCastSpell(pVictim, m_spells.mage.pBlizzard))
+        // The pile, wherever it is, rather than whatever happens to be around this mage's victim.
+        //
+        // Blizzard used to need three enemies within ten yards of the mage's own target, and the
+        // target is chosen for a kill order rather than for where the mobs are standing, so a mage
+        // focusing a caster at the edge of the room never saw the eight minions stacked on the tank.
+        // Two mages in one Avatar of Hakkar wipe cast thirty seven Fireballs and two Blizzards
+        // between them. This aims at whichever engaged enemy has the most others within the spell's
+        // radius, which is the tank's pile when the group is standing together.
+        //
+        // Flamestrike as well, which the rotation never cast at all, first for a fire mage and as
+        // the fallback for any other. Both pass through CanTryToCastSpell, so the threat gate that
+        // keeps an area spell off anything the tank does not hold and the rule against touching
+        // anything unengaged still apply to every enemy in the radius.
         {
-            if (DoCastSpell(pVictim, m_spells.mage.pBlizzard) == SPELL_CAST_OK)
-                return;
+            uint32 pileSize = 0;
+            Unit* pCenter = FindBestAreaSpellCenter(PB_MAGE_GROUND_AOE_RANGE, PB_MAGE_GROUND_AOE_RADIUS,
+                                                    pileSize);
+            if (pCenter && pileSize >= PB_MAGE_AOE_MIN_PILE &&
+                !IsBreakableCrowdControlInRange(PB_AOE_CC_SAFETY_RADIUS, pCenter))
+            {
+                bool const fire = IsFireSpecMage();
+                SpellEntry const* const choices[2] =
+                {
+                    fire ? m_spells.mage.pFlamestrike : m_spells.mage.pBlizzard,
+                    fire ? m_spells.mage.pBlizzard : m_spells.mage.pFlamestrike,
+                };
+
+                for (SpellEntry const* pSpell : choices)
+                {
+                    if (pSpell && CanTryToCastSpell(pCenter, pSpell) &&
+                        DoCastSpell(pCenter, pSpell) == SPELL_CAST_OK)
+                    {
+                        if (IsCombatLogged())
+                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                                     "[BotCombat] mageaoe bot='%s' cast '%s' on a pile of %u around "
+                                     "'%s' at %.1fy swarm=%u",
+                                     me->GetName(), pSpell->SpellName[0].c_str(), pileSize,
+                                     pCenter->GetName(), me->GetDistance(pCenter),
+                                     uint32(IsSwarmFight()));
+                        return;
+                    }
+                }
+            }
         }
 
         if (m_spells.mage.pPolymorph)
@@ -12273,7 +13119,7 @@ void PartyBotAI::UpdateOutOfCombatAI_Warrior()
     // capture with thirty one Battle Stances, thirty one Defensive Stances and twenty nine Charges
     // in half an hour, the two rules taking turns and the tank opening every fight of a dungeon on
     // an empty rage bar. The guard against it is that the swap is only ever made when the Charge
-    // is genuinely there to be cast -- target unengaged, in band, off cooldown -- so the stance
+    // is genuinely there to be cast -- tank out of combat, in band, off cooldown -- so the stance
     // change is always immediately followed by the Charge rather than by another stance change.
     if (tanking && !m_holdPosition && ShouldChargeToPull())
     {
@@ -12364,7 +13210,15 @@ bool PartyBotAI::ShouldChargeToPull() const
         return false;
 
     Unit* pVictim = me->GetVictim();
-    if (!pVictim || !pVictim->IsAlive() || pVictim->IsInCombat())
+    if (!pVictim || !pVictim->IsAlive())
+        return false;
+
+    // Into a mob the group is already fighting as well as an untouched one, as long as the tank
+    // itself has not entered the fight yet. Only accepting untouched mobs made this dead code: a
+    // bot is only ever handed a target the group is already fighting, so by the time the tank had
+    // one it was always in combat, and the one opener that crosses a room fastest was never used
+    // on a mob running at the healer. A mob fighting somebody outside the group is still refused.
+    if (pVictim->IsInCombat() && !IsEngagedWithGroup(pVictim))
         return false;
 
     if (!IsValidHostileTarget(pVictim) || !me->IsWithinLOSInMap(pVictim))
@@ -12440,44 +13294,72 @@ bool PartyBotAI::ShouldReserveGlobalCooldownForInterrupt(Unit const* pVictim) co
     // A creature with no entry answers zero and is never reserved against, which is the right
     // default: the reserve costs a Sunder or a Sinister Strike every tick it is on, and that is
     // only worth paying where there is a heal to stop.
-    float const watchBelow = m_tactics
-                           ? m_tactics->GetHealWatchPercent(pVictim->GetEntry())
-                           : 0.0f;
-
-    if (watchBelow <= 0.0f || pVictim->GetHealthPercent() > watchBelow)
+    if (!m_tactics)
         return false;
 
-    if (GetWorstKnownCastPriority(pVictim) < PB_INTERRUPT_HEAL)
-        return false;
-
-    // Already casting, in which case InterruptHostileCasters is about to spend the ability this
-    // very tick and there is nothing to reserve it for.
-    if (GetInterruptPriority(pVictim) >= PB_INTERRUPT_HEAL)
-        return false;
-
-    std::vector<SpellEntry const*> candidates;
-    GetInterruptSpells(candidates);
-
-    for (SpellEntry const* pCandidate : candidates)
+    // The band is always read off the victim, since its health is what the heal undoes, but the
+    // healer need not be the victim. Princess Moira heals the Emperor and is never anyone's target.
+    auto healsVictimNow = [&](Unit const* pHealer)
     {
-        if (!me->IsSpellReady(pCandidate))
-            continue;
+        float const watchBelow = m_tactics->GetHealWatchPercent(pHealer->GetEntry());
+        return watchBelow > 0.0f && pVictim->GetHealthPercent() <= watchBelow;
+    };
 
-        if (me->GetPower(Powers(pCandidate->powerType)) < Spell::CalculatePowerCost(pCandidate, me))
-            continue;
+    auto canReserveAgainst = [&](Unit const* pHealer, uint32 minWorstKnown)
+    {
+        if (GetWorstKnownCastPriority(pHealer) < minWorstKnown)
+            return false;
 
-        if (pCandidate->rangeIndex == SPELL_RANGE_IDX_COMBAT &&
-            !me->CanReachWithMeleeAutoAttack(pVictim))
-            continue;
+        // Already casting, in which case InterruptHostileCasters is about to spend the ability
+        // this very tick and there is nothing to reserve it for.
+        if (GetInterruptPriority(pHealer) >= PB_INTERRUPT_HEAL)
+            return false;
 
-        // Holding the global for an ability this target is immune to is the worst version of
-        // this: the bot stops casting, the heal lands anyway, and the damage that would have
-        // shortened the fight was never dealt. Against Antu'sul the reserve was suppressing the
-        // tank's rotation for the whole stretch below sixty five percent, for nothing.
-        if (!CanInterruptWith(pCandidate, pVictim))
-            continue;
+        std::vector<SpellEntry const*> candidates;
+        GetInterruptSpells(candidates);
 
+        for (SpellEntry const* pCandidate : candidates)
+        {
+            if (!me->IsSpellReady(pCandidate))
+                continue;
+
+            if (me->GetPower(Powers(pCandidate->powerType)) < Spell::CalculatePowerCost(pCandidate, me))
+                continue;
+
+            if (pCandidate->rangeIndex == SPELL_RANGE_IDX_COMBAT &&
+                !me->CanReachWithMeleeAutoAttack(pHealer))
+                continue;
+
+            // Holding the global for an ability this target is immune to is the worst version of
+            // this: the bot stops casting, the heal lands anyway, and the damage that would have
+            // shortened the fight was never dealt. Against Antu'sul the reserve was suppressing the
+            // tank's rotation for the whole stretch below sixty five percent, for nothing.
+            if (!CanInterruptWith(pCandidate, pHealer))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    };
+
+    if (healsVictimNow(pVictim) && canReserveAgainst(pVictim, PB_INTERRUPT_HEAL))
         return true;
+
+    // A heal landing on someone else is scored against the healer's own bar, which says nothing
+    // about what it does to the unit it lands on, so the MINOR_HEAL against HEAL split cannot gate
+    // it and the table entry is the evidence instead.
+    std::list<Unit*> enemies;
+    me->GetEnemyListInRadiusAround(me, PB_INTERRUPT_WATCH_RADIUS, enemies);
+
+    for (Unit const* pEnemy : enemies)
+    {
+        if (pEnemy == pVictim || !pEnemy->IsCreature() || !IsValidHostileTarget(pEnemy) ||
+            !IsEngagedWithGroup(pEnemy) || !healsVictimNow(pEnemy))
+            continue;
+
+        if (canReserveAgainst(pEnemy, PB_INTERRUPT_MINOR_HEAL))
+            return true;
     }
 
     return false;
@@ -12806,6 +13688,82 @@ uint32 PartyBotAI::ScaleTankRage(uint32 rage) const
     return uint32(rage * (0.4f + 0.6f * float(me->GetLevel()) / float(maxLevel)));
 }
 
+// Battle Stance for a swarm, because Thunder Clap is the tank's only area threat and cannot be cast
+// from Defensive. Hysteresis on every edge, because a stance swap empties the rage bar of a warrior
+// without Tactical Mastery and a count hovering at the threshold would otherwise swap every tick.
+static constexpr uint32 PB_SWARM_STANCE_MIN_HOLD_MS = 6000;
+static constexpr uint32 PB_SWARM_STANCE_GRACE_MS = 3000;
+static constexpr float PB_SWARM_STANCE_ENTER_HEALTH = 50.0f;
+static constexpr float PB_SWARM_STANCE_LEAVE_HEALTH = 40.0f;
+
+uint32 PartyBotAI::CountEngagedSwarmFodder(bool& eliteEngaged) const
+{
+    eliteEngaged = false;
+
+    if (!IsInSwarmArea())
+        return 0;
+
+    std::list<Unit*> nearby;
+    me->GetEnemyListInRadiusAround(me, PB_SWARM_RADIUS, nearby);
+
+    uint32 fodder = 0;
+    for (Unit* pUnit : nearby)
+    {
+        if (!pUnit->IsAlive() || !IsValidHostileTarget(pUnit) || !IsEngagedWithGroup(pUnit))
+            continue;
+
+        if (IsSwarmFodder(pUnit))
+            ++fodder;
+        else
+            eliteEngaged = true;
+    }
+
+    return fodder;
+}
+
+bool PartyBotAI::WantsSwarmBattleStance()
+{
+    if (!m_spells.warrior.pBattleStance || !m_spells.warrior.pThunderClap ||
+        !m_spells.warrior.pDefensiveStance)
+        return m_swarmStance = false;
+
+    bool eliteEngaged = false;
+    uint32 const fodder = CountEngagedSwarmFodder(eliteEngaged);
+    uint32 const now = WorldTimer::getMSTime();
+    bool const swarm = fodder >= PB_SWARM_MIN_FODDER;
+    if (swarm)
+        m_swarmLastSeen = now;
+
+    bool want;
+    if (eliteEngaged || me->GetHealthPercent() < PB_SWARM_STANCE_LEAVE_HEALTH)
+        want = false;
+    else if (m_swarmStance)
+        want = swarm ||
+               WorldTimer::getMSTimeDiff(m_swarmStanceSince, now) < PB_SWARM_STANCE_MIN_HOLD_MS ||
+               WorldTimer::getMSTimeDiff(m_swarmLastSeen, now) < PB_SWARM_STANCE_GRACE_MS;
+    else
+        want = swarm && me->GetHealthPercent() >= PB_SWARM_STANCE_ENTER_HEALTH;
+
+    if (want != m_swarmStance)
+    {
+        m_swarmStance = want;
+        if (want)
+            m_swarmStanceSince = now;
+
+        time_t const wallNow = time(nullptr);
+        if (IsCombatLogged() && (wallNow - m_lastSwarmStanceLog) >= 2)
+        {
+            m_lastSwarmStanceLog = wallNow;
+            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL,
+                     "[BotCombat] swarmstance bot='%s' to=%s fodder=%u elite=%u hp=%.0f rage=%u",
+                     me->GetName(), want ? "battle" : "defensive", fodder, uint32(eliteEngaged),
+                     me->GetHealthPercent(), me->GetPower(POWER_RAGE) / 10);
+        }
+    }
+
+    return m_swarmStance;
+}
+
 void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
 {
     // Defensive Stance first and before anything else is attempted, because most of what
@@ -12814,7 +13772,19 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // warrior that opens with Charge is in Battle Stance when the fight starts and has to be
     // moved across at once rather than eleven checks later, which is where the shared list did
     // it and is why the opening was being fought in the wrong stance.
-    if (m_spells.warrior.pDefensiveStance &&
+    //
+    // The exception is a swarm with no elite in it, where Thunder Clap is worth more than all three.
+    bool const swarmStance = WantsSwarmBattleStance();
+    if (swarmStance)
+    {
+        if (me->GetShapeshiftForm() != FORM_BATTLESTANCE &&
+            CanTryToCastSpell(me, m_spells.warrior.pBattleStance))
+        {
+            if (DoCastSpell(me, m_spells.warrior.pBattleStance) == SPELL_CAST_OK)
+                return;
+        }
+    }
+    else if (m_spells.warrior.pDefensiveStance &&
         me->GetShapeshiftForm() != FORM_DEFENSIVESTANCE &&
         CanTryToCastSpell(me, m_spells.warrior.pDefensiveStance))
     {
@@ -12900,6 +13870,17 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
     // The global cooldown, best threat per rage first. Shield Slam leads it and works in any
     // stance despite reading like a Defensive ability; Revenge is nearly free and its own
     // cooldown means it is never what gets crowded out.
+    //
+    // In a swarm Thunder Clap leads instead: threat on everything around the tank at once, against
+    // mobs that each die too fast for single target threat to matter.
+    if (swarmStance && me->GetShapeshiftForm() == FORM_BATTLESTANCE &&
+        me->GetEnemyCountInRadiusAround(me, 8.0f) > 1 &&
+        CanTryToCastSpell(pVictim, m_spells.warrior.pThunderClap))
+    {
+        if (DoCastSpell(pVictim, m_spells.warrior.pThunderClap) == SPELL_CAST_OK)
+            return;
+    }
+
     if (m_spells.warrior.pShieldSlam && IsWearingShield(me) &&
         CanTryToCastSpell(pVictim, m_spells.warrior.pShieldSlam))
     {
@@ -12984,8 +13965,9 @@ void PartyBotAI::UpdateInCombatAI_WarriorTank(Unit* pVictim)
                                 ? m_spells.warrior.pCleave
                                 : m_spells.warrior.pHeroicStrike)
     {
+        // A swarm's mobs die before a Sunder is worth stacking, so Cleave is not held back for one.
         uint32 floor = Spell::CalculatePowerCost(pDump, me);
-        if (m_spells.warrior.pSunderArmor)
+        if (m_spells.warrior.pSunderArmor && !(swarmStance && pDump == m_spells.warrior.pCleave))
             floor += Spell::CalculatePowerCost(m_spells.warrior.pSunderArmor, me);
 
         if (me->GetPower(POWER_RAGE) >= floor &&

@@ -769,6 +769,53 @@ bool ChatHandler::HandleHarnessDespawnCommand(char* args)
     return true;
 }
 
+// .harness respawndelay <character> <entry> <seconds> [range]
+// Set how long every creature of one entry near this character stays dead once killed, without
+// killing any of them. In memory only, so it lasts until the creature is next loaded from the
+// world database; nothing in the `creature` table changes.
+bool ChatHandler::HandleHarnessRespawnDelayCommand(char* args)
+{
+    Player* pTarget = GetHarnessTarget(&args);
+    if (!pTarget)
+    {
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    uint32 entry = 0;
+    uint32 seconds = 0;
+    if (!ExtractUInt32(&args, entry) || !ExtractUInt32(&args, seconds))
+    {
+        SendSysMessage("Syntax: .harness respawndelay <character> <entry> <seconds> [range]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    float range = 500.0f;
+    ExtractFloat(&args, range);
+
+    std::list<Creature*> creatures;
+    pTarget->GetCreatureListWithEntryInGrid(creatures, entry, range);
+
+    uint32 alive = 0;
+    uint32 dead = 0;
+    for (Creature* pCreature : creatures)
+    {
+        if (!pCreature->IsInWorld())
+            continue;
+
+        pCreature->SetRespawnDelay(seconds);
+        if (pCreature->IsAlive())
+            ++alive;
+        else
+            ++dead;
+    }
+
+    PSendSysMessage("respawndelay entry=%u seconds=%u range=%.0f alive=%u dead=%u",
+        entry, seconds, range, alive, dead);
+    return true;
+}
+
 // .harness select <character> <entry> [range]
 // Point a character's selection at the nearest live creature of an entry.
 //

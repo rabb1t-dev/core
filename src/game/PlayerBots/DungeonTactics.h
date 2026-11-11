@@ -20,6 +20,8 @@
 #include "Platform/Define.h"
 #include <vector>
 
+class Creature;
+
 // What a party bot is told about the instance it is standing in.
 //
 // Everything here is a judgement that cannot be reached from the creature's own data. A bot can see
@@ -99,6 +101,15 @@ struct DungeonCreatureTactic
     //
     // Zero, which is every creature without an entry, means the reserve never engages for it.
     float healsBelowPercent;
+
+    // A creature the group must not kill but cannot leave loose, held by a warlock's voidwalker
+    // and by the group's off-tank warrior. Both stop meleeing at this share of its health and keep
+    // only the threat: Torment for the pet, Sunder Armor for the warrior. Moira Bronzebeard is the
+    // case: she heals the Emperor, her quests need her alive, and left alone she chases whichever
+    // healer has the most threat on her.
+    //
+    // Zero, which is every creature without an entry, leaves both on the group's target.
+    float petHoldFloorPercent;
 };
 
 // A patch of ground worth holding, and the bounds of it.
@@ -244,6 +255,28 @@ struct DungeonTactics
     // big it is, and a second copy of that number in this table is a second thing to get wrong.
     std::vector<uint32> groundHazardSpellIds;
 
+    // Creatures the group attacks the moment one is in sight, as though the player had ordered it.
+    //
+    // focusFirst cannot express this. It only ranks what the group is already fighting, and the
+    // case that needs this is a creature that never fights anybody: it walks to a point and does
+    // something there that loses the encounter. Sunken Temple's Nightmare Suppressor walks from a
+    // door to the Shade of Hakkar and casts Suppression on arrival, a permanent aura that killing
+    // it afterwards does not remove, and the third one fails the event. Being top of focusFirst,
+    // it was still ignored until the player pointed at it: one run lost the event to three
+    // Suppressors, the first of which was standing nine yards from a mage before anything hit it.
+    //
+    // Listed last so that entries which have no use for it can leave it out.
+    std::vector<uint32> interceptEntries;
+
+    // Whether the tank stays on what it is holding when an intercept goes out, rather than going
+    // with everybody else.
+    //
+    // The tank goes by default because a Suppressor is big enough that damage dealers will not
+    // open on it until somebody with threat has. That stops being true of an intercept small
+    // enough to fall outside the opening ramp, and an intercept that arrives every few seconds
+    // while a boss is up turns "the tank goes too" into a boss with nobody on it.
+    bool interceptSparesTank;
+
     float GetRangedStandoff(uint32 creatureEntry) const;
 
     // The anchor for this creature, if it has one. False leaves the caller's positioning alone.
@@ -284,5 +317,10 @@ struct DungeonTactics
 // expected to hold the answer for as long as they stay on the map: the table is static data and the
 // pointers into it outlive any bot.
 DungeonTactics const* GetDungeonTactics(uint32 mapId);
+
+// Whether a creature on a focusFirst list is stationary support -- a totem or a ward -- that a bot
+// may walk up to without pulling anything, rather than a pack member that merely has kill priority.
+// The approach-anyway exemptions in the movement checks apply only to these.
+bool IsPassiveSupportCreature(Creature const* pCreature);
 
 #endif

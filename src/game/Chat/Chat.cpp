@@ -105,6 +105,7 @@ ChatCommand * ChatHandler::getCommandTable()
         { "talents",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessTalentsCommand,      "", nullptr },
         { "threat",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessThreatCommand,       "", nullptr },
         { "despawn",    SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessDespawnCommand,      "", nullptr },
+        { "respawndelay", SEC_ADMINISTRATOR,    true,  &ChatHandler::HandleHarnessRespawnDelayCommand, "", nullptr },
         { "select",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessSelectCommand,       "", nullptr },
         { "enemy",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessEnemyCommand,        "", nullptr },
         { "dynobj",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleHarnessDynObjCommand,       "", nullptr },
@@ -136,7 +137,9 @@ ChatCommand * ChatHandler::getCommandTable()
         { "guild",      SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildGuildCommand,      "", nullptr },
         { "resetbinds", SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildResetBindsCommand, "", nullptr },
         { "attune",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildAttuneCommand,     "", nullptr },
+        { "outfit",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildOutfitCommand,     "", nullptr },
         { "reload",     SEC_ADMINISTRATOR,      true,  &ChatHandler::HandleRaidGuildReloadCommand,     "", nullptr },
+        { "loot",       SEC_ADMINISTRATOR,      false, &ChatHandler::HandleRaidGuildLootCommand,       "", nullptr },
         { nullptr,      0,                      false, nullptr,                                        "", nullptr },
     };
 

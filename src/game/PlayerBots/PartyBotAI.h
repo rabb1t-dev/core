@@ -176,9 +176,20 @@ public:
                         float& radius) const final;
     bool IsEngagedWithGroup(Unit const* pEnemy) const;
     void SetGroupAttackOrder(ObjectGuid guid);
+    void InterceptOnSight();
+    Unit* FindBestAreaSpellCenter(float range, float radius, uint32& count) const;
+    bool IsFrostNovaPileInReach() const;
+    // A fight against a stream of weak mobs rather than a pack: several non-elites engaged at once.
+    static bool IsSwarmFodder(Unit const* pEnemy);
+    bool IsInSwarmArea() const;
+    bool IsSwarmFight() const;
+    void LogSwarmMageCast(SpellEntry const* pSpell, uint32 fodder, uint32 loose) const;
+    bool WouldSpellPullUnengagedElite(Unit const* pTarget, SpellEntry const* pSpellEntry) const;
     void ClearGroupAttackOrder();
     bool HasThreatOnGroup(Unit const* pEnemy) const;
     Unit* SelectControlledLeftoverTarget() const;
+    bool IsAnotherEnemyFighting(Unit const* pExcept) const;
+    bool ReleaseBanishOnLastEnemy();
     bool IsUnderOrdersAgainst(Unit const* pTarget) const;
     bool IsTargetInCurrentFight(Unit const* pTarget) const;
     Unit* SelectGroupFocusTarget() const;
@@ -192,6 +203,9 @@ public:
     Unit* SelectInterruptTarget(SpellEntry const* pInterruptSpell, uint32 minPriority,
                                 bool mayPreempt) const;
     bool InterruptHostileCasters();
+    Creature* GetOffTankHold(float& floorPercent) const;
+    bool UpdateOffTankHold();
+    time_t m_lastOffTankLog = 0;
     Unit* SelectPeelTarget() const;
     bool PeelForTheHealer();
 
@@ -283,8 +297,11 @@ public:
     uint32 m_standoffSince = 0;
     // Throttle for the line explaining a pet held back from an unsafe route.
     mutable time_t m_lastPetHoldLog = 0;
+    time_t m_lastPetTankLog = 0;
+    bool m_petTankStay = false;
     void CommandPetAttack(Pet* pPet, Unit* pTarget);
     void UpdatePetCombat();
+    bool UpdatePetTankHold(Pet* pPet);
     uint32 GetRangedAttackSpellId() const;
     float GetPullStandoffDistance() const;
     SpellEntry const* GetInstantPullSpell() const;
@@ -340,6 +357,8 @@ public:
     void UpdateOutOfCombatAI_Warlock() final;
     void UpdateInCombatAI_Warrior() final;
     void UpdateInCombatAI_WarriorTank(Unit* pVictim);
+    bool WantsSwarmBattleStance();
+    uint32 CountEngagedSwarmFodder(bool& eliteEngaged) const;
     bool ShouldTauntTarget(Unit const* pVictim) const;
     void UpdateOutOfCombatAI_Warrior() final;
     void UpdateInCombatAI_Rogue() final;
@@ -447,6 +466,8 @@ public:
     // When this bot last walked out of a held mob's reach, so it steps once rather than every
     // tick for as long as the root lasts.
     time_t m_lastHeldStep = 0;
+    // When this bot last looked for something on the instance's intercept list. Once a second.
+    time_t m_lastInterceptScan = 0;
     // When this bot last stepped out of an unpulled creature's aggro radius, so it steps once and
     // then lets the follow or the chase have its say rather than shuffling every tick.
     time_t m_lastNeighbourStep = 0;
@@ -484,11 +505,18 @@ public:
     mutable time_t m_lastInterruptWatchCheck = 0;
     mutable bool m_interruptWatchWorth = false;
     mutable time_t m_lastLeftoverScan = 0;
+    time_t m_lastBanishScan = 0;
     time_t m_lastPetLog = 0;
     time_t m_lastPetSummon = 0;
     uint32 m_threatRefusals = 0;
     uint32 m_threatDownranks = 0;
     time_t m_lastThreatLog = 0;
+    // A tank in Battle Stance for a swarm's Thunder Clap: whether the swarm holds it there, when it
+    // went in, and when the swarm was last seen, so the stance outlives a momentary dip in the count.
+    bool m_swarmStance = false;
+    uint32 m_swarmStanceSince = 0;
+    uint32 m_swarmLastSeen = 0;
+    time_t m_lastSwarmStanceLog = 0;
     // Whether this death has already had the bot's standing orders torn up. Reset on rising, so
     // every death gets one clearing and no death gets one per tick.
     bool m_ordersClearedByDeath = false;

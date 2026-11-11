@@ -15,6 +15,7 @@
 */
 
 #include "DungeonTactics.h"
+#include "Creature.h"
 #include "SharedDefines.h"
 
 namespace
@@ -294,6 +295,43 @@ enum MoltenCoreCreatures
     NPC_FLAMEWAKER_PRIEST       = 11662,
     NPC_CORE_RAGER              = 11672,
 };
+
+// Blackrock Depths.
+//
+// Bosses enumerated from creature_template for map 230 rather than from the script directory, and
+// the event-summoned ones added by hand because they have no spawn row: the six Ring of Law
+// opponents (9027-9032), Hurley Blackbreath and Watchman Doomgrip. Of roughly forty, the ones with
+// nothing here and why:
+//
+//   High Interrogator Gerstahn's Psychic Scream is the only fear in the instance outside the
+//   optional arena challenge, so Tremor is not worth a slot for the run. Bael'Gar's Spawn are
+//   non-elite level forty nines the default target rules already handle. Golem Lord Argelmach brings
+//   his golems in on aggro, which is a pull rather than a mechanic. Magmus's script drives the Iron
+//   Hall doors and adds War Stomp below half health, nothing more. The Ring of Law's Polymorph,
+//   Anti-Magic Shield and Paralyzing Poison land on one bot at a time, and nothing in this table
+//   -- a distance, a kill order -- changes whether they do. Emperor Thaurissan's CallForHelp every twenty seconds pulls the throne room, which
+//   the player has to clear first; no table entry makes that safe.
+enum BlackrockDepthsCreatures
+{
+    NPC_ANVILRAGE_MEDIC          = 8894,
+    NPC_PRINCESS_MOIRA           = 8929,
+    NPC_LORD_ROCCOR              = 9025,
+    NPC_VILEREL                  = 9036,
+    NPC_BURNING_SPIRIT           = 9178,
+    NPC_COMMANDER_GORSHAK        = 9020,
+};
+
+enum BlackrockDepthsSpells
+{
+    // Lord Incendius. Effect two is a persistent area aura dealing a hundred fire damage every
+    // three seconds where it lands, on an eleven to fourteen second repeat. Thirty three a second
+    // is nearly three times Jammal'an's Flamestrike, which Sunken Temple leaves alone.
+    SPELL_FIRE_STORM             = 13899,
+};
+
+// Lord Roccor casts the same Ground Tremor (6524) as Atal'alarion, on a nine to fourteen second
+// repeat, so the same distance clears it.
+constexpr float BRD_GROUND_TREMOR_STANDOFF = ST_ATALALARION_STANDOFF;
 
 DungeonTactics const g_dungeonTactics[] =
 {
@@ -1269,6 +1307,11 @@ DungeonTactics const g_dungeonTactics[] =
         // ground effect is twenty four fire damage every two seconds for eight -- under a hundred
         // in all, against Noxious Cloud's three thousand. Walking out costs more than standing in it.
         /* groundHazardSpellIds */ {},
+
+        // The Suppressor, which has to die before it reaches the Shade rather than merely die.
+        // It is summoned at one of the two doors, forty five yards from the altar, and its cast
+        // is instant on arrival, so the whole window is the walk.
+        /* interceptEntries */ { NPC_NIGHTMARE_SUPPRESSOR },
     },
 
     {
@@ -1344,6 +1387,106 @@ DungeonTactics const g_dungeonTactics[] =
         // The second half is worse than the wasted damage. Moving one is what resets the fight,
         // and a bot that has decided to fight a Rager is a bot that will chase it.
         /* ignoreEntries */ { NPC_CORE_RAGER },
+    },
+
+    {
+        MAP_BLACKROCK_DEPTHS,
+        "Blackrock Depths",
+
+        // See the note above the creature list: one fear, on a boss most runs kill in the first
+        // ten minutes, and the arena challenge's, which only runs if the player starts it.
+        /* wantsTremorTotem */ false,
+
+        // Commander Gor'shak, for What Is Going On? (3982). Accepting it runs quest_start_scripts
+        // 3982, which drops his passive flag and summons two waves -- two Guardsmen, a Warden and a
+        // Torturer at two seconds, two more Guardsmen at thirty two -- that go for him, and the
+        // quest fails if he dies. The bots defend only the party unless told otherwise.
+        /* escortNpcEntries */ { NPC_COMMANDER_GORSHAK },
+        // The waves spawn about thirty five yards from his cell, at (395, -203).
+        /* escortGuardRadius */ 40.0f,
+
+        // The two healers that stand beside something else.
+        //
+        // Anvilrage Medics arrive in pairs with General Angerforge's alarm at thirty percent,
+        // alongside eight Reservists at three tenths of normal health that die to anything. The
+        // Medics are elite and cast Heal and Prayer of Healing on a four to nine second repeat, so
+        // left alone they undo the burn the alarm was meant to interrupt.
+        //
+        // Vile'rel is the Seven's healer. The Seven are released one at a time, but a slow kill
+        // overlaps them, and Vile'rel is the one that makes the overlap compound.
+        /* focusFirst */ { NPC_ANVILRAGE_MEDIC, NPC_VILEREL },
+
+
+        /* creatures */
+        {
+            // Ground Tremor, a stun on everything within twenty yards of him.
+            { NPC_LORD_ROCCOR, BRD_GROUND_TREMOR_STANDOFF, 0, 0.0f, 0.0f, 0.0f, 0.0f },
+            {
+                NPC_ANVILRAGE_MEDIC,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                // Heals from the pull; neither heal in spell list 88940 has a health gate.
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_VILEREL,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                /* healsBelowPercent */ 100.0f,
+            },
+            {
+                NPC_PRINCESS_MOIRA,
+                /* rangedStandoff */ 0.0f,
+                /* breakSightSpellId */ 0,
+                /* anchor */ 0.0f, 0.0f, 0.0f, 0.0f,
+                /* burnBelowPercent */ 0.0f,
+                /* summonEntries */ {},
+                // Heal (15586) on the Emperor every ten seconds whenever he is below full. Her book
+                // is all script, spell_list_id 0, so this entry is the only record of the heal.
+                /* healsBelowPercent */ 100.0f,
+                // High, because the interrupts land on her too: a dozen Earth Shocks and Shield
+                // Bashes over a two minute fight are a third of her health on their own.
+                /* petHoldFloorPercent */ 70.0f,
+            },
+        },
+
+        /* holdLines */ {},
+
+        // Princess Moira, who has to survive the Emperor.
+        //
+        // boss_moira_bronzebeard heals him every ten seconds whenever he is below full, and every
+        // rule the bots have for choosing a target -- casting a heal, known to heal, standing in
+        // the fight -- picks her ahead of him. Killing her is quicker, and it is also the end of
+        // The Royal Rescue and The Fate of the Kingdom, both of which need her alive when he dies
+        // so that his JustDied can turn her friendly.
+        //
+        // Ignored, she is still interrupted: SelectInterruptTarget does not consult this list, so a
+        // bot with a kick in range stops her heal without adding her to its target. A player who
+        // does want her dead says so with an attack order, which overrides this.
+        /* ignoreEntries */ { NPC_PRINCESS_MOIRA },
+
+        // Lord Incendius's Fire Storm. See SPELL_FIRE_STORM.
+        /* groundHazardSpellIds */ { SPELL_FIRE_STORM },
+
+        // Ambassador Flamelash's Burning Spirits.
+        //
+        // instance_blackrock_depths summons one at each of seven dwarf runes every fifteen to
+        // thirty seconds for as long as he is in combat, and runs it at him; each one that arrives
+        // stacks Burning Spirit (14744) on him, up to fifty. They are level thirty non-elites at
+        // three quarters of walking speed, so the answer is to kill them on the walk.
+        /* interceptEntries */ { NPC_BURNING_SPIRIT },
+
+        // A spirit every three or four seconds on average across the seven runes, against one
+        // Flamelash. The tank going with each one leaves him loose on the healer for most of the
+        // fight, and a level thirty spirit is far below the size that makes damage dealers wait
+        // for the tank's threat before opening.
+        /* interceptSparesTank */ true,
     },
 };
 
@@ -1472,6 +1615,45 @@ DungeonTactics const* GetDungeonTactics(uint32 mapId)
             return &tactics;
 
     return nullptr;
+}
+
+// Whether a focus-first entry is the kind of thing a bot may walk to, or send a pet to, without
+// that being a pull.
+//
+// Here rather than beside the bot rules that first needed it, because the movement checks in Unit
+// and the follow generator apply the same exemption and need the same test. They took the raw
+// entry list on trust, so every pack mob a tactic ranked for kill order became invisible to pull
+// avoidance: Sunken Temple lists Atal'ai Witch Doctor, twenty eight elite spawns, and a tank
+// stepping clear of a Slime Maggot picked a spot six yards from two of them and pulled both.
+//
+// focusFirst answers one question -- what dies first -- and three separate rules have now read it
+// as the answer to a different one: which creatures are safe to approach on sight. They are not
+// the same set, and every time the two have been confused the result has been the same bug.
+//
+// The list holds two populations. One is stationary support that never appears in anybody's
+// attacker list because it never attacks: Earthgrab Totem, Ward of Zum'rah, Fire Nova Totem,
+// Greater Healing Ward. Walking to those is safe by construction and is the entire reason the
+// rules below exist -- Antu'sul's ward healed him through three wipes with no bot ever selecting
+// it. The other is ordinary pack members that happen to have kill priority: Barbed Lasher,
+// Constrictor Vine, Noxxion's Spawn, the Sul'lithuz Broodlings. Approaching one of those is a
+// pull, and in Maraudon it is a pull of a seventeen-Lasher corridor.
+//
+// movement_type separates them cleanly and nothing else does. Creature type cannot: Greater
+// Healing Ward and Barbed Lasher are both CREATURE_TYPE_NOT_SPECIFIED. Rank cannot: the
+// Broodlings and Theradrim Shardlings are rank zero, and a bot sent alone at one is still a bot
+// that pulled. Every ward and totem on these lists is IDLE and every real kill-order entry
+// wanders, so the test is simply whether the creature was ever going to move.
+bool IsPassiveSupportCreature(Creature const* pCreature)
+{
+    if (!pCreature)
+        return false;
+
+    // Anything that wanders is part of a pack, and going to it is a pull.
+    if (pCreature->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+        return false;
+
+    // And an immobile elite is a fight rather than an object, whoever walks at it.
+    return !pCreature->IsElite();
 }
 
 // The creature whose health gates whether this summon is worth turning for, or zero when nothing

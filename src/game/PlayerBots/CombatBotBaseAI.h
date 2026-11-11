@@ -94,6 +94,16 @@ static constexpr float CB_HEAL_MANA_CRITICAL_PERCENT = 30.0f;
 static constexpr float CB_HEAL_CONSERVE_CAP_PERCENT = 70.0f;
 static constexpr float CB_HEAL_CRITICAL_CAP_PERCENT = 50.0f;
 
+// Below this, a member is healed even while the last of the mana is kept for the tank.
+//
+// Rationing is a bet that the tank's life is worth more than the next heal on anybody else, and it
+// stops being one when somebody else is about to die: a Flash Heal is a fifth of what is left, and
+// a dead member is a resurrection's worth of mana and the rest of their fight. A priest at a
+// quarter of its bar watched the group leader fall from forty nine percent to dead over twenty
+// seconds, four yards away, logging rationed_tank_only on every tick, while it put two Greater Heals
+// into a tank at fifty five percent.
+static constexpr float CB_HEAL_RATION_DYING_PERCENT = 25.0f;
+
 // The ceiling on any in-combat heal, whatever the caller asked for.
 //
 // This is the one that mattered most. Of 947 heals cast across a run, 555 landed on somebody
@@ -279,7 +289,10 @@ public:
     PlayerPremadeSpecTemplate const* FindPremadeSpecByName(std::string const& name) const;
     PlayerPremadeSpecTemplate const* SelectPremadeSpecTemplate() const;
     void EquipPremadeGearTemplate();
-    void EquipRandomGearInEmptySlots();
+    // With weights, each slot takes the best scoring item in the level band rather than a random
+    // one, and PvP gear is left out. That is the form a roster member is outfitted with: it keeps
+    // what it is given, so its kit should be chosen rather than drawn.
+    void EquipRandomGearInEmptySlots(StatWeights const* pBestFor = nullptr);
     ItemPrototype const* SelectWeaponForSlot(std::vector<ItemPrototype const*> const& candidates,
                                              uint8 slot) const;
     void AutoEquipGear(uint32 option);
@@ -328,6 +341,7 @@ public:
     float GetMaxHealSpellRange() const;
     float GetManaAdjustedHealPercent(float requestedPercent) const;
     bool IsRationingHealsForTank() const;
+    bool IsRationedOutOfHeals(Player const* pMember) const;
     bool IsAlreadyHealing(ObjectGuid guid) const;
     bool IsAttackableHostileTarget(Unit const* pTarget) const;
     bool IsProtectedByCrowdControl(Unit const* pTarget) const;
@@ -821,6 +835,7 @@ public:
             SpellEntry const* pEvocation;
             SpellEntry const* pIceBlock;
             SpellEntry const* pBlizzard;
+            SpellEntry const* pFlamestrike;
             SpellEntry const* pBlastWave;
             SpellEntry const* pCombustion;
         } mage;

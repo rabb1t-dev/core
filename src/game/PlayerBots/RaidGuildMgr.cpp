@@ -343,7 +343,8 @@ Player* RaidGuildMgr::FindSummonedMember(RaidGuildMember const& member) const
 bool RaidGuildMgr::PrepareGroup(Player* pLeader, uint32 expectedSize, std::string& error)
 {
     Group* pGroup = pLeader->GetGroup();
-    if (!pGroup)
+    bool const created = !pGroup;
+    if (created)
     {
         pGroup = new Group;
         if (!pGroup->Create(pLeader->GetObjectGuid(), pLeader->GetName()))
@@ -373,12 +374,15 @@ bool RaidGuildMgr::PrepareGroup(Player* pLeader, uint32 expectedSize, std::strin
     if (expectedSize > MAX_GROUP_SIZE && !pGroup->isRaidGroup())
         pGroup->ConvertToRaid();
 
-    // Stated rather than inherited. Group::Create hardcodes these two, and the loot design
-    // this roster is being built for keys off both, so a change to that default would
-    // silently change how the guild distributes loot.
-    pGroup->SetLootMethod(GROUP_LOOT);
-    pGroup->SetLooterGuid(ObjectGuid());
-    pGroup->SetLootThreshold(ITEM_QUALITY_UNCOMMON);
+    // Stated rather than inherited when the group is new, because Group::Create hardcodes
+    // them. A group that already exists keeps whatever the leader chose: summoning one more
+    // member must not quietly turn master loot back into group loot.
+    if (created)
+    {
+        pGroup->SetLootMethod(GROUP_LOOT);
+        pGroup->SetLooterGuid(ObjectGuid());
+        pGroup->SetLootThreshold(ITEM_QUALITY_UNCOMMON);
+    }
     pGroup->SendUpdate();
     return true;
 }

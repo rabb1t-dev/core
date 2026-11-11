@@ -20,6 +20,7 @@
 #include "ItemEvaluator.h"
 #include "DungeonTactics.h"
 #include "BotProvisions.h"
+#include "RaidGuildMgr.h"
 #include "Database/DBCStores.h"
 
 #include <algorithm>
@@ -870,6 +871,11 @@ void CombatBotBaseAI::PopulateSpellData()
                 {
                     if (IsHigherRankSpell(m_spells.mage.pBlizzard))
                         m_spells.mage.pBlizzard = pSpellEntry;
+                }
+                else if (pSpellEntry->SpellName[0].find("Flamestrike") != std::string::npos)
+                {
+                    if (IsHigherRankSpell(m_spells.mage.pFlamestrike))
+                        m_spells.mage.pFlamestrike = pSpellEntry;
                 }
                 else if (pSpellEntry->SpellName[0].find("Blast Wave") != std::string::npos)
                 {
@@ -2038,7 +2044,8 @@ std::vector<CombatBotBaseAI::SpellSlot> CombatBotBaseAI::GetSpellSlots() const
                      SLOT(mage, pBlink), SLOT(mage, pCounterspell), SLOT(mage, pPresenceOfMind),
                      SLOT(mage, pArcanePower), SLOT(mage, pRemoveLesserCurse), SLOT(mage, pScorch),
                      SLOT(mage, pPyroblast), SLOT(mage, pEvocation), SLOT(mage, pIceBlock),
-                     SLOT(mage, pBlizzard), SLOT(mage, pBlastWave), SLOT(mage, pCombustion) };
+                     SLOT(mage, pBlizzard), SLOT(mage, pFlamestrike), SLOT(mage, pBlastWave),
+                     SLOT(mage, pCombustion) };
         case CLASS_PRIEST:
             return { SLOT(priest, pPowerWordFortitude), SLOT(priest, pDivineSpirit),
                      SLOT(priest, pPrayerofSpirit), SLOT(priest, pPrayerofFortitude),
@@ -2515,6 +2522,19 @@ bool CombatBotBaseAI::IsRationingHealsForTank() const
     return false;
 }
 
+// Whether rationing keeps this member from a direct heal right now. The tank never is, and nor is
+// anybody close enough to dying that letting them is the bigger cost.
+bool CombatBotBaseAI::IsRationedOutOfHeals(Player const* pMember) const
+{
+    if (!IsRationingHealsForTank())
+        return false;
+
+    if (GetEffectiveRole(pMember) == ROLE_TANK)
+        return false;
+
+    return pMember->GetHealthPercent() >= CB_HEAL_RATION_DYING_PERCENT;
+}
+
 // Whether this bot is itself already committed to a heal on that unit.
 //
 // AreOthersOnSameTarget only ever looked at other group members, so nothing stopped a healer
@@ -2557,7 +2577,6 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
         return nullptr;
 
     float const healPercent = GetManaAdjustedHealPercent(groupHealPercent);
-    bool const tankOnly = IsRationingHealsForTank();
 
     Unit* pTarget = nullptr;
 
@@ -2580,8 +2599,8 @@ Unit* CombatBotBaseAI::SelectHealTarget(float selfHealPercent, float groupHealPe
             bool const isTank = GetEffectiveRole(pMember) == ROLE_TANK;
 
             // Down to the last of the bar, and somebody is holding the mobs. Everything else can
-            // wait for the tank to live long enough for the fight to end.
-            if (tankOnly && !isTank)
+            // wait for the tank to live long enough for the fight to end -- unless it is dying.
+            if (IsRationedOutOfHeals(pMember))
                 continue;
 
             // Skip anyone whose missing health is already covered by heals in flight, this
@@ -3808,10 +3827,24 @@ PlayerPremadeSpecTemplate const* CombatBotBaseAI::SelectPremadeSpecTemplate() co
         return pSpec->role == ROLE_MELEE_DPS || pSpec->role == ROLE_RANGE_DPS;
     };
 
+    // The build this class is meant to play in its role, by name, which breaks a tie that entry
+    // order used to settle by accident. Two ordered level sixty mage builds both fit a level fifty
+    // bot, and fire-pve has the lower entry, so every mage came out fire whatever it was for --
+    // while the name this function's own table gives a ranged mage, frost-pve, had never been
+    // authored at all. Only ever a tie break: a build that fits the role and the level still beats
+    // the named default if the default does not.
+    CombatBotRoles const defaultRole = m_role != ROLE_INVALID ? m_role
+        : (IsMeleeDamageClass(me->GetClass()) ? ROLE_MELEE_DPS : ROLE_RANGE_DPS);
+    char const* const pDefaultName = GetDefaultSpecNameForRole(me->GetClass(), defaultRole);
+    auto const isDefault = [pDefaultName](PlayerPremadeSpecTemplate const* pSpec)
+    {
+        return pDefaultName && pSpec->name == pDefaultName;
+    };
+
     // Sorted rather than scanned because the template map is unordered, so ties previously
     // resolved differently from one run to the next. Entry is the final tie break for that reason.
     std::sort(vSpecs.begin(), vSpecs.end(),
-        [&isPreferredRole](PlayerPremadeSpecTemplate const* a, PlayerPremadeSpecTemplate const* b)
+        [&isPreferredRole, &isDefault](PlayerPremadeSpecTemplate const* a, PlayerPremadeSpecTemplate const* b)
     {
         bool const aPreferred = isPreferredRole(a);
         if (aPreferred != isPreferredRole(b))
@@ -3819,6 +3852,10 @@ PlayerPremadeSpecTemplate const* CombatBotBaseAI::SelectPremadeSpecTemplate() co
 
         if (a->level != b->level)
             return a->level > b->level;
+
+        bool const aDefault = isDefault(a);
+        if (aDefault != isDefault(b))
+            return aDefault;
 
         return a->entry < b->entry;
     });
@@ -3928,6 +3965,14 @@ void CombatBotBaseAI::LearnClassSpellsForLevel()
         // So the chain is skipped only when the bot holds no rank of it at all, which is the bot
         // that genuinely did not take the talent. Once it holds one, the ranks its level allows
         // are learned like any other spell, and Player::addSpell supersedes the lower one.
+        //
+        // A rank that is itself a talent point is the exception, and is never learned here. Those
+        // ranks chain together exactly like trainer ranks, so a bot holding one point of Frostbite
+        // or Improved Shield Bash was handed the rest of the talent for free and ended up over its
+        // budget. Only the spec spends talent points.
+        if (GetTalentSpellPos(pSpellEntry->Id))
+            continue;
+
         if (GetTalentSpellCost(sSpellMgr.GetFirstSpellInChain(pSpellEntry->Id)) > 0)
         {
             bool holdsLowerRank = false;
@@ -4202,11 +4247,13 @@ ItemPrototype const* CombatBotBaseAI::SelectWeaponForSlot(
     return contenders[urand(0, uint32(pool) - 1)];
 }
 
-void CombatBotBaseAI::EquipRandomGearInEmptySlots()
+void CombatBotBaseAI::EquipRandomGearInEmptySlots(StatWeights const* pBestFor)
 {
     LearnArmorProficiencies();
 
-    bool const onlyPvE = urand(0, 1) != 0;
+    // PvP gear is never chosen for a roster member, because SatisfyItemRequirements grants the
+    // honor rank it asks for and a saved character would carry that rank for good.
+    bool const onlyPvE = pBestFor || urand(0, 1) != 0;
     uint8 const honorRank = onlyPvE ? 0 : urand(5, 18);
 
     // Two pools per slot. `itemsPerSlot` is what the bot should wear: the right armour
@@ -4468,7 +4515,30 @@ void CombatBotBaseAI::EquipRandomGearInEmptySlots()
         if (pool.empty())
             continue;
 
-        ItemPrototype const* pProto = SelectWeaponForSlot(pool, slot);
+        // A caster's weapon is a stat stick, and ranking by swing damage would hand a priest the
+        // hardest hitting mace in the band. The weights know what it is for.
+        bool const casterWeapon = pBestFor && (m_role == ROLE_HEALER ||
+            (m_role == ROLE_RANGE_DPS && me->GetClass() != CLASS_HUNTER));
+
+        ItemPrototype const* pProto = casterWeapon ? nullptr : SelectWeaponForSlot(pool, slot);
+        if (!pProto && pBestFor)
+        {
+            float bestScore = 0.0f;
+            for (ItemPrototype const* pCandidate : pool)
+            {
+                // The second ring or trinket slot would otherwise pick the unique item the
+                // first one already holds, fail to store it, and stay empty.
+                if (pCandidate->MaxCount == 1 && me->HasItemCount(pCandidate->ItemId))
+                    continue;
+
+                float const score = sItemEvaluator.UpgradeDelta(me, pCandidate, nullptr, *pBestFor);
+                if (!pProto || score > bestScore)
+                {
+                    pProto = pCandidate;
+                    bestScore = score;
+                }
+            }
+        }
         if (!pProto)
             pProto = SelectRandomContainerElement(pool);
         if (!pProto)
@@ -5320,6 +5390,88 @@ StatWeights const* CombatBotBaseAI::GetStatWeights() const
     return sItemEvaluator.GetWeights(me->GetClass(), spec);
 }
 
+// Whether a roster member should be rid of an item it is carrying rather than wearing. Runs after
+// the equip pass, so anything it could wear has already been weighed and left in the bags.
+// Selling cannot be undone, which is why anything rare or better that the member can use is
+// kept whatever the score says, and why green resistance gear is kept for the resistance sets.
+static char const* GetReasonToSell(Player* pPlayer, CombatBotRoles role, ItemPrototype const* pProto)
+{
+    if (!pProto->SellPrice)
+        return nullptr;
+
+    if (pProto->Quality == ITEM_QUALITY_POOR)
+        return "junk";
+
+    if (pProto->Class != ITEM_CLASS_WEAPON && pProto->Class != ITEM_CLASS_ARMOR)
+        return nullptr;
+
+    if (pProto->Quality >= ITEM_QUALITY_LEGENDARY)
+        return nullptr;
+
+    // Worth keeping until the level comes, which for a roster member it will.
+    InventoryResult const usable = pPlayer->CanUseItem(pProto);
+    if (usable == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
+        return nullptr;
+
+    if (usable != EQUIP_ERR_OK)
+        return "cannot use it";
+
+    if (ItemEvaluator::IsCosmeticArmor(pProto))
+        return nullptr;
+
+    if (role != ROLE_HEALER && !ItemEvaluator::IsUsableArmorClass(pPlayer, pProto))
+        return "wrong armour class";
+
+    if (pProto->Quality >= ITEM_QUALITY_RARE)
+        return nullptr;
+
+    if (pProto->HolyRes || pProto->FireRes || pProto->NatureRes || pProto->FrostRes ||
+        pProto->ShadowRes || pProto->ArcaneRes)
+        return nullptr;
+
+    return "not worth wearing";
+}
+
+static void SellUnwantedItems(Player* pPlayer, CombatBotRoles role)
+{
+    struct Sale { uint8 bag; uint8 slot; Item* pItem; char const* reason; };
+    std::vector<Sale> sales;
+
+    auto consider = [&](uint8 bag, uint8 slot, Item* pItem)
+    {
+        if (!pItem || !pItem->GetProto())
+            return;
+        if (char const* reason = GetReasonToSell(pPlayer, role, pItem->GetProto()))
+            sales.push_back({ bag, slot, pItem, reason });
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(INVENTORY_SLOT_BAG_0, slot, pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* pBag = dynamic_cast<Bag*>(pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, bag));
+        if (!pBag)
+            continue;
+        for (uint8 slot = 0; slot < pBag->GetBagSize(); ++slot)
+            consider(bag, slot, pBag->GetItemByPos(slot));
+    }
+
+    // Collected first and destroyed after, so no walk ever reads a slot it has just emptied.
+    for (Sale const& sale : sales)
+    {
+        ItemPrototype const* pProto = sale.pItem->GetProto();
+        uint32 const count = sale.pItem->GetCount();
+        uint32 const price = pProto->SellPrice * count;
+
+        sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "[RaidGuild] %s sells '%s' (%u) x%u for %u copper: %s",
+            pPlayer->GetName(), pProto->Name1, pProto->ItemId, count, price, sale.reason);
+
+        pPlayer->DestroyItem(sale.bag, sale.slot, true);
+        pPlayer->ModifyMoney(price);
+    }
+}
+
 void CombatBotBaseAI::EquipOrUseNewItem()
 {
     // Learn any proficiency a new piece of gear asks for before asking whether it can be
@@ -5346,6 +5498,12 @@ void CombatBotBaseAI::EquipOrUseNewItem()
         // and the abilities lost are not stats at all.
         bool const requireShield = (m_role == ROLE_TANK) && IsShieldClass(me->GetClass());
         sItemEvaluator.OptimizeEquipment(me, *pWeights, requireShield, m_role == ROLE_HEALER);
+
+        // Roster members only. They keep what they carry for good, so what they will never wear
+        // has to go somewhere, and a generated bot is gone at the end of the session anyway.
+        RaidGuildMember const* pMember = sRaidGuildMgr.FindMember(me->GetName());
+        if (pMember && pMember->guid == me->GetGUIDLow())
+            SellUnwantedItems(me, m_role);
         return;
     }
 

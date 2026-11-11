@@ -28,6 +28,13 @@
 #include "Util.h"
 #include "RaidGuildMgr.h"
 #include "ItemEvaluator.h"
+#include "PlayerBotMgr.h"
+#include "CombatBotBaseAI.h"
+#include "GameObject.h"
+#include "Packets/Loot.h"
+#include "Maps/GridNotifiers.h"
+#include "Maps/GridNotifiersImpl.h"
+#include "Maps/CellImpl.h"
 
 namespace
 {
@@ -230,10 +237,11 @@ bool ChatHandler::HandleRaidGuildListCommand(char* /*args*/)
         if (member.IsProvisioned())
             provisioned++;
 
-        PSendSysMessage("member name=%s race=%u class=%u gender=%u role=%s subgroup=%u lootgroup=%u guid=%u account=%u",
+        PSendSysMessage("member name=%s race=%u class=%u gender=%u role=%s subgroup=%u lootgroup=%u guid=%u account=%u spec=%s online=%u",
             member.name.c_str(), uint32(member.race), uint32(member.classId), uint32(member.gender),
             GetRoleName(member.role), uint32(member.subGroup), uint32(member.lootGroup),
-            member.guid, member.accountId);
+            member.guid, member.accountId, member.spec.empty() ? "-" : member.spec.c_str(),
+            sRaidGuildMgr.FindSummonedMember(member) ? 1 : 0);
     }
 
     PSendSysMessage("roster members=%u provisioned=%u", uint32(roster.size()), provisioned);
@@ -351,8 +359,19 @@ bool ChatHandler::HandleRaidGuildSummonCommand(char* args)
     // Sized for what the group is about to hold, not for what is being added now, so that
     // summoning the second half of a raid one member at a time does not leave a party that
     // has to be promoted partway through.
-    uint32 expected = pLeader->GetGroup() ? pLeader->GetGroup()->GetMembersCount() : 1;
-    expected += uint32(names.size());
+    //
+    // A member already in the group is not added to it. A group keeps its offline members, so after
+    // a restart everyone being summoned back is already counted, and counting them again turned a
+    // returning party of five into a raid.
+    Group const* pGroup = pLeader->GetGroup();
+    uint32 expected = pGroup ? pGroup->GetMembersCount() : 1;
+    for (std::string const& name : names)
+    {
+        RaidGuildMember const* pMember = sRaidGuildMgr.FindMember(name);
+        if (!pGroup || !pMember || !pMember->IsProvisioned() ||
+            !pGroup->IsMember(ObjectGuid(HIGHGUID_PLAYER, pMember->guid)))
+            ++expected;
+    }
 
     std::string error;
     if (!sRaidGuildMgr.PrepareGroup(pLeader, expected, error))
@@ -603,6 +622,312 @@ bool ChatHandler::HandleRaidGuildResetBindsCommand(char* args)
     }
 
     PSendSysMessage("resetbinds members=%u cleared=%u", touched, cleared);
+    return true;
+}
+
+// Traveler's Backpack: sixteen slots and not soulbound.
+static constexpr uint32 RAIDGUILD_BAG_ENTRY = 4500;
+
+// .raidguild outfit [name]
+// Dresses summoned members for their level. White gear comes off, every empty slot is filled with
+// the best item in the level band for the member's spec, and every empty bag slot gets a bag.
+// Anything better than white stays where it is, so this only ever fills gaps and is safe to run on
+// a member that has earned gear.
+bool ChatHandler::HandleRaidGuildOutfitCommand(char* args)
+{
+    std::string only;
+    if (char* nameStr = ExtractArg(&args))
+    {
+        only = nameStr;
+        normalizePlayerName(only);
+
+        if (!sRaidGuildMgr.FindMember(only))
+        {
+            PSendSysMessage("RaidGuild: '%s' is not on the roster.", only.c_str());
+            SetSentErrorMessage(true);
+            return false;
+        }
+    }
+
+    auto countEmpty = [](Player* pPlayer)
+    {
+        uint32 empty = 0;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+                !pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                empty++;
+        return empty;
+    };
+
+    uint32 outfitted = 0;
+    uint32 skipped = 0;
+    for (RaidGuildMember const& member : sRaidGuildMgr.GetRoster())
+    {
+        if (!only.empty() && member.name != only)
+            continue;
+
+        Player* pPlayer = sRaidGuildMgr.FindSummonedMember(member);
+        PlayerBotEntry const* pEntry = pPlayer ? pPlayer->GetSession()->GetBot() : nullptr;
+        CombatBotBaseAI* pAI = pEntry ? dynamic_cast<CombatBotBaseAI*>(pEntry->ai.get()) : nullptr;
+        if (!pPlayer || !pPlayer->IsInWorld() || !pAI)
+        {
+            if (!only.empty())
+                PSendSysMessage("RaidGuild: '%s' is not in the world.", member.name.c_str());
+            skipped++;
+            continue;
+        }
+
+        // Armour cannot be changed in combat, so a slot cleared now could not be filled.
+        if (pPlayer->IsInCombat())
+        {
+            PSendSysMessage("RaidGuild: '%s' is in combat.", member.name.c_str());
+            skipped++;
+            continue;
+        }
+
+        // Without weights the fill falls back to a random draw that includes PvP gear.
+        StatWeights const* pWeights = pAI->GetStatWeights();
+        if (!pWeights)
+        {
+            PSendSysMessage("RaidGuild: '%s' has no stat weights to choose gear by.", member.name.c_str());
+            skipped++;
+            continue;
+        }
+
+        uint32 cleared = 0;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            if (slot == EQUIPMENT_SLOT_BODY || slot == EQUIPMENT_SLOT_TABARD)
+                continue;
+
+            Item* pItem = pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!pItem || pItem->GetProto()->Quality > ITEM_QUALITY_NORMAL)
+                continue;
+
+            pPlayer->DestroyItem(INVENTORY_SLOT_BAG_0, slot, true);
+            cleared++;
+        }
+
+        uint32 const emptyBefore = countEmpty(pPlayer);
+        pAI->EquipRandomGearInEmptySlots(pWeights);
+
+        // A member keeps what it wins, so it needs room to carry it: a full backpack sends the
+        // next win to the mailbox, which a bot never opens.
+        uint32 bags = 0;
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        {
+            if (pPlayer->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
+                continue;
+
+            uint16 dest = 0;
+            if (pPlayer->CanEquipNewItem(bag, dest, RAIDGUILD_BAG_ENTRY, false) == EQUIP_ERR_OK &&
+                pPlayer->EquipNewItem(dest, RAIDGUILD_BAG_ENTRY, true))
+                bags++;
+        }
+
+        pAI->EquipOrUseNewItem();
+        uint32 const emptyAfter = countEmpty(pPlayer);
+
+        PSendSysMessage("outfit name=%s level=%u cleared=%u filled=%u empty=%u bags=%u",
+            member.name.c_str(), pPlayer->GetLevel(), cleared, emptyBefore - emptyAfter, emptyAfter, bags);
+        outfitted++;
+    }
+
+    PSendSysMessage("outfit members=%u skipped=%u", outfitted, skipped);
+    return true;
+}
+
+namespace
+{
+// The nearest chest that has already been opened, measured from whoever gave the order.
+//
+// Opened rather than merely present, so a lock still means something: a bot told to loot a
+// coffer nobody had the key for would otherwise empty it without one.
+class NearestOpenedChestCheck
+{
+    public:
+        NearestOpenedChestCheck(WorldObject const& obj, float range) : i_obj(obj), i_range(range) {}
+        WorldObject const& GetFocusObject() const { return i_obj; }
+        bool operator()(GameObject* go)
+        {
+            if (go->GetGoType() != GAMEOBJECT_TYPE_CHEST || !go->isSpawned() ||
+                go->getLootState() != GO_ACTIVATED || !i_obj.IsWithinDistInMap(go, i_range))
+                return false;
+
+            i_range = i_obj.GetDistance(go);
+            return true;
+        }
+
+    private:
+        WorldObject const& i_obj;
+        float i_range;
+};
+
+uint32 constexpr RAIDGUILD_LOOT_SEARCH_RANGE = 10;
+uint32 constexpr RAIDGUILD_LOOT_RETRY_MS = 700;
+uint32 constexpr RAIDGUILD_LOOT_ATTEMPTS = 4;
+
+void ReportLoot(ObjectGuid leaderGuid, std::string const& text)
+{
+    if (Player* pLeader = ObjectAccessor::FindPlayer(leaderGuid))
+        ChatHandler(pLeader).SendSysMessage(text.c_str());
+}
+
+// Takes from the chest once the bot is standing at it. Scheduled on the bot rather than run from
+// the command, because a near teleport only lands when the bot acknowledges it on its next update.
+void TryLootChest(ObjectGuid botGuid, ObjectGuid chestGuid, ObjectGuid leaderGuid, uint32 itemId, uint32 attempt)
+{
+    Player* pBot = ObjectAccessor::FindPlayer(botGuid);
+    if (!pBot || !pBot->IsInWorld() || !pBot->IsAlive())
+        return ReportLoot(leaderGuid, "RaidGuild: the looter is gone or dead.");
+
+    GameObject* pChest = pBot->GetMap()->GetGameObject(chestGuid);
+    if (!pChest || pChest->getLootState() != GO_ACTIVATED)
+        return ReportLoot(leaderGuid, "RaidGuild: the chest is gone or has been emptied.");
+
+    // Following the leader can carry the bot back off the chest between the hop and the take,
+    // so the hop is repeated rather than trusted.
+    if (pBot->IsBeingTeleported() || !pChest->IsWithinDistInMap(pBot, INTERACTION_DISTANCE))
+    {
+        if (attempt >= RAIDGUILD_LOOT_ATTEMPTS)
+            return ReportLoot(leaderGuid, std::string("RaidGuild: '") + pBot->GetName() + "' could not reach the chest.");
+
+        if (!pBot->IsBeingTeleported())
+        {
+            float x, y, z;
+            pChest->GetNearPoint(pBot, x, y, z, 0.0f, 1.0f, pChest->GetAngle(pBot));
+            pBot->NearTeleportTo(x, y, z, pBot->GetAngle(pChest));
+        }
+
+        pBot->m_Events.AddLambdaEventAtOffset([=]()
+        {
+            TryLootChest(botGuid, chestGuid, leaderGuid, itemId, attempt + 1);
+        }, RAIDGUILD_LOOT_RETRY_MS);
+        return;
+    }
+
+    pBot->GetMotionMaster()->MoveIdle();
+
+    WorldSession* pSession = pBot->GetSession();
+    pBot->SendLoot(chestGuid, LOOT_CORPSE);
+    if (pBot->GetLootGuid() != chestGuid)
+        return ReportLoot(leaderGuid, std::string("RaidGuild: '") + pBot->GetName() + "' was refused the chest.");
+
+    Loot& loot = pChest->loot;
+    uint32 taken = 0;
+    uint32 matched = 0;
+    uint32 const maxSlot = loot.GetMaxSlotInLootFor(pBot->GetGUIDLow());
+    for (uint32 slot = 0; slot < maxSlot; ++slot)
+    {
+        LootItem* pItem = loot.LootItemInSlot(slot, pBot->GetGUIDLow());
+        if (!pItem || pItem->is_looted)
+            continue;
+
+        if (itemId && pItem->itemid != itemId)
+            continue;
+
+        ++matched;
+        uint32 const before = pBot->GetItemCount(pItem->itemid, true);
+
+        WorldPackets::Loot::AutoStoreLootItem take;
+        take.lootSlot = uint8(slot);
+        pSession->HandleAutostoreLootItemOpcode(take);
+
+        if (pBot->GetItemCount(pItem->itemid, true) > before)
+            ++taken;
+    }
+
+    if (!itemId && loot.gold)
+    {
+        NullClientPacket money(CMSG_LOOT_MONEY);
+        pSession->HandleLootMoneyOpcode(money);
+    }
+
+    pSession->DoLootRelease(chestGuid);
+
+    if (PlayerBotEntry const* pEntry = pSession->GetBot())
+        if (CombatBotBaseAI* pAI = dynamic_cast<CombatBotBaseAI*>(pEntry->ai.get()))
+            pAI->EquipOrUseNewItem();
+
+    std::ostringstream oss;
+    oss << "loot name=" << pBot->GetName() << " chest=" << pChest->GetGOInfo()->name
+        << " matched=" << matched << " taken=" << taken;
+    if (matched > taken)
+        oss << " (bags full or the item is someone else's)";
+    ReportLoot(leaderGuid, oss.str());
+}
+}
+
+// .raidguild loot <name> [item]
+// Sends a member to an already opened chest beside the player and has it take one item, given as
+// a shift-click link or an entry, or everything when no item is named. Bind on pickup goes to the
+// member, which is the point: nothing a player loots can be handed on afterwards.
+bool ChatHandler::HandleRaidGuildLootCommand(char* args)
+{
+    Player* pLeader = m_session ? m_session->GetPlayer() : nullptr;
+    if (!pLeader)
+    {
+        SendSysMessage("RaidGuild: loot is given in game, standing at the chest.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    char* nameStr = ExtractArg(&args);
+    if (!nameStr)
+    {
+        SendSysMessage("Usage: .raidguild loot <member> [item link or entry]");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    std::string name = nameStr;
+    normalizePlayerName(name);
+
+    uint32 itemId = 0;
+    if (args && *args && !ExtractUint32KeyFromLink(&args, "Hitem", itemId))
+    {
+        SendSysMessage("RaidGuild: expected an item link or entry after the member's name.");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    RaidGuildMember const* pMember = sRaidGuildMgr.FindMember(name);
+    if (!pMember)
+    {
+        PSendSysMessage("RaidGuild: '%s' is not on the roster.", name.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Player* pBot = sRaidGuildMgr.FindSummonedMember(*pMember);
+    if (!pBot || !pBot->IsInWorld() || pBot->GetMap() != pLeader->GetMap())
+    {
+        PSendSysMessage("RaidGuild: '%s' is not here.", name.c_str());
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    if (!pBot->IsAlive() || pBot->IsInCombat())
+    {
+        PSendSysMessage("RaidGuild: '%s' is %s.", name.c_str(), pBot->IsAlive() ? "in combat" : "dead");
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    GameObject* pChest = nullptr;
+    NearestOpenedChestCheck check(*pLeader, float(RAIDGUILD_LOOT_SEARCH_RANGE));
+    MaNGOS::GameObjectLastSearcher<NearestOpenedChestCheck> searcher(pChest, check);
+    Cell::VisitGridObjects(pLeader, searcher, float(RAIDGUILD_LOOT_SEARCH_RANGE));
+    if (!pChest)
+    {
+        PSendSysMessage("RaidGuild: no opened chest within %u yards. Open it first, then give the order.",
+            RAIDGUILD_LOOT_SEARCH_RANGE);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    PSendSysMessage("loot name=%s chest=%s item=%u sent", pBot->GetName(), pChest->GetGOInfo()->name, itemId);
+    TryLootChest(pBot->GetObjectGuid(), pChest->GetObjectGuid(), pLeader->GetObjectGuid(), itemId, 0);
     return true;
 }
 

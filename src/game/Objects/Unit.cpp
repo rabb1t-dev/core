@@ -49,6 +49,7 @@
 #include "MovementGenerator.h"
 #include "Transport.h"
 #include "CreatureGroups.h"
+#include "PlayerBots/DungeonTactics.h"
 #include "ScriptMgr.h"
 #include "ZoneScript.h"
 #include "MoveSplineInit.h"
@@ -9844,7 +9845,9 @@ Creature* Unit::FindUnengagedCreatureAggroedByPosition(float x, float y, float z
                 }
             }
 
-            if (ignored)
+            // Only stationary support. The list is a kill order, and the pack members on it
+            // are as much a pull as anything else in the room.
+            if (ignored && IsPassiveSupportCreature(pCreature))
                 continue;
         }
 
@@ -9895,7 +9898,9 @@ Creature* Unit::FindUnengagedCreatureInRadius(float x, float y, float z, float r
                 }
             }
 
-            if (ignored)
+            // Only stationary support. The list is a kill order, and the pack members on it
+            // are as much a pull as anything else in the room.
+            if (ignored && IsPassiveSupportCreature(pCreature))
                 continue;
         }
 
