@@ -37,6 +37,10 @@ enum
     TYPE_AVATAR           = 8,
     TYPE_ERANIKUS         = 9,
     TYPE_ETERNAL_FLAME    = 10,
+    TYPE_CIRCLE_CLUE      = 11, // Not saved: plays the statue order over the circle, see go_altar_of_hakkar
+
+    QUEST_INTO_THE_DEPTHS = 3446,
+    GO_ALTAR_OF_HAKKAR    = 148836,
 
     NPC_ATALARION         = 8580,
     NPC_DREAMSCYTH        = 5721,

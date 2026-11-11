@@ -26,6 +26,7 @@ EndScriptData */
 
 /* ContentData
 at_shade_of_eranikus
+go_altar_of_hakkar
 npc_malfurion_stormrage
 event_antalarion_statue_activation
 EndContentData */
@@ -168,9 +169,33 @@ bool AreaTrigger_at_shade_of_eranikus(Player* pPlayer, AreaTriggerEntry const* p
     return false;
 }
 
+/*######
+## go_altar_of_hakkar
+######*/
+
+// After Into the Depths is turned in here, using the altar again shows the order the circle's
+// statues must be activated in, as a light over each one in turn. That is the clue Secret of the
+// Circle refers to ("From the main altar, I was able to activate a series of lights"). Before the
+// turn-in the altar behaves as the ordinary quest ender it is.
+bool GOHello_go_altar_of_hakkar(Player* pPlayer, GameObject* pGo)
+{
+    if (!pPlayer->GetQuestRewardStatus(QUEST_INTO_THE_DEPTHS))
+        return false;
+
+    if (ScriptedInstance* pInstance = (ScriptedInstance*)pGo->GetInstanceData())
+        pInstance->SetData(TYPE_CIRCLE_CLUE, IN_PROGRESS);
+
+    return true;
+}
+
 void AddSC_sunken_temple()
 {
     Script* pNewScript;
+
+    pNewScript = new Script;
+    pNewScript->Name = "go_altar_of_hakkar";
+    pNewScript->pGOHello = &GOHello_go_altar_of_hakkar;
+    pNewScript->RegisterSelf();
 
     pNewScript = new Script;
     pNewScript->Name = "npc_malfurion_stormrage";

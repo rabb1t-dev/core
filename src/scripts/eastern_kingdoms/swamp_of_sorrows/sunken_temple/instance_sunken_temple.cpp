@@ -73,6 +73,11 @@ struct instance_sunken_temple : public ScriptedInstance
 
     bool m_restoreCircleState;
 
+    // The statue order shown from the Altar of Hakkar. Step counts statues already lit; the
+    // sequence is idle while it equals MAX_STATUES.
+    uint8 m_uiClueStep;
+    uint32 m_uiClueTimer;
+
     void Initialize() override
     {
         memset(&m_auiEncounter, 0, sizeof(m_auiEncounter));
@@ -94,6 +99,27 @@ struct instance_sunken_temple : public ScriptedInstance
 
         RemoveTimer = 5000;
         m_restoreCircleState = true;
+
+        m_uiClueStep = MAX_STATUES;
+        m_uiClueTimer = 0;
+    }
+
+    // One light over one statue. Summoned rather than taken from the lights the puzzle itself
+    // respawns on a correct activation, so showing the order never looks like progress and never
+    // interferes with it.
+    //
+    // Each light stays until the whole sequence has played and a few seconds past it, so they
+    // build up one statue at a time. A light that went out before the next one came on lasted two
+    // seconds, twenty six yards overhead, and could not be seen from the altar at all.
+    void ShowClueLight(uint8 index)
+    {
+        GameObject* pStatue = instance->GetGameObject(m_luiAtalaiStatueGUIDs[index]);
+        if (!pStatue)
+            return;
+
+        uint32 const lifetimeSecs = (MAX_STATUES - index) * 3 + 8;
+        pStatue->SummonGameObject(GO_ATALAI_LIGHT, pStatue->GetPositionX(), pStatue->GetPositionY(),
+                                  pStatue->GetPositionZ(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, lifetimeSecs, false);
     }
 
     void DoSpawnAtalarionIfCan()
@@ -459,7 +485,11 @@ struct instance_sunken_temple : public ScriptedInstance
                 m_auiEncounter[3] = uiData;
                 break;
             case TYPE_AVATAR:
-                m_auiEncounter[4] = uiData;
+                // A failed attempt goes back to not started. The Egg of Hakkar's event script only
+                // runs while this reads NOT_STARTED (condition 8502), and the failure script sets it
+                // to FAIL, so without this one failure locked the event until the instance was
+                // reloaded -- the egg was used and simply did nothing.
+                m_auiEncounter[4] = (uiData == FAIL) ? uint32(NOT_STARTED) : uiData;
                 break;
             case TYPE_ERANIKUS:
                 m_auiEncounter[5] = uiData;
@@ -498,6 +528,15 @@ struct instance_sunken_temple : public ScriptedInstance
             case TYPE_ETERNAL_FLAME:
                 m_uiFlameCounter = uiData;
                 break;
+            case TYPE_CIRCLE_CLUE:
+                // Ignored while a sequence is already playing, and once the circle is solved.
+                if (uiData == IN_PROGRESS && m_uiClueStep == MAX_STATUES &&
+                    GetData(TYPE_SECRET_CIRCLE) != DONE)
+                {
+                    m_uiClueStep = 0;
+                    m_uiClueTimer = 0;
+                }
+                return;
         }
 
         if (uiData == DONE)
@@ -590,6 +629,20 @@ struct instance_sunken_temple : public ScriptedInstance
         }
         else
             RemoveTimer -= uiDiff;
+
+        // m_luiAtalaiStatueGUIDs is indexed in activation order, so lighting it front to back is
+        // the answer: S, N, SW, SE, NW, NE.
+        if (m_uiClueStep < MAX_STATUES)
+        {
+            if (m_uiClueTimer <= uiDiff)
+            {
+                ShowClueLight(m_uiClueStep);
+                ++m_uiClueStep;
+                m_uiClueTimer = 3000;
+            }
+            else
+                m_uiClueTimer -= uiDiff;
+        }
 
         // Check if need to restore state after server crash
         if (m_restoreCircleState)
